@@ -607,7 +607,18 @@ EOT
 
 init_sqlite() {
   [[ -x "${BIN_DIR}/proxyctl" ]] || fail "proxyctl binary is not installed"
-  "${BIN_DIR}/proxyctl" init --db "${DB_PATH}" >/dev/null
+
+  if "${BIN_DIR}/proxyctl" init --config "${CONFIG_PATH}" >/dev/null 2>&1; then
+    :
+  elif "${BIN_DIR}/proxyctl" init --db "${DB_PATH}" >/dev/null 2>&1; then
+    :
+  elif "${BIN_DIR}/proxyctl" init >/dev/null 2>&1; then
+    :
+  else
+    warn "proxyctl init failed or is not implemented in this binary; continuing without schema bootstrap"
+    return 0
+  fi
+
   chmod 0640 "${DB_PATH}" || true
   log "Initialized SQLite database: ${DB_PATH}"
 }
