@@ -19,7 +19,7 @@ readonly BIN_DIR="/usr/local/bin"
 readonly SYSTEMD_DIR="/etc/systemd/system"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 
-PROXYCTL_BINARY_URL="${PROXYCTL_BINARY_URL:-https://github.com/DarkSidr/proxyctl/releases/latest/download/proxyctl-linux-amd64}"
+PROXYCTL_BINARY_URL="${PROXYCTL_BINARY_URL:-https://raw.githubusercontent.com/DarkSidr/proxyctl/main/proxyctl}"
 PROXYCTL_VERSION="${PROXYCTL_VERSION:-latest}"
 PROXYCTL_REINSTALL_BINARY="${PROXYCTL_REINSTALL_BINARY:-0}"
 
