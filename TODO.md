@@ -42,6 +42,22 @@
 - Improve node selection label in inbound creation wizard:
   - show node `name` + `host` + `role` (for example `primary/secondary`) instead of only ID/host.
   - keep labels unambiguous when multiple nodes share similar hosts.
+- Consider removing direct TLS prompt from default (quick) wizard flow:
+  - keep safer default (`TLS = no`) for quick mode;
+  - expose TLS toggle/edit only in advanced mode for power users.
+- Improve SNI UX for Reality setup:
+  - provide default SNI preset list (for example: `microsoft`, `nvidia`, `intel`, `amd` domains);
+  - add optional random pick from presets in quick mode;
+  - move direct `Reality server` input to advanced mode (keep quick mode minimal).
+- Improve wizard apply flow for fresh setups:
+  - before `apply`, check whether inbound has at least one attached user credential;
+  - if no user/credential exists, offer guided actions (`create user` / `attach user`) instead of hard failure;
+  - consider moving `Apply now` prompt out of quick mode (or default to deferred apply in quick flow).
+- Improve post-attach UX in user menu:
+  - after successful `attach to existing inbound`, avoid returning to the same action prompt by default;
+  - prefer auto-return to parent menu or switch default action to `show configs` to prevent accidental duplicate attaches.
+- Ensure runtime service persistence after successful apply:
+  - when `apply` activates a runtime service (for example `proxyctl-xray.service`), also `enable` it for reboot persistence, not only restart/start.
 
 ### 5) Storage and migrations
 - Add DB fields to `users` table:

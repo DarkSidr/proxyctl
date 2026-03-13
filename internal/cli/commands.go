@@ -1792,7 +1792,7 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 			"delete specific config",
 			"delete user completely",
 			"back",
-		}, "attach to existing inbound")
+		}, "show configs")
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				fmt.Fprintln(out, "user menu cancelled")
@@ -1891,6 +1891,25 @@ func runWizardAttachExistingUserToInbound(cmd *cobra.Command, in *bufio.Reader, 
 	}
 	defer store.Close()
 
+	existingCredentials, err := store.Credentials().List(cmd.Context())
+	if err != nil {
+		return err
+	}
+	if existing, exists := findCredentialByUserAndInbound(existingCredentials, user.ID, inbound.ID); exists {
+		node, err := findNodeByID(cmd.Context(), store, inbound.NodeID)
+		if err != nil {
+			return err
+		}
+		uri, uriErr := renderSingleClientURI(cmd.Context(), node, inbound, existing)
+		fmt.Fprintf(out, "credential already exists: id=%s user=%s inbound=%s kind=%s\n", existing.ID, user.ID, inbound.ID, existing.Kind)
+		if uriErr != nil {
+			fmt.Fprintf(out, "uri unavailable: %s\n", uriErr)
+		} else {
+			fmt.Fprintf(out, "client uri: %s\n", uri)
+		}
+		return nil
+	}
+
 	credential, err := createCredentialForInbound(inbound, user.ID)
 	if err != nil {
 		return err
@@ -1924,6 +1943,17 @@ func runWizardAttachExistingUserToInbound(cmd *cobra.Command, in *bufio.Reader, 
 		fmt.Fprintln(out, "credential saved; run `proxyctl apply --config /etc/proxy-orchestrator/proxyctl.yaml` to activate it")
 	}
 	return nil
+}
+
+func findCredentialByUserAndInbound(credentials []domain.Credential, userID, inboundID string) (domain.Credential, bool) {
+	userID = strings.TrimSpace(userID)
+	inboundID = strings.TrimSpace(inboundID)
+	for _, credential := range credentials {
+		if strings.TrimSpace(credential.UserID) == userID && strings.TrimSpace(credential.InboundID) == inboundID {
+			return credential, true
+		}
+	}
+	return domain.Credential{}, false
 }
 
 func runWizardShowInboundUsers(cmd *cobra.Command, out io.Writer, dbPath string, inbound domain.Inbound) error {
@@ -3479,7 +3509,38 @@ func runApplyPipeline(cmd *cobra.Command, configPath, dbPath string, dryRun bool
 	if runErr != nil {
 		return applyruntime.Result{}, fmt.Errorf("apply pipeline failed: %w", runErr)
 	}
+	enabledUnits, enableErr := enableRuntimeUnits(cmd.Context(), result.ServiceOps)
+	if enableErr != nil {
+		return applyruntime.Result{}, enableErr
+	}
+	for _, unit := range enabledUnits {
+		fmt.Fprintf(cmd.OutOrStdout(), "service enabled: %s\n", unit)
+	}
 	return result, nil
+}
+
+func enableRuntimeUnits(ctx context.Context, ops []applyruntime.ServiceOperation) ([]string, error) {
+	if _, err := lookPath("systemctl"); err != nil {
+		return nil, nil
+	}
+
+	seen := make(map[string]struct{}, len(ops))
+	enabled := make([]string, 0, len(ops))
+	for _, op := range ops {
+		unit := strings.TrimSpace(op.Unit)
+		if unit == "" {
+			continue
+		}
+		if _, exists := seen[unit]; exists {
+			continue
+		}
+		seen[unit] = struct{}{}
+		if _, err := runCommandOutput(ctx, "systemctl", "enable", unit); err != nil {
+			return enabled, fmt.Errorf("enable runtime unit %q: %w", unit, err)
+		}
+		enabled = append(enabled, unit)
+	}
+	return enabled, nil
 }
 
 func renderReverseProxyAndDecoy(layoutManager *layout.Manager, cfg config.AppConfig, req renderer.BuildRequest, preview bool) (string, string, int, error) {

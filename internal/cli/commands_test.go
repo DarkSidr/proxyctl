@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"proxyctl/internal/domain"
+	applyruntime "proxyctl/internal/runtime/apply"
 )
 
 func TestPromptChoiceShowsBackOnlyAsZero(t *testing.T) {
@@ -202,5 +205,67 @@ func TestWizardMainOptionsWithNodes(t *testing.T) {
 	}
 	if def != "inbounds" {
 		t.Fatalf("default action = %q, want inbounds", def)
+	}
+}
+
+func TestFindCredentialByUserAndInbound(t *testing.T) {
+	t.Parallel()
+
+	credentials := []domain.Credential{
+		{ID: "c1", UserID: "u1", InboundID: "i1"},
+		{ID: "c2", UserID: "u2", InboundID: "i1"},
+	}
+
+	found, ok := findCredentialByUserAndInbound(credentials, "u1", "i1")
+	if !ok {
+		t.Fatalf("expected credential match, got none")
+	}
+	if found.ID != "c1" {
+		t.Fatalf("credential id = %q, want c1", found.ID)
+	}
+
+	_, ok = findCredentialByUserAndInbound(credentials, "u1", "i2")
+	if ok {
+		t.Fatalf("expected no match for different inbound")
+	}
+}
+
+func TestEnableRuntimeUnitsDeduplicates(t *testing.T) {
+	origLookPath := lookPath
+	origRun := runCommandOutput
+	t.Cleanup(func() {
+		lookPath = origLookPath
+		runCommandOutput = origRun
+	})
+
+	lookPath = func(file string) (string, error) {
+		if file == "systemctl" {
+			return "/bin/systemctl", nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+
+	calls := make([]string, 0)
+	runCommandOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		if name != "systemctl" {
+			return "", fmt.Errorf("unexpected command: %s", name)
+		}
+		calls = append(calls, strings.Join(args, " "))
+		return "", nil
+	}
+
+	enabled, err := enableRuntimeUnits(context.Background(), []applyruntime.ServiceOperation{
+		{Unit: "proxyctl-xray.service"},
+		{Unit: "proxyctl-xray.service"},
+		{Unit: "proxyctl-sing-box.service"},
+	})
+	if err != nil {
+		t.Fatalf("enableRuntimeUnits() error: %v", err)
+	}
+	if len(enabled) != 2 {
+		t.Fatalf("enabled units = %v, want 2 unique units", enabled)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("systemctl enable calls = %v, want 2", calls)
 	}
 }
