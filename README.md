@@ -60,6 +60,7 @@ sudo proxyctl update
 ```
 
 `proxyctl update` first checks latest GitHub release version and skips reinstall when current version is already up to date.
+After successful update it also checks `proxyctl-caddy.service` and auto-starts it when inactive (can be disabled with `--ensure-caddy=false`).
 
 Operational notes for install/update/uninstall are in `docs/INSTALLER.md`.
 
@@ -124,7 +125,7 @@ proxyctl inbound add \
   --transport tcp \
   --node-id <NODE_ID> \
   --domain darksidr.icu \
-  --port 443 \
+  --port 8443 \
   --sni www.intel.com \
   --reality \
   --reality-public-key <REALITY_PUBLIC_KEY> \
@@ -136,6 +137,10 @@ proxyctl inbound add \
   --reality-server-port 443 \
   --vless-flow xtls-rprx-vision
 ```
+
+Notes:
+- Port `443` is reserved by default for safer installs (`caddy`/site on 443). Use `--allow-port-443` only for advanced custom setups.
+- If `--reality-short-id` is omitted, `proxyctl` auto-generates it.
 
 Then regenerate subscriptions:
 
@@ -211,8 +216,10 @@ proxyctl wizard
 
 The wizard includes interactive inbound setup and `update proxyctl`.
 When you run just `proxyctl` in an interactive terminal, wizard starts automatically.
-At the end of inbound wizard you can pick a user, and proxyctl will print a ready client URI immediately.
-Main wizard includes `users` submenu: list users, create user, open specific user, inspect configs, delete selected config, or delete user completely (with full cleanup).
+Wizard is inbound-first (similar to 3x-ui workflow):
+- `inbounds`: list/create/open inbound, attach users to an existing inbound.
+- `users`: list/create/open users, inspect configs, manage credentials.
+At the end of inbound creation wizard can still print a ready client URI when a user is linked.
 Inside `open credential`, you can print URI with fingerprint presets (`chrome/google`, `safari`, `firefox`, `edge`, etc.) or custom value.
 
 ## Troubleshooting

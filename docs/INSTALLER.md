@@ -18,6 +18,7 @@ Optional environment variables:
 - `PROXYCTL_MAIN_BINARY_URL` — fallback raw main-branch binary URL used by `auto`.
 - `PROXYCTL_REINSTALL_BINARY=1` — force overwrite of existing `/usr/local/bin/proxyctl`.
 - `PROXYCTL_ENABLE_AUTO_UPDATE=1` — install and enable `proxyctl-self-update.timer`.
+- `PROXYCTL_ENABLE_CADDY_ON_INSTALL=1` — ensure `proxyctl-caddy.service` is enabled and started during install (default: `1`; set `0` to skip).
 - `PROXYCTL_AUTO_UPDATE_SCHEDULE` — `systemd` timer schedule (default: `daily`).
 - `PROXYCTL_AUTO_UPDATE_INSTALL_URL` — installer URL used by auto-update script.
 - `SINGBOX_BINARY_URL` — fallback URL for `sing-box` binary/archive.
@@ -34,6 +35,7 @@ Supported OS (MVP):
 - Runtime defaults (`Caddyfile`, `nginx.conf`, decoy assets) are created only if missing.
 - Managed systemd unit files are updated in-place with timestamped backup when content changes.
 - SQLite schema init is safe for repeated runs (`CREATE TABLE IF NOT EXISTS`).
+- Installer ensures `proxyctl-caddy.service` is enabled/started by default (`PROXYCTL_ENABLE_CADDY_ON_INSTALL=1`).
 
 ## Update notes
 1. Re-run installer (recommended strategy: source build when release assets are missing):
@@ -60,6 +62,10 @@ sudo systemctl restart proxyctl-xray.service
 sudo systemctl restart proxyctl-caddy.service
 # or proxyctl-nginx.service if nginx backend is selected
 ```
+
+CLI self-update notes:
+- `proxyctl update` now validates caddy service state after update and auto-starts `proxyctl-caddy.service` when inactive.
+- Disable this behavior for advanced setups with `proxyctl update --ensure-caddy=false`.
 
 ## Auto-update timer
 
