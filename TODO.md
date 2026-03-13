@@ -39,6 +39,9 @@
   - show limits + current usage;
   - provide quick actions (`extend`, `reset`, `set unlimited`).
 - `show configs` should display user status reason: `expired` or `quota exceeded`.
+- Improve node selection label in inbound creation wizard:
+  - show node `name` + `host` + `role` (for example `primary/secondary`) instead of only ID/host.
+  - keep labels unambiguous when multiple nodes share similar hosts.
 
 ### 5) Storage and migrations
 - Add DB fields to `users` table:
