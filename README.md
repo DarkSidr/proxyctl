@@ -59,6 +59,8 @@ Quick self-update from CLI:
 sudo proxyctl update
 ```
 
+`proxyctl update` first checks latest GitHub release version and skips reinstall when current version is already up to date.
+
 Operational notes for install/update/uninstall are in `docs/INSTALLER.md`.
 
 ## Automated release build
@@ -208,6 +210,7 @@ proxyctl wizard
 ```
 
 The wizard includes interactive inbound setup and `update proxyctl`.
+When you run just `proxyctl` in an interactive terminal, wizard starts automatically.
 
 ## Troubleshooting
 

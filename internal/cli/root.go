@@ -24,6 +24,15 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       Version,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("unknown command %q for %q\nSee '%s --help'", args[0], cmd.CommandPath(), cmd.CommandPath())
+			}
+			if !stdinIsTerminal(cmd.InOrStdin()) {
+				return cmd.Help()
+			}
+			return runProxyctlSubcommand(cmd, "wizard", "--config", configPath, "--db", dbPath)
+		},
 	}
 
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", config.DefaultConfigFile, "Path to proxyctl configuration file")

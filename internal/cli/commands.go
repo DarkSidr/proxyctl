@@ -3,8 +3,11 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +35,7 @@ import (
 )
 
 const defaultUpdateInstallURL = "https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh"
+const defaultLatestReleaseAPIURL = "https://api.github.com/repos/DarkSidr/proxyctl/releases/latest"
 
 func newGroupCmd(use, short, long string) *cobra.Command {
 	return &cobra.Command{
@@ -95,6 +99,10 @@ func newWizardCmd(dbPath *string) *cobra.Command {
 				"exit",
 			}, "inbound add (interactive)")
 			if err != nil {
+				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+					fmt.Fprintln(out, "wizard cancelled")
+					return nil
+				}
 				return err
 			}
 
@@ -113,23 +121,52 @@ func newWizardCmd(dbPath *string) *cobra.Command {
 
 func newUpdateCmd() *cobra.Command {
 	installURL := defaultUpdateInstallURL
+	latestReleaseAPIURL := defaultLatestReleaseAPIURL
 	channel := "auto"
 	reinstallBinary := true
+	force := false
 
 	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Update proxyctl from repository",
-		Long:  "Downloads the latest installer from the upstream repository and reinstalls proxyctl.",
+		Long:  "Checks upstream release version and updates proxyctl only when a newer version exists.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			installURL = strings.TrimSpace(installURL)
+			latestReleaseAPIURL = strings.TrimSpace(latestReleaseAPIURL)
 			channel = strings.TrimSpace(channel)
 			if installURL == "" {
 				return fmt.Errorf("--install-url is required")
+			}
+			if latestReleaseAPIURL == "" {
+				return fmt.Errorf("--latest-release-api-url is required")
 			}
 			if channel == "" {
 				channel = "auto"
 			}
 
+			latestTag, err := fetchLatestReleaseTag(cmd.Context(), latestReleaseAPIURL)
+			if err != nil {
+				return err
+			}
+
+			current, currentParseErr := parseSemVersion(strings.TrimSpace(Version))
+			if currentParseErr != nil && !force {
+				return fmt.Errorf("current binary version %q is not a semantic release tag; use --force to bypass check", Version)
+			}
+
+			latest, latestParseErr := parseSemVersion(latestTag)
+			if latestParseErr != nil {
+				return fmt.Errorf("parse latest release tag %q: %w", latestTag, latestParseErr)
+			}
+
+			if currentParseErr == nil && !force {
+				if compareSemVersion(latest, current) <= 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "proxyctl is up to date: current=%s latest=%s\n", Version, latestTag)
+					return nil
+				}
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "updating proxyctl: current=%s latest=%s\n", Version, latestTag)
 			updateExpr := fmt.Sprintf(
 				"curl -fsSL %s | PROXYCTL_INSTALL_CHANNEL=%s PROXYCTL_REINSTALL_BINARY=%s bash",
 				shellQuote(installURL),
@@ -151,8 +188,10 @@ func newUpdateCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&installURL, "install-url", installURL, "Installer URL (defaults to upstream install.sh)")
+	cmd.Flags().StringVar(&latestReleaseAPIURL, "latest-release-api-url", latestReleaseAPIURL, "GitHub API URL for latest release metadata")
 	cmd.Flags().StringVar(&channel, "channel", channel, "Install channel passed to installer (auto|release|source|url|local)")
 	cmd.Flags().BoolVar(&reinstallBinary, "reinstall-binary", reinstallBinary, "Force proxyctl binary reinstall")
+	cmd.Flags().BoolVar(&force, "force", force, "Bypass version comparison and force update")
 	return cmd
 }
 
@@ -916,6 +955,118 @@ func boolToEnv(v bool) string {
 func shellQuote(s string) string {
 	// Wraps arbitrary input into a single-quoted shell literal.
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
+}
+
+type latestReleaseResponse struct {
+	TagName string `json:"tag_name"`
+}
+
+func fetchLatestReleaseTag(ctx context.Context, apiURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build latest release request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "proxyctl-updater")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("query latest release API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", fmt.Errorf("latest release API returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	var payload latestReleaseResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", fmt.Errorf("decode latest release API response: %w", err)
+	}
+	tag := strings.TrimSpace(payload.TagName)
+	if tag == "" {
+		return "", fmt.Errorf("latest release API response does not contain tag_name")
+	}
+	return tag, nil
+}
+
+type semVersion struct {
+	major int
+	minor int
+	patch int
+	pre   string
+}
+
+func parseSemVersion(raw string) (semVersion, error) {
+	v := strings.TrimSpace(raw)
+	v = strings.TrimPrefix(v, "v")
+	if v == "" {
+		return semVersion{}, fmt.Errorf("version is empty")
+	}
+
+	mainPart := v
+	pre := ""
+	if idx := strings.IndexByte(v, '-'); idx >= 0 {
+		mainPart = v[:idx]
+		pre = v[idx+1:]
+	}
+
+	parts := strings.Split(mainPart, ".")
+	if len(parts) != 3 {
+		return semVersion{}, fmt.Errorf("expected MAJOR.MINOR.PATCH, got %q", raw)
+	}
+
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return semVersion{}, fmt.Errorf("parse major: %w", err)
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return semVersion{}, fmt.Errorf("parse minor: %w", err)
+	}
+	patch, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return semVersion{}, fmt.Errorf("parse patch: %w", err)
+	}
+
+	return semVersion{
+		major: major,
+		minor: minor,
+		patch: patch,
+		pre:   pre,
+	}, nil
+}
+
+func compareSemVersion(a, b semVersion) int {
+	if a.major != b.major {
+		if a.major > b.major {
+			return 1
+		}
+		return -1
+	}
+	if a.minor != b.minor {
+		if a.minor > b.minor {
+			return 1
+		}
+		return -1
+	}
+	if a.patch != b.patch {
+		if a.patch > b.patch {
+			return 1
+		}
+		return -1
+	}
+
+	// Stable release (no prerelease suffix) is newer than prerelease.
+	if a.pre == "" && b.pre != "" {
+		return 1
+	}
+	if a.pre != "" && b.pre == "" {
+		return -1
+	}
+	return strings.Compare(a.pre, b.pre)
 }
 
 func newInboundListCmd(dbPath *string) *cobra.Command {
