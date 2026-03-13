@@ -196,6 +196,9 @@ func (fakeUsersRepo) Create(context.Context, domain.User) (domain.User, error) {
 	return domain.User{}, nil
 }
 func (fakeUsersRepo) List(context.Context) ([]domain.User, error) { return nil, nil }
+func (fakeUsersRepo) Delete(context.Context, string) (bool, error) {
+	return false, nil
+}
 
 type fakeNodesRepo struct{ items []domain.Node }
 
@@ -223,6 +226,12 @@ func (fakeCredentialsRepo) Create(context.Context, domain.Credential) (domain.Cr
 func (r fakeCredentialsRepo) List(context.Context) ([]domain.Credential, error) {
 	return append([]domain.Credential(nil), r.items...), nil
 }
+func (fakeCredentialsRepo) Delete(context.Context, string) (bool, error) {
+	return false, nil
+}
+func (fakeCredentialsRepo) DeleteByUserID(context.Context, string) (int, error) {
+	return 0, nil
+}
 
 type fakeSubscriptionsRepo struct{}
 
@@ -231,6 +240,9 @@ func (fakeSubscriptionsRepo) Upsert(context.Context, domain.Subscription) (domai
 }
 func (fakeSubscriptionsRepo) GetByUserID(context.Context, string) (domain.Subscription, error) {
 	return domain.Subscription{}, nil
+}
+func (fakeSubscriptionsRepo) DeleteByUserID(context.Context, string) (bool, error) {
+	return false, nil
 }
 
 type fakeRenderer struct {
