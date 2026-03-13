@@ -810,6 +810,10 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath, linkedUserID string) (in
 			if err != nil {
 				return inboundAddPromptResult{}, err
 			}
+			if strings.TrimSpace(sni) == "" {
+				sni = strings.TrimSpace(realityServer)
+				fmt.Fprintf(out, "SNI auto-set to Reality server: %s\n", sni)
+			}
 			realityServerPort, err = promptInt(in, out, "Reality server port", 443)
 			if err != nil {
 				return inboundAddPromptResult{}, err
@@ -1198,6 +1202,17 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 		case "create inbound for this user":
 			if err := runProxyctlSubcommand(cmd, "inbound", "add", "--db", dbPath, "--link-user-id", user.ID); err != nil {
 				return err
+			}
+			applyNow, err := promptBool(in, out, "Apply runtime changes now (y/n)", true)
+			if err != nil {
+				return err
+			}
+			if applyNow {
+				if err := runProxyctlSubcommand(cmd, "apply", "--config", configPath, "--db", dbPath); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintln(out, "inbound saved; run `proxyctl apply --config /etc/proxy-orchestrator/proxyctl.yaml` to activate it")
 			}
 		case "show configs":
 			if err := runWizardShowUserConfigs(cmd, out, dbPath, user); err != nil {
