@@ -806,7 +806,7 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath, linkedUserID string) (in
 					return inboundAddPromptResult{}, err
 				}
 			}
-			realityServer, err = promptLineRequired(in, out, "Reality server (dest host)")
+			realityServer, err = promptRealityServer(in, out)
 			if err != nil {
 				return inboundAddPromptResult{}, err
 			}
@@ -2023,6 +2023,23 @@ func promptRealityFingerprint(in *bufio.Reader, out io.Writer, defaultValue stri
 	default:
 		return defaultValue, nil
 	}
+}
+
+func promptRealityServer(in *bufio.Reader, out io.Writer) (string, error) {
+	preset, err := promptChoice(in, out, "Reality server (dest host)", []string{
+		"www.cloudflare.com",
+		"www.google.com",
+		"www.apple.com",
+		"www.microsoft.com",
+		"custom",
+	}, "www.cloudflare.com")
+	if err != nil {
+		return "", err
+	}
+	if preset != "custom" {
+		return strings.TrimSpace(preset), nil
+	}
+	return promptLineRequired(in, out, "Custom reality server (dest host)")
 }
 
 func newInboundListCmd(dbPath *string) *cobra.Command {
