@@ -901,6 +901,16 @@ func promptChoice(in *bufio.Reader, out io.Writer, label string, options []strin
 	for i, opt := range options {
 		fmt.Fprintf(out, "  %d) %s\n", i+1, opt)
 	}
+	backOption := ""
+	for _, opt := range options {
+		if strings.EqualFold(strings.TrimSpace(opt), "back") {
+			backOption = opt
+			break
+		}
+	}
+	if backOption != "" {
+		fmt.Fprintln(out, "  0) back")
+	}
 
 	optionMap := make(map[string]string, len(options))
 	for _, opt := range options {
@@ -918,6 +928,9 @@ func promptChoice(in *bufio.Reader, out io.Writer, label string, options []strin
 			return defaultValue, nil
 		}
 		if idx, err := strconv.Atoi(line); err == nil {
+			if idx == 0 && backOption != "" {
+				return backOption, nil
+			}
 			if idx >= 1 && idx <= len(options) {
 				return options[idx-1], nil
 			}
