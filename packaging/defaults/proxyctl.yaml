@@ -1,0 +1,15 @@
+reverse_proxy: caddy
+
+storage:
+  sqlite_path: /var/lib/proxy-orchestrator/proxyctl.db
+
+runtime:
+  singbox_unit: proxyctl-sing-box.service
+  xray_unit: proxyctl-xray.service
+  caddy_unit: proxyctl-caddy.service
+  nginx_unit: proxyctl-nginx.service
+
+public:
+  domain: ""
+  https: true
+  contact_email: ""

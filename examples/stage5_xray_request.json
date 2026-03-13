@@ -1,0 +1,29 @@
+{
+  "node": {
+    "id": "node-1",
+    "name": "eu-1",
+    "host": "vpn.example.com"
+  },
+  "inbounds": [
+    {
+      "id": "in-xhttp",
+      "type": "xhttp",
+      "engine": "xray",
+      "node_id": "node-1",
+      "domain": "edge.example.com",
+      "port": 443,
+      "tls_enabled": true,
+      "transport": "xhttp",
+      "path": "/xhttp",
+      "enabled": true
+    }
+  ],
+  "credentials": [
+    {
+      "id": "cred-xhttp",
+      "inbound_id": "in-xhttp",
+      "kind": "uuid",
+      "secret": "22222222-2222-2222-2222-222222222222"
+    }
+  ]
+}

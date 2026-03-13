@@ -1,0 +1,36 @@
+{
+  "inbounds": [
+    {
+      "tag": "xhttp-in-xhttp",
+      "listen": "::",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "22222222-2222-2222-2222-222222222222"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "tls",
+        "xhttpSettings": {
+          "path": "/xhttp",
+          "host": "edge.example.com",
+          "mode": "auto"
+        },
+        "tlsSettings": {
+          "serverName": "edge.example.com"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    }
+  ]
+}

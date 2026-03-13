@@ -1,0 +1,3 @@
+./renderer.go
+./validator.go
+./renderer_test.go

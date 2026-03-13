@@ -1,0 +1,14 @@
+[Unit]
+Description=proxyctl sing-box runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sing-box run -D /var/lib/proxy-orchestrator -c /etc/proxy-orchestrator/runtime/sing-box.json
+Restart=on-failure
+RestartSec=2s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

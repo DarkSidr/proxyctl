@@ -1,0 +1,24 @@
+{{- if .ContactEmail }}{
+  email {{ .ContactEmail }}
+}
+
+{{ end -}}
+{{- range .Sites }}
+{{ .Address }} {
+  root * {{ .DecoyRoot }}
+
+{{- range .Routes }}
+  @{{ .MatcherName }} {
+    path {{ .Path }} {{ .PrefixPath }}
+  }
+  reverse_proxy @{{ .MatcherName }} {{ .Backend }}{{ if .UseH2C }} {
+    transport http {
+      versions h2c 2
+    }
+  }{{ end }}
+
+{{- end }}
+  file_server
+}
+
+{{- end }}

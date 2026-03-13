@@ -1,0 +1,3 @@
+./commands.go
+./diagnostics.go
+./root.go

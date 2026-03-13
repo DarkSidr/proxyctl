@@ -1,0 +1,14 @@
+[Unit]
+Description=proxyctl Xray runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xray run -config /etc/proxy-orchestrator/runtime/xray.json
+Restart=on-failure
+RestartSec=2s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

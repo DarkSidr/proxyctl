@@ -1,0 +1,3 @@
+./loader.go
+./model.go
+./loader_test.go

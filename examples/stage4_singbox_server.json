@@ -1,0 +1,48 @@
+{
+  "inbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hysteria2-in-hy2",
+      "listen": "::",
+      "listen_port": 8443,
+      "tls": {
+        "enabled": true,
+        "server_name": "hy2.example.com"
+      },
+      "users": [
+        {
+          "password": "hy2-secret"
+        }
+      ]
+    },
+    {
+      "type": "vless",
+      "tag": "vless-in-vless",
+      "listen": "::",
+      "listen_port": 443,
+      "tls": {
+        "enabled": true,
+        "server_name": "vpn.example.com"
+      },
+      "transport": {
+        "type": "ws",
+        "path": "/ws"
+      },
+      "users": [
+        {
+          "uuid": "11111111-1111-1111-1111-111111111111"
+        }
+      ]
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "final": "direct"
+  }
+}
+

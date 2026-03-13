@@ -1,0 +1,15 @@
+[
+  {
+    "protocol": "hysteria2",
+    "inbound_id": "in-hy2",
+    "credential_id": "cred-hy2",
+    "uri": "hysteria2://hy2-secret@vpn.example.com:8443?insecure=0&sni=hy2.example.com#proxyctl-in-hy2"
+  },
+  {
+    "protocol": "vless",
+    "inbound_id": "in-vless",
+    "credential_id": "cred-vless",
+    "uri": "vless://11111111-1111-1111-1111-111111111111@vpn.example.com:443?encryption=none&path=%2Fws&security=tls&sni=vpn.example.com&type=ws#proxyctl-in-vless"
+  }
+]
+

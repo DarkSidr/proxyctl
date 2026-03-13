@@ -1,0 +1,18 @@
+[Unit]
+Description=proxyctl Nginx reverse proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+ExecStartPre=/usr/sbin/nginx -t -c /etc/proxy-orchestrator/runtime/nginx/nginx.conf
+ExecStart=/usr/sbin/nginx -c /etc/proxy-orchestrator/runtime/nginx/nginx.conf
+ExecReload=/usr/sbin/nginx -t -c /etc/proxy-orchestrator/runtime/nginx/nginx.conf
+ExecReload=/usr/sbin/nginx -s reload
+ExecStop=/usr/sbin/nginx -s quit
+PIDFile=/run/nginx.pid
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

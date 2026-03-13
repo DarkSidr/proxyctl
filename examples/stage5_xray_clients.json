@@ -1,0 +1,8 @@
+[
+  {
+    "protocol": "xhttp",
+    "inbound_id": "in-xhttp",
+    "credential_id": "cred-xhttp",
+    "uri": "vless://22222222-2222-2222-2222-222222222222@vpn.example.com:443?encryption=none&host=edge.example.com&path=%2Fxhttp&security=tls&sni=edge.example.com&type=xhttp#proxyctl-in-xhttp"
+  }
+]

@@ -1,0 +1,19 @@
+reverse_proxy: caddy
+
+paths:
+  runtime_dir: /etc/proxy-orchestrator/runtime
+  caddy_dir: /etc/proxy-orchestrator/runtime/caddy
+  nginx_dir: /etc/proxy-orchestrator/runtime/nginx
+  decoy_site_dir: /etc/proxy-orchestrator/runtime/decoy-site
+
+storage:
+  sqlite_path: /var/lib/proxy-orchestrator/proxyctl.db
+
+runtime:
+  singbox_unit: proxyctl-sing-box.service
+  xray_unit: proxyctl-xray.service
+  caddy_unit: proxyctl-caddy.service
+  nginx_unit: proxyctl-nginx.service
+
+public:
+  https: true

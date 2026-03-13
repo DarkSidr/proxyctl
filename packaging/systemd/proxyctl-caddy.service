@@ -1,0 +1,14 @@
+[Unit]
+Description=proxyctl Caddy reverse proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/caddy run --environ --config /etc/proxy-orchestrator/runtime/caddy/Caddyfile --adapter caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/proxy-orchestrator/runtime/caddy/Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
