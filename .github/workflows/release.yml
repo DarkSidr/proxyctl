@@ -21,6 +21,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential
+
       - name: Run tests
         run: go test ./...
 
@@ -30,9 +35,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
             go build -trimpath -ldflags "-s -w -X proxyctl/internal/cli.Version=${VERSION}" \
             -o dist/proxyctl-linux-amd64 ./cmd/proxyctl
+          dist/proxyctl-linux-amd64 init --db /tmp/proxyctl.db
           sha256sum dist/proxyctl-linux-amd64 > dist/proxyctl-linux-amd64.sha256
 
       - name: Publish GitHub release

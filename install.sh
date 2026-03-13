@@ -298,7 +298,6 @@ install_proxyctl_from_source() {
     cd "${src_root}" && \
       GOCACHE="${tmpdir}/.cache/go-build" \
       GOMODCACHE="${tmpdir}/.cache/go-mod" \
-      CGO_ENABLED=0 \
       go build -trimpath -o "${output}" ./cmd/proxyctl
   ); then
     rm -rf "${tmpdir}"
