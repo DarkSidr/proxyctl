@@ -1,0 +1,32 @@
+# Build outputs
+/proxyctl
+/dist/
+/bin/
+
+# Go caches and workspace caches
+/.cache/
+
+# Test and coverage artifacts
+*.test
+*.out
+*.cover
+coverage.*
+
+# Runtime/local data
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*~
+
+# IDE/editor
+.idea/
+.vscode/
+
+# OS junk
+.DS_Store
+Thumbs.db

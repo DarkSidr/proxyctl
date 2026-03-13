@@ -1,9 +1,0 @@
-# test log
-stat ../../../templates/nginx/nginx.conf.tmpl
-open ../../../templates/nginx/nginx.conf.tmpl
-stat ../../../templates/decoy-site
-stat ../../../templates/decoy-site
-open ../../../templates/decoy-site
-open ../../../templates/decoy-site/assets
-open ../../../templates/decoy-site/assets/style.css
-open ../../../templates/decoy-site/index.html
