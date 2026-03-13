@@ -120,7 +120,7 @@ resolve_proxyctl_release_asset_url() {
   local api_url="https://api.github.com/repos/DarkSidr/proxyctl/releases/latest"
   local response
 
-  log "Resolving proxyctl release asset URL from GitHub API"
+  log "Resolving proxyctl release asset URL from GitHub API" >&2
   response="$(curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 "${api_url}")" || return 1
 
   local assets
@@ -261,6 +261,10 @@ install_proxyctl_binary() {
       local fallback_url=""
       if is_proxyctl_latest_download_url "${source_url}"; then
         fallback_url="$(resolve_proxyctl_release_asset_url || true)"
+      fi
+
+      if [[ -n "${fallback_url}" && ! "${fallback_url}" =~ ^https?:// ]]; then
+        fallback_url=""
       fi
 
       if [[ -n "${fallback_url}" ]]; then
