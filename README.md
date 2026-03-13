@@ -132,6 +132,36 @@ proxyctl inbound add \
 
 If `--tls-cert-path`/`--tls-key-path` are omitted, `proxyctl` auto-fills default Caddy storage paths based on inbound server name.
 
+## XHTTP (Xray)
+
+`xhttp` in MVP is rendered by Xray and exported as `vless://...` links with `type=xhttp`.
+
+When `--tls` is enabled for `xhttp`, `proxyctl` now writes Xray `tlsSettings.certificates` automatically:
+- if `--tls-cert-path` and `--tls-key-path` are set on inbound, those paths are used;
+- otherwise defaults are auto-filled from Caddy storage using inbound server name:
+  `/caddy/certificates/acme-v02.api.letsencrypt.org-directory/<server>/<server>.crt|.key`.
+
+```bash
+proxyctl inbound add \
+  --type xhttp \
+  --engine xray \
+  --transport xhttp \
+  --node-id <NODE_ID> \
+  --domain darksidr.icu \
+  --port 9443 \
+  --tls \
+  --tls-cert-path /caddy/certificates/acme-v02.api.letsencrypt.org-directory/darksidr.icu/darksidr.icu.crt \
+  --tls-key-path /caddy/certificates/acme-v02.api.letsencrypt.org-directory/darksidr.icu/darksidr.icu.key \
+  --path /xhttp
+```
+
+Then regenerate subscriptions:
+
+```bash
+proxyctl subscription generate <user>
+proxyctl subscription export <user> --format txt
+```
+
 ## Troubleshooting
 
 Quick operational diagnostics:
