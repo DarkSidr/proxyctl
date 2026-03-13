@@ -12,6 +12,7 @@ Optional environment variables:
 - `PROXYCTL_REINSTALL_BINARY=1` — force overwrite of existing `/usr/local/bin/proxyctl`.
 - `SINGBOX_BINARY_URL` — fallback URL for `sing-box` binary/archive.
 - `XRAY_BINARY_URL` — fallback URL for `xray` binary/archive.
+  - If runtime package is unavailable in apt, installer auto-resolves latest Linux amd64 asset from upstream GitHub release.
 
 Supported OS (MVP):
 - Debian 12

@@ -161,6 +161,34 @@ is_proxyctl_latest_download_url() {
   [[ "${url}" =~ ^https://github\.com/DarkSidr/proxyctl/releases/latest/download/ ]]
 }
 
+resolve_github_latest_asset_url() {
+  local repo="$1"
+  local pattern="$2"
+  local api_url="https://api.github.com/repos/${repo}/releases/latest"
+  local response
+
+  log "Resolving latest release asset for ${repo}" >&2
+  response="$(curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 "${api_url}")" || return 1
+
+  local assets
+  assets="$(printf '%s\n' "${response}" \
+    | grep -oE '"browser_download_url":"[^"]+"' \
+    | sed -E 's/^"browser_download_url":"(.*)"$/\1/' \
+    | sed 's#\\/#/#g')" || true
+
+  [[ -n "${assets}" ]] || return 1
+
+  local url
+  while IFS= read -r url; do
+    if [[ "${url}" =~ ${pattern} ]]; then
+      printf '%s\n' "${url}"
+      return 0
+    fi
+  done <<<"${assets}"
+
+  return 1
+}
+
 extract_and_install_binary() {
   local archive="$1"
   local binary_name="$2"
@@ -314,6 +342,21 @@ install_or_verify_runtime_binary() {
   if install_first_available_pkg "${binary_name}" "${package_candidates[@]}"; then
     log "Installed ${binary_name} from apt packages"
     return 0
+  fi
+
+  if [[ -z "${env_url}" ]]; then
+    case "${binary_name}" in
+      sing-box)
+        env_url="$(resolve_github_latest_asset_url "SagerNet/sing-box" 'sing-box-.*-linux-(amd64|x86_64)\.tar\.gz$' || true)"
+        ;;
+      xray)
+        env_url="$(resolve_github_latest_asset_url "XTLS/Xray-core" 'Xray-linux-64\.zip$' || true)"
+        ;;
+    esac
+
+    if [[ -n "${env_url}" ]]; then
+      log "Auto-resolved ${binary_name} binary URL: ${env_url}"
+    fi
   fi
 
   if [[ -n "${env_url}" ]]; then
