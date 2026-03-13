@@ -140,3 +140,41 @@ func TestRenderFailsWithoutRequiredCredentials(t *testing.T) {
 		t.Fatalf("Render() error = %q, want uuid credential error", err)
 	}
 }
+
+func TestRenderHysteria2TLSIncludesCertificatePaths(t *testing.T) {
+	t.Parallel()
+
+	r := New(nil)
+	got, err := r.Render(context.Background(), renderer.BuildRequest{
+		Node: domain.Node{Host: "darksidr.icu"},
+		Inbounds: []domain.Inbound{
+			{
+				ID:         "in-hy2",
+				Type:       domain.ProtocolHysteria2,
+				Engine:     domain.EngineSingBox,
+				Port:       8444,
+				Transport:  "udp",
+				TLSEnabled: true,
+				Enabled:    true,
+			},
+		},
+		Credentials: []domain.Credential{
+			{
+				ID:        "cred-hy2",
+				InboundID: "in-hy2",
+				Kind:      domain.CredentialKindPassword,
+				Secret:    "secret",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Render() unexpected error: %v", err)
+	}
+	body := string(got.PreviewJSON)
+	if !strings.Contains(body, `"certificate_path": "/caddy/certificates/acme-v02.api.letsencrypt.org-directory/darksidr.icu/darksidr.icu.crt"`) {
+		t.Fatalf("expected certificate_path in preview, got: %s", body)
+	}
+	if !strings.Contains(body, `"key_path": "/caddy/certificates/acme-v02.api.letsencrypt.org-directory/darksidr.icu/darksidr.icu.key"`) {
+		t.Fatalf("expected key_path in preview, got: %s", body)
+	}
+}

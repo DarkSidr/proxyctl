@@ -78,6 +78,8 @@ type Inbound struct {
 	Domain             string
 	Port               int
 	TLSEnabled         bool
+	TLSCertPath        string
+	TLSKeyPath         string
 	Transport          string
 	Path               string
 	SNI                string

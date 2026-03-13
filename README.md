@@ -111,6 +111,27 @@ proxyctl subscription generate <user>
 proxyctl subscription export <user> --format txt
 ```
 
+## Hysteria2 TLS (sing-box)
+
+`hysteria2` terminates TLS in `sing-box`, so certificate paths must be present in runtime config.
+
+`proxyctl` supports explicit TLS paths at inbound creation:
+
+```bash
+proxyctl inbound add \
+  --type hysteria2 \
+  --engine sing-box \
+  --transport udp \
+  --node-id <NODE_ID> \
+  --domain darksidr.icu \
+  --port 8444 \
+  --tls \
+  --tls-cert-path /caddy/certificates/acme-v02.api.letsencrypt.org-directory/darksidr.icu/darksidr.icu.crt \
+  --tls-key-path /caddy/certificates/acme-v02.api.letsencrypt.org-directory/darksidr.icu/darksidr.icu.key
+```
+
+If `--tls-cert-path`/`--tls-key-path` are omitted, `proxyctl` auto-fills default Caddy storage paths based on inbound server name.
+
 ## Troubleshooting
 
 Quick operational diagnostics:

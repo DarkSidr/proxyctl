@@ -267,6 +267,8 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 		domainRaw          string
 		port               int
 		tls                bool
+		tlsCertPath        string
+		tlsKeyPath         string
 		path               string
 		sni                string
 		reality            bool
@@ -354,6 +356,8 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 				Domain:             strings.TrimSpace(domainRaw),
 				Port:               port,
 				TLSEnabled:         tls,
+				TLSCertPath:        strings.TrimSpace(tlsCertPath),
+				TLSKeyPath:         strings.TrimSpace(tlsKeyPath),
 				Transport:          strings.ToLower(strings.TrimSpace(transport)),
 				Path:               strings.TrimSpace(path),
 				SNI:                strings.TrimSpace(sni),
@@ -398,6 +402,8 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 	cmd.Flags().StringVar(&domainRaw, "domain", "", "Inbound domain")
 	cmd.Flags().IntVar(&port, "port", 0, "Inbound listen port")
 	cmd.Flags().BoolVar(&tls, "tls", false, "Enable TLS for this inbound")
+	cmd.Flags().StringVar(&tlsCertPath, "tls-cert-path", "", "TLS certificate path for protocols that terminate TLS directly (e.g. hysteria2)")
+	cmd.Flags().StringVar(&tlsKeyPath, "tls-key-path", "", "TLS key path for protocols that terminate TLS directly (e.g. hysteria2)")
 	cmd.Flags().StringVar(&path, "path", "", "Transport path")
 	cmd.Flags().StringVar(&sni, "sni", "", "TLS SNI override")
 	cmd.Flags().BoolVar(&reality, "reality", false, "Enable VLESS Reality mode (requires --type vless --transport tcp --engine xray)")

@@ -77,8 +77,10 @@ type inboundConfig struct {
 }
 
 type tlsConfig struct {
-	Enabled    bool   `json:"enabled"`
-	ServerName string `json:"server_name,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	ServerName      string `json:"server_name,omitempty"`
+	CertificatePath string `json:"certificate_path,omitempty"`
+	KeyPath         string `json:"key_path,omitempty"`
 }
 
 type transport struct {
@@ -248,12 +250,35 @@ func buildHysteria2Inbound(node domain.Node, inbound domain.Inbound, credentials
 		Users:      rawUsers,
 	}
 	if inbound.TLSEnabled {
+		certPath, keyPath := resolveHysteria2TLSPaths(node.Host, inbound)
 		cfg.TLS = &tlsConfig{
-			Enabled:    true,
-			ServerName: serverName(inbound, node.Host),
+			Enabled:         true,
+			ServerName:      serverName(inbound, node.Host),
+			CertificatePath: certPath,
+			KeyPath:         keyPath,
 		}
 	}
 	return cfg, clients, nil
+}
+
+func resolveHysteria2TLSPaths(host string, inbound domain.Inbound) (string, string) {
+	certPath := strings.TrimSpace(inbound.TLSCertPath)
+	keyPath := strings.TrimSpace(inbound.TLSKeyPath)
+	if certPath != "" && keyPath != "" {
+		return certPath, keyPath
+	}
+	server := serverName(inbound, host)
+	if server == "" {
+		return certPath, keyPath
+	}
+	base := "/caddy/certificates/acme-v02.api.letsencrypt.org-directory/" + server + "/" + server
+	if certPath == "" {
+		certPath = base + ".crt"
+	}
+	if keyPath == "" {
+		keyPath = base + ".key"
+	}
+	return certPath, keyPath
 }
 
 func serverName(inbound domain.Inbound, fallbackHost string) string {

@@ -23,6 +23,8 @@ var schemaStatements = []string{
 		domain TEXT,
 		port INTEGER NOT NULL,
 		tls_enabled INTEGER NOT NULL DEFAULT 0,
+		tls_cert_path TEXT,
+		tls_key_path TEXT,
 		transport TEXT,
 		path TEXT,
 		sni TEXT,
@@ -73,4 +75,6 @@ var schemaMigrations = []string{
 	`ALTER TABLE inbounds ADD COLUMN reality_server TEXT`,
 	`ALTER TABLE inbounds ADD COLUMN reality_server_port INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE inbounds ADD COLUMN vless_flow TEXT`,
+	`ALTER TABLE inbounds ADD COLUMN tls_cert_path TEXT`,
+	`ALTER TABLE inbounds ADD COLUMN tls_key_path TEXT`,
 }

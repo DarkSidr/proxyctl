@@ -138,12 +138,12 @@ func (r *inboundRepository) Create(ctx context.Context, inbound domain.Inbound) 
 	_, err := r.db.ExecContext(
 		ctx,
 		`INSERT INTO inbounds (
-			id, type, engine, node_id, domain, port, tls_enabled, transport, path, sni,
+			id, type, engine, node_id, domain, port, tls_enabled, tls_cert_path, tls_key_path, transport, path, sni,
 			reality_enabled, reality_public_key, reality_private_key, reality_short_id,
 			reality_fingerprint, reality_spider_x, reality_server, reality_server_port, vless_flow,
 			enabled, created_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		inbound.ID,
 		inbound.Type,
 		inbound.Engine,
@@ -151,6 +151,8 @@ func (r *inboundRepository) Create(ctx context.Context, inbound domain.Inbound) 
 		inbound.Domain,
 		inbound.Port,
 		boolToInt(inbound.TLSEnabled),
+		inbound.TLSCertPath,
+		inbound.TLSKeyPath,
 		inbound.Transport,
 		inbound.Path,
 		inbound.SNI,
@@ -176,9 +178,9 @@ func (r *inboundRepository) List(ctx context.Context) ([]domain.Inbound, error) 
 	rows, err := r.db.QueryContext(
 		ctx,
 		`SELECT
-			id, type, engine, node_id, domain, port, tls_enabled, transport, path, sni,
-			reality_enabled, reality_public_key, reality_private_key, reality_short_id,
-			reality_fingerprint, reality_spider_x, reality_server, reality_server_port, vless_flow,
+			id, type, engine, node_id, COALESCE(domain, ''), port, tls_enabled, COALESCE(tls_cert_path, ''), COALESCE(tls_key_path, ''), COALESCE(transport, ''), COALESCE(path, ''), COALESCE(sni, ''),
+			reality_enabled, COALESCE(reality_public_key, ''), COALESCE(reality_private_key, ''), COALESCE(reality_short_id, ''),
+			COALESCE(reality_fingerprint, ''), COALESCE(reality_spider_x, ''), COALESCE(reality_server, ''), reality_server_port, COALESCE(vless_flow, ''),
 			enabled, created_at
 		FROM inbounds ORDER BY created_at ASC, id ASC`,
 	)
@@ -204,6 +206,8 @@ func (r *inboundRepository) List(ctx context.Context) ([]domain.Inbound, error) 
 			&inbound.Domain,
 			&inbound.Port,
 			&tls,
+			&inbound.TLSCertPath,
+			&inbound.TLSKeyPath,
 			&inbound.Transport,
 			&inbound.Path,
 			&inbound.SNI,
