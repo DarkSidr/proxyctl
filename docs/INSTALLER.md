@@ -7,7 +7,8 @@ bash <(curl -fsSL <INSTALL_SH_URL>)
 ```
 
 Optional environment variables:
-- `PROXYCTL_BINARY_URL` — URL to `proxyctl` binary/archive (default: `https://github.com/darksidr/proxmax/releases/latest/download/proxyctl-linux-amd64`).
+- `PROXYCTL_BINARY_URL` — URL to `proxyctl` binary/archive (default: `https://github.com/DarkSidr/proxyctl/releases/latest/download/proxyctl-linux-amd64`).
+  - If that URL returns `404`, installer automatically resolves a compatible `linux/amd64` asset from the latest GitHub release and retries.
 - `PROXYCTL_REINSTALL_BINARY=1` — force overwrite of existing `/usr/local/bin/proxyctl`.
 - `SINGBOX_BINARY_URL` — fallback URL for `sing-box` binary/archive.
 - `XRAY_BINARY_URL` — fallback URL for `xray` binary/archive.

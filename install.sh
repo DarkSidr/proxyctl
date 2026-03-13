@@ -19,7 +19,7 @@ readonly BIN_DIR="/usr/local/bin"
 readonly SYSTEMD_DIR="/etc/systemd/system"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 
-PROXYCTL_BINARY_URL="${PROXYCTL_BINARY_URL:-https://github.com/darksidr/proxmax/releases/latest/download/proxyctl-linux-amd64}"
+PROXYCTL_BINARY_URL="${PROXYCTL_BINARY_URL:-https://github.com/DarkSidr/proxyctl/releases/latest/download/proxyctl-linux-amd64}"
 PROXYCTL_VERSION="${PROXYCTL_VERSION:-latest}"
 PROXYCTL_REINSTALL_BINARY="${PROXYCTL_REINSTALL_BINARY:-0}"
 
@@ -116,6 +116,51 @@ download_file() {
   curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 "${url}" -o "${out}"
 }
 
+resolve_proxyctl_release_asset_url() {
+  local api_url="https://api.github.com/repos/DarkSidr/proxyctl/releases/latest"
+  local response
+
+  log "Resolving proxyctl release asset URL from GitHub API"
+  response="$(curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 "${api_url}")" || return 1
+
+  local assets
+  assets="$(printf '%s\n' "${response}" \
+    | grep -oE '"browser_download_url":"[^"]+"' \
+    | sed -E 's/^"browser_download_url":"(.*)"$/\1/' \
+    | sed 's#\\/#/#g')" || true
+
+  [[ -n "${assets}" ]] || return 1
+
+  local url
+  while IFS= read -r url; do
+    if [[ "${url}" =~ /proxyctl-linux-amd64$ ]]; then
+      printf '%s\n' "${url}"
+      return 0
+    fi
+  done <<<"${assets}"
+
+  while IFS= read -r url; do
+    if [[ "${url}" =~ /proxyctl([._-][0-9A-Za-z.-]+)?[-_]?linux[-_](amd64|x86_64)(\.(tar\.gz|tgz|zip))?$ ]]; then
+      printf '%s\n' "${url}"
+      return 0
+    fi
+  done <<<"${assets}"
+
+  while IFS= read -r url; do
+    if [[ "${url}" =~ /proxyctl.*(Linux|linux).*(amd64|x86_64).*(\.tar\.gz|\.tgz|\.zip)?$ ]]; then
+      printf '%s\n' "${url}"
+      return 0
+    fi
+  done <<<"${assets}"
+
+  return 1
+}
+
+is_proxyctl_latest_download_url() {
+  local url="$1"
+  [[ "${url}" =~ ^https://github\.com/DarkSidr/proxyctl/releases/latest/download/ ]]
+}
+
 extract_and_install_binary() {
   local archive="$1"
   local binary_name="$2"
@@ -206,12 +251,29 @@ install_proxyctl_binary() {
   fi
 
   if [[ -n "${PROXYCTL_BINARY_URL}" ]]; then
-    local tmpdir filename tmp
+    local tmpdir filename tmp source_url
     tmpdir="$(mktemp -d)"
-    filename="$(basename "${PROXYCTL_BINARY_URL%%\?*}")"
+    source_url="${PROXYCTL_BINARY_URL}"
+    filename="$(basename "${source_url%%\?*}")"
     [[ -n "${filename}" ]] || filename="proxyctl.bin"
     tmp="${tmpdir}/${filename}"
-    download_file "${PROXYCTL_BINARY_URL}" "${tmp}"
+    if ! download_file "${source_url}" "${tmp}"; then
+      local fallback_url=""
+      if is_proxyctl_latest_download_url "${source_url}"; then
+        fallback_url="$(resolve_proxyctl_release_asset_url || true)"
+      fi
+
+      if [[ -n "${fallback_url}" ]]; then
+        warn "Failed to download ${source_url}; trying resolved asset ${fallback_url}"
+        filename="$(basename "${fallback_url%%\?*}")"
+        [[ -n "${filename}" ]] || filename="proxyctl.bin"
+        tmp="${tmpdir}/${filename}"
+        download_file "${fallback_url}" "${tmp}"
+      else
+        rm -rf "${tmpdir}"
+        fail "failed to download proxyctl binary from ${source_url}"
+      fi
+    fi
     extract_and_install_binary "${tmp}" "proxyctl" "${target}"
     rm -rf "${tmpdir}"
     log "Installed proxyctl binary from PROXYCTL_BINARY_URL"
