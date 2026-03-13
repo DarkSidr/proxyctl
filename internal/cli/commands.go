@@ -3,7 +3,9 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -90,7 +92,7 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "wizard",
 		Short: "Run interactive setup wizard",
-		Long:  "Starts an interactive wizard for common proxyctl flows (inbound setup, user management, and self-update).",
+		Long:  "Starts an interactive wizard for common proxyctl flows (user management and self-update).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			in := bufio.NewReader(cmd.InOrStdin())
 			out := cmd.OutOrStdout()
@@ -98,11 +100,10 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 			fmt.Fprintln(out, "proxyctl wizard")
 			for {
 				action, err := promptChoice(in, out, "Action", []string{
-					"inbound add (interactive)",
 					"users",
 					"update proxyctl",
 					"exit",
-				}, "inbound add (interactive)")
+				}, "users")
 				if err != nil {
 					if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 						fmt.Fprintln(out, "wizard cancelled")
@@ -112,10 +113,6 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 				}
 
 				switch action {
-				case "inbound add (interactive)":
-					if err := runProxyctlSubcommand(cmd, "inbound", "add", "--db", *dbPath); err != nil {
-						return err
-					}
 				case "users":
 					if err := runWizardUsersMenu(cmd, *configPath, *dbPath); err != nil {
 						return err
@@ -431,7 +428,7 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 				if !stdinIsTerminal(cmd.InOrStdin()) {
 					return fmt.Errorf("--type is required")
 				}
-				prompted, err := promptInboundAddWizard(cmd, *dbPath)
+				prompted, err := promptInboundAddWizard(cmd, *dbPath, strings.TrimSpace(linkUserID))
 				if err != nil {
 					return err
 				}
@@ -564,7 +561,7 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 				created.CreatedAt.Format(time.RFC3339),
 			)
 
-			if usedWizard && strings.TrimSpace(linkUserID) != "" {
+			if strings.TrimSpace(linkUserID) != "" {
 				node, err := findNodeByID(cmd.Context(), store, created.NodeID)
 				if err != nil {
 					return err
@@ -577,11 +574,13 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("create credential for immediate client URI: %w", err)
 				}
-				uri, err := renderSingleClientURI(cmd.Context(), node, created, createdCred)
-				if err != nil {
-					return fmt.Errorf("build client URI: %w", err)
+				if usedWizard {
+					uri, err := renderSingleClientURI(cmd.Context(), node, created, createdCred)
+					if err != nil {
+						return fmt.Errorf("build client URI: %w", err)
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "client uri: %s\n", uri)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "client uri: %s\n", uri)
 			}
 			return nil
 		},
@@ -607,6 +606,7 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 	cmd.Flags().StringVar(&realityServer, "reality-server", "", "Reality handshake destination server (dest host)")
 	cmd.Flags().IntVar(&realityServerPort, "reality-server-port", 0, "Reality handshake destination server port (dest port)")
 	cmd.Flags().StringVar(&vlessFlow, "vless-flow", "", "VLESS flow (for Reality typically xtls-rprx-vision)")
+	cmd.Flags().StringVar(&linkUserID, "link-user-id", "", "Optional user ID to auto-create credential for this inbound")
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "Whether inbound is enabled")
 
 	return cmd
@@ -637,7 +637,7 @@ type inboundAddPromptResult struct {
 	linkUserID         string
 }
 
-func promptInboundAddWizard(cmd *cobra.Command, dbPath string) (inboundAddPromptResult, error) {
+func promptInboundAddWizard(cmd *cobra.Command, dbPath, linkedUserID string) (inboundAddPromptResult, error) {
 	in := bufio.NewReader(cmd.InOrStdin())
 	out := cmd.OutOrStdout()
 
@@ -783,13 +783,28 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath string) (inboundAddPrompt
 			return inboundAddPromptResult{}, err
 		}
 		if reality {
-			realityPublicKey, err = promptLineRequired(in, out, "Reality public key")
+			keyMode, err := promptChoice(in, out, "Reality keys", []string{
+				"generate automatically",
+				"enter manually",
+			}, "generate automatically")
 			if err != nil {
 				return inboundAddPromptResult{}, err
 			}
-			realityPrivateKey, err = promptLineRequired(in, out, "Reality private key")
-			if err != nil {
-				return inboundAddPromptResult{}, err
+			if keyMode == "generate automatically" {
+				realityPublicKey, realityPrivateKey, err = generateRealityKeyPair()
+				if err != nil {
+					return inboundAddPromptResult{}, fmt.Errorf("generate reality keys: %w", err)
+				}
+				fmt.Fprintln(out, "Reality keys generated automatically")
+			} else {
+				realityPublicKey, err = promptLineRequired(in, out, "Reality public key")
+				if err != nil {
+					return inboundAddPromptResult{}, err
+				}
+				realityPrivateKey, err = promptLineRequired(in, out, "Reality private key")
+				if err != nil {
+					return inboundAddPromptResult{}, err
+				}
 			}
 			realityServer, err = promptLineRequired(in, out, "Reality server (dest host)")
 			if err != nil {
@@ -803,7 +818,7 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath string) (inboundAddPrompt
 			if err != nil {
 				return inboundAddPromptResult{}, err
 			}
-			realityFingerprint, err = promptLine(in, out, "Reality fingerprint", "chrome")
+			realityFingerprint, err = promptRealityFingerprint(in, out, "chrome")
 			if err != nil {
 				return inboundAddPromptResult{}, err
 			}
@@ -824,30 +839,35 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath string) (inboundAddPrompt
 	}
 
 	linkUserID := ""
-	users, err := store.Users().List(cmd.Context())
-	if err != nil {
-		return inboundAddPromptResult{}, err
-	}
-	linkOptions := []string{"skip"}
-	userByOption := map[string]string{}
-	for _, user := range users {
-		if !user.Enabled {
-			continue
-		}
-		item := fmt.Sprintf("%s (%s)", user.ID, user.Name)
-		linkOptions = append(linkOptions, item)
-		userByOption[item] = user.ID
-	}
-	if len(linkOptions) > 1 {
-		linkChoice, err := promptChoice(in, out, "Create client link for user", linkOptions, "skip")
+	if strings.TrimSpace(linkedUserID) != "" {
+		linkUserID = strings.TrimSpace(linkedUserID)
+		fmt.Fprintf(out, "Create client link for user ID: %s\n", linkUserID)
+	} else {
+		users, err := store.Users().List(cmd.Context())
 		if err != nil {
 			return inboundAddPromptResult{}, err
 		}
-		if linkChoice != "skip" {
-			linkUserID = userByOption[linkChoice]
+		linkOptions := []string{"skip"}
+		userByOption := map[string]string{}
+		for _, user := range users {
+			if !user.Enabled {
+				continue
+			}
+			item := fmt.Sprintf("%s (%s)", user.ID, user.Name)
+			linkOptions = append(linkOptions, item)
+			userByOption[item] = user.ID
 		}
-	} else {
-		fmt.Fprintln(out, "No enabled users found, skipping immediate client link creation")
+		if len(linkOptions) > 1 {
+			linkChoice, err := promptChoice(in, out, "Create client link for user", linkOptions, "skip")
+			if err != nil {
+				return inboundAddPromptResult{}, err
+			}
+			if linkChoice != "skip" {
+				linkUserID = userByOption[linkChoice]
+			}
+		} else {
+			fmt.Fprintln(out, "No enabled users found, skipping immediate client link creation")
+		}
 	}
 
 	return inboundAddPromptResult{
@@ -1138,12 +1158,13 @@ func promptWizardSelectUser(cmd *cobra.Command, in *bufio.Reader, out io.Writer,
 func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
 	for {
 		action, err := promptChoice(in, out, fmt.Sprintf("User %s (%s)", user.Name, user.ID), []string{
+			"create inbound for this user",
 			"show configs",
 			"open credential",
 			"delete specific config",
 			"delete user completely",
 			"back",
-		}, "show configs")
+		}, "create inbound for this user")
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				fmt.Fprintln(out, "user menu cancelled")
@@ -1153,6 +1174,10 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 		}
 
 		switch action {
+		case "create inbound for this user":
+			if err := runProxyctlSubcommand(cmd, "inbound", "add", "--db", dbPath, "--link-user-id", user.ID); err != nil {
+				return err
+			}
 		case "show configs":
 			if err := runWizardShowUserConfigs(cmd, out, dbPath, user); err != nil {
 				return err
@@ -1938,6 +1963,53 @@ func randomHex(bytes int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func generateRealityKeyPair() (publicKey, privateKey string, err error) {
+	private, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+	publicKey = base64.RawURLEncoding.EncodeToString(private.PublicKey().Bytes())
+	privateKey = base64.RawURLEncoding.EncodeToString(private.Bytes())
+	return publicKey, privateKey, nil
+}
+
+func promptRealityFingerprint(in *bufio.Reader, out io.Writer, defaultValue string) (string, error) {
+	preset, err := promptChoice(in, out, "Reality fingerprint", []string{
+		"chrome (google)",
+		"safari",
+		"firefox",
+		"edge",
+		"ios",
+		"android",
+		"custom",
+	}, "chrome (google)")
+	if err != nil {
+		return "", err
+	}
+	switch preset {
+	case "chrome (google)":
+		return "chrome", nil
+	case "safari":
+		return "safari", nil
+	case "firefox":
+		return "firefox", nil
+	case "edge":
+		return "edge", nil
+	case "ios":
+		return "ios", nil
+	case "android":
+		return "android", nil
+	case "custom":
+		value, err := promptLine(in, out, "Custom reality fingerprint", defaultValue)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(value), nil
+	default:
+		return defaultValue, nil
+	}
 }
 
 func newInboundListCmd(dbPath *string) *cobra.Command {
