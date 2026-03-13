@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,6 +42,13 @@ import (
 
 const defaultUpdateInstallURL = "https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh"
 const defaultLatestReleaseAPIURL = "https://api.github.com/repos/DarkSidr/proxyctl/releases/latest"
+
+var lookPath = exec.LookPath
+var runCommandOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
 
 func newGroupCmd(use, short, long string) *cobra.Command {
 	return &cobra.Command{
@@ -100,10 +108,11 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 			fmt.Fprintln(out, "proxyctl wizard")
 			for {
 				action, err := promptChoice(in, out, "Action", []string{
+					"inbounds",
 					"users",
 					"update proxyctl",
 					"exit",
-				}, "users")
+				}, "inbounds")
 				if err != nil {
 					if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 						fmt.Fprintln(out, "wizard cancelled")
@@ -113,6 +122,10 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 				}
 
 				switch action {
+				case "inbounds":
+					if err := runWizardInboundsMenu(cmd, *configPath, *dbPath); err != nil {
+						return err
+					}
 				case "users":
 					if err := runWizardUsersMenu(cmd, *configPath, *dbPath); err != nil {
 						return err
@@ -136,6 +149,7 @@ func newUpdateCmd() *cobra.Command {
 	channel := "auto"
 	reinstallBinary := true
 	force := false
+	ensureCaddy := true
 
 	cmd := &cobra.Command{
 		Use:   "update",
@@ -193,6 +207,11 @@ func newUpdateCmd() *cobra.Command {
 			if err := updateCmd.Run(); err != nil {
 				return fmt.Errorf("self-update failed: %w", err)
 			}
+			if ensureCaddy {
+				if err := ensureCaddyServiceHealthy(cmd.Context(), cmd.OutOrStdout()); err != nil {
+					return err
+				}
+			}
 			fmt.Fprintln(cmd.OutOrStdout(), "proxyctl update completed")
 			return nil
 		},
@@ -203,7 +222,45 @@ func newUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&channel, "channel", channel, "Install channel passed to installer (auto|release|source|url|local)")
 	cmd.Flags().BoolVar(&reinstallBinary, "reinstall-binary", reinstallBinary, "Force proxyctl binary reinstall")
 	cmd.Flags().BoolVar(&force, "force", force, "Bypass version comparison and force update")
+	cmd.Flags().BoolVar(&ensureCaddy, "ensure-caddy", ensureCaddy, "Check proxyctl-caddy.service state after update and auto-start it when inactive")
 	return cmd
+}
+
+func ensureCaddyServiceHealthy(ctx context.Context, out io.Writer) error {
+	if _, err := lookPath("systemctl"); err != nil {
+		fmt.Fprintln(out, "caddy service check skipped: systemctl not found")
+		return nil
+	}
+
+	loadState, err := runCommandOutput(ctx, "systemctl", "show", "proxyctl-caddy.service", "--property=LoadState", "--value")
+	if err != nil {
+		return fmt.Errorf("check proxyctl-caddy.service load state: %w", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(loadState), "not-found") {
+		fmt.Fprintln(out, "caddy service check skipped: proxyctl-caddy.service is not installed")
+		return nil
+	}
+
+	activeState, err := runCommandOutput(ctx, "systemctl", "is-active", "proxyctl-caddy.service")
+	if err == nil && strings.EqualFold(strings.TrimSpace(activeState), "active") {
+		fmt.Fprintln(out, "caddy service is active")
+		return nil
+	}
+
+	fmt.Fprintln(out, "caddy service is inactive, enabling and starting...")
+	if _, err := runCommandOutput(ctx, "systemctl", "enable", "--now", "proxyctl-caddy.service"); err != nil {
+		return fmt.Errorf("enable/start proxyctl-caddy.service: %w", err)
+	}
+
+	activeState, err = runCommandOutput(ctx, "systemctl", "is-active", "proxyctl-caddy.service")
+	if err != nil {
+		return fmt.Errorf("verify proxyctl-caddy.service active state: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(activeState), "active") {
+		return fmt.Errorf("proxyctl-caddy.service is %q after start attempt", strings.TrimSpace(activeState))
+	}
+	fmt.Fprintln(out, "caddy service started and active")
+	return nil
 }
 
 func newUserCmd(dbPath *string) *cobra.Command {
@@ -416,6 +473,7 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 		vlessFlow          string
 		enabled            bool
 		linkUserID         string
+		allowPort443       bool
 	)
 
 	cmd := &cobra.Command{
@@ -469,6 +527,9 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 			if port <= 0 || port > 65535 {
 				return fmt.Errorf("--port must be in range 1..65535")
 			}
+			if port == 443 && !allowPort443 {
+				return fmt.Errorf("--port 443 is reserved by default; use --allow-port-443 for advanced/custom setup")
+			}
 
 			store, err := openStoreWithInit(cmd.Context(), *dbPath)
 			if err != nil {
@@ -506,6 +567,13 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 				}
 				if strings.TrimSpace(vlessFlow) == "" {
 					vlessFlow = "xtls-rprx-vision"
+				}
+				if strings.TrimSpace(realityShortID) == "" {
+					realityShortID, err = randomHex(4)
+					if err != nil {
+						return fmt.Errorf("generate reality short id: %w", err)
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "reality short id generated automatically: %s\n", realityShortID)
 				}
 			}
 
@@ -608,6 +676,7 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 	cmd.Flags().StringVar(&vlessFlow, "vless-flow", "", "VLESS flow (for Reality typically xtls-rprx-vision)")
 	cmd.Flags().StringVar(&linkUserID, "link-user-id", "", "Optional user ID to auto-create credential for this inbound")
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "Whether inbound is enabled")
+	cmd.Flags().BoolVar(&allowPort443, "allow-port-443", false, "Allow using TCP/UDP port 443 (reserved by default)")
 
 	return cmd
 }
@@ -685,6 +754,17 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath, linkedUserID string) (in
 	if len(nodes) == 0 {
 		return inboundAddPromptResult{}, fmt.Errorf("no nodes found; add a node first with `proxyctl node add`")
 	}
+	inbounds, err := store.Inbounds().List(cmd.Context())
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+	usedPorts := make(map[int]struct{}, len(inbounds))
+	for _, item := range inbounds {
+		if !item.Enabled || item.Port <= 0 {
+			continue
+		}
+		usedPorts[item.Port] = struct{}{}
+	}
 
 	nodeOptions := make([]string, 0, len(nodes))
 	nodeByOption := make(map[string]domain.Node, len(nodes))
@@ -705,23 +785,34 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath, linkedUserID string) (in
 		return inboundAddPromptResult{}, err
 	}
 
-	defaultPort := 443
-	switch protocol {
-	case "hysteria2":
-		defaultPort = 8444
-	case "xhttp":
-		defaultPort = 9443
-	case "vless":
-		switch transport {
-		case "ws":
-			defaultPort = 8443
-		case "grpc":
-			defaultPort = 9443
-		}
-	}
+	defaultPort := suggestWizardPort(protocol, transport, usedPorts, hostPortBusy)
 	port, err := promptInt(in, out, "Port", defaultPort)
 	if err != nil {
 		return inboundAddPromptResult{}, err
+	}
+	network := wizardPortNetwork(protocol, transport)
+	if isWizardPortBusy(port, usedPorts, network, hostPortBusy) {
+		suggested := suggestWizardPort(protocol, transport, usedPorts, hostPortBusy)
+		if suggested != port {
+			switchNow, err := promptBool(in, out, fmt.Sprintf("Port %d appears occupied. Switch to %d (y/n)", port, suggested), true)
+			if err != nil {
+				return inboundAddPromptResult{}, err
+			}
+			if switchNow {
+				port = suggested
+				fmt.Fprintf(out, "Using suggested free port: %d\n", port)
+			}
+		}
+	}
+	if port == 443 {
+		use443, err := promptBool(in, out, "Port 443 is reserved by default. Use it anyway for advanced setup (y/n)", false)
+		if err != nil {
+			return inboundAddPromptResult{}, err
+		}
+		if !use443 {
+			port = defaultPort
+			fmt.Fprintf(out, "Using safer default port: %d\n", port)
+		}
 	}
 
 	defaultTLS := protocol == "hysteria2" || protocol == "xhttp" || transport == "ws" || transport == "grpc"
@@ -783,56 +874,91 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath, linkedUserID string) (in
 			return inboundAddPromptResult{}, err
 		}
 		if reality {
-			keyMode, err := promptChoice(in, out, "Reality keys", []string{
-				"generate automatically",
-				"enter manually",
-			}, "generate automatically")
+			realityMode, err := promptChoice(in, out, "Reality setup mode", []string{
+				"quick (recommended)",
+				"advanced (manual overrides)",
+			}, "quick (recommended)")
 			if err != nil {
 				return inboundAddPromptResult{}, err
 			}
-			if keyMode == "generate automatically" {
+			if realityMode == "quick (recommended)" {
 				realityPublicKey, realityPrivateKey, err = generateRealityKeyPair()
 				if err != nil {
 					return inboundAddPromptResult{}, fmt.Errorf("generate reality keys: %w", err)
 				}
 				fmt.Fprintln(out, "Reality keys generated automatically")
+				realityShortID, err = randomHex(4)
+				if err != nil {
+					return inboundAddPromptResult{}, fmt.Errorf("generate reality short id: %w", err)
+				}
+				fmt.Fprintf(out, "Reality short id generated automatically: %s\n", realityShortID)
+				realityServer = "www.cloudflare.com"
+				realityServerPort = 443
+				realityFingerprint = "chrome"
+				vlessFlow = "xtls-rprx-vision"
+				if strings.TrimSpace(sni) == "" {
+					sni = realityServer
+					fmt.Fprintf(out, "SNI auto-set to Reality server: %s\n", sni)
+				}
 			} else {
-				realityPublicKey, err = promptLineRequired(in, out, "Reality public key")
+				keyMode, err := promptChoice(in, out, "Reality keys", []string{
+					"generate automatically",
+					"enter manually",
+				}, "generate automatically")
 				if err != nil {
 					return inboundAddPromptResult{}, err
 				}
-				realityPrivateKey, err = promptLineRequired(in, out, "Reality private key")
+				if keyMode == "generate automatically" {
+					realityPublicKey, realityPrivateKey, err = generateRealityKeyPair()
+					if err != nil {
+						return inboundAddPromptResult{}, fmt.Errorf("generate reality keys: %w", err)
+					}
+					fmt.Fprintln(out, "Reality keys generated automatically")
+				} else {
+					realityPublicKey, err = promptLineRequired(in, out, "Reality public key")
+					if err != nil {
+						return inboundAddPromptResult{}, err
+					}
+					realityPrivateKey, err = promptLineRequired(in, out, "Reality private key")
+					if err != nil {
+						return inboundAddPromptResult{}, err
+					}
+				}
+				realityServer, err = promptRealityServer(in, out)
 				if err != nil {
 					return inboundAddPromptResult{}, err
 				}
-			}
-			realityServer, err = promptRealityServer(in, out)
-			if err != nil {
-				return inboundAddPromptResult{}, err
-			}
-			if strings.TrimSpace(sni) == "" {
-				sni = strings.TrimSpace(realityServer)
-				fmt.Fprintf(out, "SNI auto-set to Reality server: %s\n", sni)
-			}
-			realityServerPort, err = promptInt(in, out, "Reality server port", 443)
-			if err != nil {
-				return inboundAddPromptResult{}, err
-			}
-			realityShortID, err = promptLine(in, out, "Reality short id (optional)", "")
-			if err != nil {
-				return inboundAddPromptResult{}, err
-			}
-			realityFingerprint, err = promptRealityFingerprint(in, out, "chrome")
-			if err != nil {
-				return inboundAddPromptResult{}, err
-			}
-			realitySpiderX, err = promptLine(in, out, "Reality spiderX path (optional)", "")
-			if err != nil {
-				return inboundAddPromptResult{}, err
-			}
-			vlessFlow, err = promptLine(in, out, "VLESS flow", "xtls-rprx-vision")
-			if err != nil {
-				return inboundAddPromptResult{}, err
+				if strings.TrimSpace(sni) == "" {
+					sni = strings.TrimSpace(realityServer)
+					fmt.Fprintf(out, "SNI auto-set to Reality server: %s\n", sni)
+				}
+				realityServerPort, err = promptInt(in, out, "Reality server port", 443)
+				if err != nil {
+					return inboundAddPromptResult{}, err
+				}
+				realityShortID, err = promptLine(in, out, "Reality short id (optional, auto-generated when empty)", "")
+				if err != nil {
+					return inboundAddPromptResult{}, err
+				}
+				if strings.TrimSpace(realityShortID) == "" {
+					realityShortID, err = randomHex(4)
+					if err != nil {
+						return inboundAddPromptResult{}, fmt.Errorf("generate reality short id: %w", err)
+					}
+					fmt.Fprintf(out, "Reality short id generated automatically: %s\n", realityShortID)
+				}
+				realityFingerprint, err = promptRealityFingerprint(in, out, "chrome")
+				if err != nil {
+					return inboundAddPromptResult{}, err
+				}
+				realitySpiderX, err = promptLine(in, out, "Reality spiderX path (optional)", "")
+				if err != nil {
+					return inboundAddPromptResult{}, err
+				}
+				vlessFlow, err = promptLine(in, out, "VLESS flow", "xtls-rprx-vision")
+				if err != nil {
+					return inboundAddPromptResult{}, err
+				}
 			}
 		}
 	}
@@ -904,8 +1030,10 @@ func promptChoice(in *bufio.Reader, out io.Writer, label string, options []strin
 	displayOptions := make([]string, 0, len(options))
 	backOption := ""
 	for _, opt := range options {
-		if backOption == "" && strings.EqualFold(strings.TrimSpace(opt), "back") {
-			backOption = opt
+		if isBackOptionLabel(opt) {
+			if backOption == "" {
+				backOption = "back"
+			}
 			continue
 		}
 		displayOptions = append(displayOptions, opt)
@@ -943,6 +1071,9 @@ func promptChoice(in *bufio.Reader, out io.Writer, label string, options []strin
 			}
 		}
 		if resolved, ok := optionMap[strings.ToLower(line)]; ok {
+			if isBackOptionLabel(resolved) && backOption != "" {
+				return backOption, nil
+			}
 			return resolved, nil
 		}
 		allowed := make([]string, 0, len(displayOptions)+1)
@@ -952,6 +1083,17 @@ func promptChoice(in *bufio.Reader, out io.Writer, label string, options []strin
 		}
 		fmt.Fprintf(out, "invalid value, choose one of: %s\n", strings.Join(allowed, ", "))
 	}
+}
+
+func isBackOptionLabel(value string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "back" || trimmed == "0" || trimmed == "0) back" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "0)") {
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "0)")) == "back"
+	}
+	return false
 }
 
 func promptLine(in *bufio.Reader, out io.Writer, label, defaultValue string) (string, error) {
@@ -1157,6 +1299,62 @@ func runWizardUsersList(cmd *cobra.Command, dbPath string) error {
 	return w.Flush()
 }
 
+func runWizardInboundsMenu(cmd *cobra.Command, configPath, dbPath string) error {
+	in := bufio.NewReader(cmd.InOrStdin())
+	out := cmd.OutOrStdout()
+
+	for {
+		action, err := promptChoice(in, out, "Inbounds", []string{
+			"list inbounds",
+			"create inbound",
+			"open inbound",
+			"back",
+		}, "list inbounds")
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				fmt.Fprintln(out, "inbounds menu cancelled")
+				return nil
+			}
+			return err
+		}
+
+		switch action {
+		case "list inbounds":
+			if err := runProxyctlSubcommand(cmd, "inbound", "list", "--db", dbPath); err != nil {
+				return err
+			}
+		case "create inbound":
+			if err := runProxyctlSubcommand(cmd, "inbound", "add", "--db", dbPath); err != nil {
+				return err
+			}
+			applyNow, err := promptBool(in, out, "Apply runtime changes now (y/n)", true)
+			if err != nil {
+				return err
+			}
+			if applyNow {
+				if err := runProxyctlSubcommand(cmd, "apply", "--config", configPath, "--db", dbPath); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintln(out, "inbound saved; run `proxyctl apply --config /etc/proxy-orchestrator/proxyctl.yaml` to activate it")
+			}
+		case "open inbound":
+			inbound, ok, err := promptWizardSelectInbound(cmd, in, out, dbPath)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			if err := runWizardInboundMenu(cmd, in, out, configPath, dbPath, inbound); err != nil {
+				return err
+			}
+		default:
+			return nil
+		}
+	}
+}
+
 func promptWizardSelectUser(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string) (domain.User, bool, error) {
 	store, err := openStoreWithInit(cmd.Context(), dbPath)
 	if err != nil {
@@ -1180,16 +1378,51 @@ func promptWizardSelectUser(cmd *cobra.Command, in *bufio.Reader, out io.Writer,
 	return userByChoice[userChoice], true, nil
 }
 
+func promptWizardSelectInbound(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string) (domain.Inbound, bool, error) {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return domain.Inbound{}, false, err
+	}
+	defer store.Close()
+
+	inbounds, err := store.Inbounds().List(cmd.Context())
+	if err != nil {
+		return domain.Inbound{}, false, err
+	}
+	if len(inbounds) == 0 {
+		fmt.Fprintln(out, "no inbounds found")
+		return domain.Inbound{}, false, nil
+	}
+
+	options := make([]string, 0, len(inbounds))
+	byOption := make(map[string]domain.Inbound, len(inbounds))
+	for _, inbound := range inbounds {
+		status := "disabled"
+		if inbound.Enabled {
+			status = "enabled"
+		}
+		label := fmt.Sprintf("%s (%s/%s %s:%d, %s)", inbound.ID, inbound.Type, inbound.Transport, inbound.Domain, inbound.Port, status)
+		options = append(options, label)
+		byOption[label] = inbound
+	}
+
+	choice, err := promptChoice(in, out, "Select inbound", options, options[0])
+	if err != nil {
+		return domain.Inbound{}, false, err
+	}
+	return byOption[choice], true, nil
+}
+
 func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
 	for {
 		action, err := promptChoice(in, out, fmt.Sprintf("User %s (%s)", user.Name, user.ID), []string{
-			"create inbound for this user",
+			"attach to existing inbound",
 			"show configs",
 			"open credential",
 			"delete specific config",
 			"delete user completely",
 			"back",
-		}, "create inbound for this user")
+		}, "attach to existing inbound")
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				fmt.Fprintln(out, "user menu cancelled")
@@ -1199,20 +1432,9 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 		}
 
 		switch action {
-		case "create inbound for this user":
-			if err := runProxyctlSubcommand(cmd, "inbound", "add", "--db", dbPath, "--link-user-id", user.ID); err != nil {
+		case "attach to existing inbound":
+			if err := runWizardAttachUserToInbound(cmd, in, out, configPath, dbPath, user); err != nil {
 				return err
-			}
-			applyNow, err := promptBool(in, out, "Apply runtime changes now (y/n)", true)
-			if err != nil {
-				return err
-			}
-			if applyNow {
-				if err := runProxyctlSubcommand(cmd, "apply", "--config", configPath, "--db", dbPath); err != nil {
-					return err
-				}
-			} else {
-				fmt.Fprintln(out, "inbound saved; run `proxyctl apply --config /etc/proxy-orchestrator/proxyctl.yaml` to activate it")
 			}
 		case "show configs":
 			if err := runWizardShowUserConfigs(cmd, out, dbPath, user); err != nil {
@@ -1238,6 +1460,139 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 			return nil
 		}
 	}
+}
+
+func runWizardInboundMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, inbound domain.Inbound) error {
+	for {
+		action, err := promptChoice(in, out, fmt.Sprintf("Inbound %s (%s/%s %s:%d)", inbound.ID, inbound.Type, inbound.Transport, inbound.Domain, inbound.Port), []string{
+			"show users",
+			"attach user",
+			"back",
+		}, "show users")
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				fmt.Fprintln(out, "inbound menu cancelled")
+				return nil
+			}
+			return err
+		}
+
+		switch action {
+		case "show users":
+			if err := runWizardShowInboundUsers(cmd, out, dbPath, inbound); err != nil {
+				return err
+			}
+		case "attach user":
+			if err := runWizardAttachUserToSpecificInbound(cmd, in, out, configPath, dbPath, inbound); err != nil {
+				return err
+			}
+		default:
+			return nil
+		}
+	}
+}
+
+func runWizardAttachUserToInbound(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
+	inbound, ok, err := promptWizardSelectInbound(cmd, in, out, dbPath)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	return runWizardAttachExistingUserToInbound(cmd, in, out, configPath, dbPath, user, inbound)
+}
+
+func runWizardAttachUserToSpecificInbound(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, inbound domain.Inbound) error {
+	user, ok, err := promptWizardSelectUser(cmd, in, out, dbPath)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	return runWizardAttachExistingUserToInbound(cmd, in, out, configPath, dbPath, user, inbound)
+}
+
+func runWizardAttachExistingUserToInbound(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User, inbound domain.Inbound) error {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	credential, err := createCredentialForInbound(inbound, user.ID)
+	if err != nil {
+		return err
+	}
+	createdCred, err := store.Credentials().Create(cmd.Context(), credential)
+	if err != nil {
+		return fmt.Errorf("create credential: %w", err)
+	}
+
+	node, err := findNodeByID(cmd.Context(), store, inbound.NodeID)
+	if err != nil {
+		return err
+	}
+	uri, uriErr := renderSingleClientURI(cmd.Context(), node, inbound, createdCred)
+	fmt.Fprintf(out, "credential created: id=%s user=%s inbound=%s kind=%s\n", createdCred.ID, user.ID, inbound.ID, createdCred.Kind)
+	if uriErr != nil {
+		fmt.Fprintf(out, "uri unavailable: %s\n", uriErr)
+	} else {
+		fmt.Fprintf(out, "client uri: %s\n", uri)
+	}
+
+	applyNow, err := promptBool(in, out, "Apply runtime changes now (y/n)", true)
+	if err != nil {
+		return err
+	}
+	if applyNow {
+		if err := runProxyctlSubcommand(cmd, "apply", "--config", configPath, "--db", dbPath); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintln(out, "credential saved; run `proxyctl apply --config /etc/proxy-orchestrator/proxyctl.yaml` to activate it")
+	}
+	return nil
+}
+
+func runWizardShowInboundUsers(cmd *cobra.Command, out io.Writer, dbPath string, inbound domain.Inbound) error {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	users, err := store.Users().List(cmd.Context())
+	if err != nil {
+		return err
+	}
+	credentials, err := store.Credentials().List(cmd.Context())
+	if err != nil {
+		return err
+	}
+	userByID := make(map[string]domain.User, len(users))
+	for _, user := range users {
+		userByID[user.ID] = user
+	}
+
+	found := false
+	fmt.Fprintf(out, "inbound: %s (%s/%s %s:%d)\n", inbound.ID, inbound.Type, inbound.Transport, inbound.Domain, inbound.Port)
+	for _, cred := range credentials {
+		if cred.InboundID != inbound.ID {
+			continue
+		}
+		userName := "<unknown>"
+		if user, ok := userByID[cred.UserID]; ok {
+			userName = user.Name
+		}
+		fmt.Fprintf(out, "- user=%s (%s) credential=%s kind=%s\n", cred.UserID, userName, cred.ID, cred.Kind)
+		found = true
+	}
+	if !found {
+		fmt.Fprintln(out, "no users attached")
+	}
+	return nil
 }
 
 type wizardUserConfigKind string
@@ -1999,6 +2354,72 @@ func randomHex(bytes int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func wizardPortNetwork(protocol, transport string) string {
+	if strings.EqualFold(strings.TrimSpace(protocol), "hysteria2") || strings.EqualFold(strings.TrimSpace(transport), "udp") {
+		return "udp"
+	}
+	return "tcp"
+}
+
+func wizardPortCandidates(protocol, transport string) []int {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "hysteria2":
+		return []int{8444, 9444, 10444, 18444}
+	case "xhttp":
+		return []int{9443, 10443, 8443, 18443}
+	case "vless":
+		switch strings.ToLower(strings.TrimSpace(transport)) {
+		case "grpc":
+			return []int{9443, 10443, 8443, 18443}
+		case "ws":
+			return []int{8443, 9443, 10443, 18443}
+		default:
+			return []int{8443, 9443, 10443, 18443}
+		}
+	default:
+		return []int{8443, 9443, 10443, 18443}
+	}
+}
+
+func suggestWizardPort(protocol, transport string, usedPorts map[int]struct{}, busyFn func(network string, port int) bool) int {
+	candidates := wizardPortCandidates(protocol, transport)
+	network := wizardPortNetwork(protocol, transport)
+	for _, candidate := range candidates {
+		if !isWizardPortBusy(candidate, usedPorts, network, busyFn) {
+			return candidate
+		}
+	}
+	return candidates[0]
+}
+
+func isWizardPortBusy(port int, usedPorts map[int]struct{}, network string, busyFn func(network string, port int) bool) bool {
+	if _, exists := usedPorts[port]; exists {
+		return true
+	}
+	if busyFn != nil && busyFn(network, port) {
+		return true
+	}
+	return false
+}
+
+func hostPortBusy(network string, port int) bool {
+	addr := fmt.Sprintf(":%d", port)
+	if strings.EqualFold(strings.TrimSpace(network), "udp") {
+		conn, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return true
+		}
+		_ = conn.Close()
+		return false
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return true
+	}
+	_ = ln.Close()
+	return false
 }
 
 func generateRealityKeyPair() (publicKey, privateKey string, err error) {

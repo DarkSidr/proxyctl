@@ -3,6 +3,7 @@ package singbox
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -103,6 +104,20 @@ func TestRenderBuildsSingBoxConfigAndClientArtifacts(t *testing.T) {
 			if !strings.HasPrefix(item.URI, "vless://") {
 				t.Fatalf("vless uri = %q, want vless:// prefix", item.URI)
 			}
+			parsed, err := url.Parse(item.URI)
+			if err != nil {
+				t.Fatalf("parse vless uri: %v", err)
+			}
+			if parsed.Host != "vpn.example.com:443" {
+				t.Fatalf("vless uri host = %q, want vpn.example.com:443", parsed.Host)
+			}
+			query := parsed.Query()
+			if query.Get("host") != "vpn.example.com" {
+				t.Fatalf("vless ws host query = %q, want vpn.example.com", query.Get("host"))
+			}
+			if query.Get("sni") != "vpn.example.com" {
+				t.Fatalf("vless sni query = %q, want vpn.example.com", query.Get("sni"))
+			}
 		case domain.ProtocolHysteria2:
 			hasHY2 = true
 			if !strings.HasPrefix(item.URI, "hysteria2://") {
@@ -112,6 +127,52 @@ func TestRenderBuildsSingBoxConfigAndClientArtifacts(t *testing.T) {
 	}
 	if !hasVLESS || !hasHY2 {
 		t.Fatalf("expected both vless and hysteria2 artifacts, got %+v", got.ClientArtifacts)
+	}
+}
+
+func TestRenderVLESSWSUsesInboundDomainForConnectHost(t *testing.T) {
+	t.Parallel()
+
+	r := New(nil)
+	got, err := r.Render(context.Background(), renderer.BuildRequest{
+		Node: domain.Node{Host: "64.188.78.69"},
+		Inbounds: []domain.Inbound{
+			{
+				ID:         "in-vless",
+				Type:       domain.ProtocolVLESS,
+				Engine:     domain.EngineSingBox,
+				Port:       443,
+				Transport:  "ws",
+				Path:       "/ws",
+				TLSEnabled: true,
+				Domain:     "edge.example.com",
+				Enabled:    true,
+			},
+		},
+		Credentials: []domain.Credential{
+			{
+				ID:        "cred-vless",
+				InboundID: "in-vless",
+				Kind:      domain.CredentialKindUUID,
+				Secret:    "11111111-1111-1111-1111-111111111111",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Render() unexpected error: %v", err)
+	}
+	if len(got.ClientArtifacts) != 1 {
+		t.Fatalf("client artifacts count = %d, want 1", len(got.ClientArtifacts))
+	}
+	parsed, err := url.Parse(got.ClientArtifacts[0].URI)
+	if err != nil {
+		t.Fatalf("parse vless uri: %v", err)
+	}
+	if parsed.Host != "edge.example.com:443" {
+		t.Fatalf("vless uri host = %q, want edge.example.com:443", parsed.Host)
+	}
+	if parsed.Query().Get("host") != "edge.example.com" {
+		t.Fatalf("ws host query = %q, want edge.example.com", parsed.Query().Get("host"))
 	}
 }
 

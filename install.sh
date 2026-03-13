@@ -27,6 +27,7 @@ PROXYCTL_REINSTALL_BINARY="${PROXYCTL_REINSTALL_BINARY:-0}"
 PROXYCTL_SOURCE_ARCHIVE_URL="${PROXYCTL_SOURCE_ARCHIVE_URL:-https://codeload.github.com/DarkSidr/proxyctl/tar.gz/refs/heads/main}"
 PROXYCTL_MAIN_BINARY_URL="${PROXYCTL_MAIN_BINARY_URL:-https://raw.githubusercontent.com/DarkSidr/proxyctl/main/proxyctl}"
 PROXYCTL_ENABLE_AUTO_UPDATE="${PROXYCTL_ENABLE_AUTO_UPDATE:-0}"
+PROXYCTL_ENABLE_CADDY_ON_INSTALL="${PROXYCTL_ENABLE_CADDY_ON_INSTALL:-1}"
 PROXYCTL_AUTO_UPDATE_SCHEDULE="${PROXYCTL_AUTO_UPDATE_SCHEDULE:-daily}"
 PROXYCTL_AUTO_UPDATE_INSTALL_URL="${PROXYCTL_AUTO_UPDATE_INSTALL_URL:-https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh}"
 
@@ -800,6 +801,25 @@ EOT
   write_if_absent "${DECOY_RUNTIME_DIR}/assets/style.css" 0644 "${decoy_style}"
 }
 
+ensure_caddy_service() {
+  if [[ "${PROXYCTL_ENABLE_CADDY_ON_INSTALL}" != "1" ]]; then
+    log "Skipping caddy auto-enable (PROXYCTL_ENABLE_CADDY_ON_INSTALL=${PROXYCTL_ENABLE_CADDY_ON_INSTALL})"
+    return 0
+  fi
+
+  if ! systemctl list-unit-files proxyctl-caddy.service >/dev/null 2>&1; then
+    warn "proxyctl-caddy.service is not installed; skipping caddy auto-enable"
+    return 0
+  fi
+
+  log "Ensuring caddy service is enabled and running"
+  if systemctl enable --now proxyctl-caddy.service >/dev/null 2>&1; then
+    log "Caddy service is enabled and active"
+  else
+    warn "Failed to enable/start proxyctl-caddy.service automatically (possibly port conflict). Check: systemctl status proxyctl-caddy.service"
+  fi
+}
+
 init_sqlite() {
   [[ -x "${BIN_DIR}/proxyctl" ]] || fail "proxyctl binary is not installed"
 
@@ -834,7 +854,8 @@ Next steps:
    sudo proxyctl render --config /etc/proxy-orchestrator/proxyctl.yaml
 4. Start only required services:
    sudo systemctl enable --now proxyctl-sing-box.service
-   sudo systemctl enable --now proxyctl-caddy.service
+   # proxyctl-caddy.service is auto-enabled on install by default
+   sudo systemctl status proxyctl-caddy.service --no-pager
 5. Apply validated runtime update flow:
    sudo proxyctl validate --config /etc/proxy-orchestrator/proxyctl.yaml
    sudo proxyctl apply --config /etc/proxy-orchestrator/proxyctl.yaml
@@ -864,6 +885,7 @@ main() {
   install_auto_update
   install_default_config
   install_default_runtime_files
+  ensure_caddy_service
   init_sqlite
 
   log "Installed ${APP_NAME} ${PROXYCTL_VERSION} layout on host"

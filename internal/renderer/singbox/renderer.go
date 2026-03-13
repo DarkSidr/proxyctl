@@ -292,17 +292,18 @@ func serverName(inbound domain.Inbound, fallbackHost string) string {
 }
 
 func vlessURI(host string, inbound domain.Inbound, uuid string) string {
+	connectHost := endpointHost(inbound, host)
 	u := url.URL{
 		Scheme: "vless",
 		User:   url.User(strings.TrimSpace(uuid)),
-		Host:   fmt.Sprintf("%s:%d", strings.TrimSpace(host), inbound.Port),
+		Host:   fmt.Sprintf("%s:%d", strings.TrimSpace(connectHost), inbound.Port),
 	}
 	q := url.Values{}
 	q.Set("encryption", "none")
 	q.Set("security", boolSecurity(inbound.TLSEnabled))
 	q.Set("type", inbound.Transport)
 
-	sni := serverName(inbound, host)
+	sni := serverName(inbound, connectHost)
 	if sni != "" {
 		q.Set("sni", sni)
 	}
@@ -314,12 +315,18 @@ func vlessURI(host string, inbound domain.Inbound, uuid string) string {
 			path = "/"
 		}
 		q.Set("path", path)
+		if wsHost := wsHostHeader(inbound, connectHost); wsHost != "" {
+			q.Set("host", wsHost)
+		}
 	case "grpc":
 		name := strings.Trim(strings.TrimSpace(inbound.Path), "/")
 		if name == "" {
 			name = "grpc"
 		}
 		q.Set("serviceName", name)
+		if authority := wsHostHeader(inbound, connectHost); authority != "" {
+			q.Set("authority", authority)
+		}
 	}
 	u.RawQuery = q.Encode()
 	u.Fragment = "proxyctl-" + inbound.ID
@@ -350,4 +357,24 @@ func boolSecurity(tls bool) string {
 		return "tls"
 	}
 	return "none"
+}
+
+func endpointHost(inbound domain.Inbound, fallbackHost string) string {
+	if strings.TrimSpace(inbound.Domain) != "" {
+		return strings.TrimSpace(inbound.Domain)
+	}
+	if strings.TrimSpace(inbound.SNI) != "" {
+		return strings.TrimSpace(inbound.SNI)
+	}
+	return strings.TrimSpace(fallbackHost)
+}
+
+func wsHostHeader(inbound domain.Inbound, fallbackHost string) string {
+	if strings.TrimSpace(inbound.Domain) != "" {
+		return strings.TrimSpace(inbound.Domain)
+	}
+	if strings.TrimSpace(inbound.SNI) != "" {
+		return strings.TrimSpace(inbound.SNI)
+	}
+	return strings.TrimSpace(fallbackHost)
 }
