@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -289,6 +293,37 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 		Long:  "Creates a new inbound profile for one protocol/port.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(protocol) == "" {
+				if !stdinIsTerminal(cmd.InOrStdin()) {
+					return fmt.Errorf("--type is required")
+				}
+				prompted, err := promptInboundAddWizard(cmd, *dbPath)
+				if err != nil {
+					return err
+				}
+				protocol = prompted.protocol
+				transport = prompted.transport
+				engineRaw = prompted.engineRaw
+				nodeID = prompted.nodeID
+				domainRaw = prompted.domainRaw
+				port = prompted.port
+				tls = prompted.tls
+				tlsCertPath = prompted.tlsCertPath
+				tlsKeyPath = prompted.tlsKeyPath
+				path = prompted.path
+				sni = prompted.sni
+				reality = prompted.reality
+				realityPublicKey = prompted.realityPublicKey
+				realityPrivateKey = prompted.realityPrivateKey
+				realityShortID = prompted.realityShortID
+				realityFingerprint = prompted.realityFingerprint
+				realitySpiderX = prompted.realitySpiderX
+				realityServer = prompted.realityServer
+				realityServerPort = prompted.realityServerPort
+				vlessFlow = prompted.vlessFlow
+				enabled = prompted.enabled
+			}
+
+			if strings.TrimSpace(protocol) == "" {
 				return fmt.Errorf("--type is required")
 			}
 			if strings.TrimSpace(transport) == "" {
@@ -418,6 +453,362 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "Whether inbound is enabled")
 
 	return cmd
+}
+
+type inboundAddPromptResult struct {
+	protocol           string
+	transport          string
+	engineRaw          string
+	nodeID             string
+	domainRaw          string
+	port               int
+	tls                bool
+	tlsCertPath        string
+	tlsKeyPath         string
+	path               string
+	sni                string
+	reality            bool
+	realityPublicKey   string
+	realityPrivateKey  string
+	realityShortID     string
+	realityFingerprint string
+	realitySpiderX     string
+	realityServer      string
+	realityServerPort  int
+	vlessFlow          string
+	enabled            bool
+}
+
+func promptInboundAddWizard(cmd *cobra.Command, dbPath string) (inboundAddPromptResult, error) {
+	in := bufio.NewReader(cmd.InOrStdin())
+	out := cmd.OutOrStdout()
+
+	fmt.Fprintln(out, "Interactive inbound setup")
+
+	protocol, err := promptChoice(in, out, "Inbound type", []string{"vless", "hysteria2", "xhttp"}, "vless")
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+
+	transport := ""
+	switch protocol {
+	case "vless":
+		transport, err = promptChoice(in, out, "Transport", []string{"tcp", "ws", "grpc"}, "tcp")
+		if err != nil {
+			return inboundAddPromptResult{}, err
+		}
+	case "hysteria2":
+		transport = "udp"
+		fmt.Fprintf(out, "Transport: %s\n", transport)
+	case "xhttp":
+		transport = "xhttp"
+		fmt.Fprintf(out, "Transport: %s\n", transport)
+	}
+
+	engineChoice, err := promptChoice(in, out, "Engine", []string{"auto", "sing-box", "xray"}, "auto")
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+	engineRaw := ""
+	if engineChoice != "auto" {
+		engineRaw = engineChoice
+	}
+
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+	defer store.Close()
+
+	nodes, err := store.Nodes().List(cmd.Context())
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+	if len(nodes) == 0 {
+		return inboundAddPromptResult{}, fmt.Errorf("no nodes found; add a node first with `proxyctl node add`")
+	}
+
+	nodeOptions := make([]string, 0, len(nodes))
+	nodeByOption := make(map[string]domain.Node, len(nodes))
+	for _, n := range nodes {
+		item := fmt.Sprintf("%s (%s)", n.ID, n.Host)
+		nodeOptions = append(nodeOptions, item)
+		nodeByOption[item] = n
+	}
+	nodeChoice, err := promptChoice(in, out, "Node", nodeOptions, nodeOptions[0])
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+	nodeID := nodeByOption[nodeChoice].ID
+
+	defaultDomain := strings.TrimSpace(nodeByOption[nodeChoice].Host)
+	domainRaw, err := promptLine(in, out, "Domain", defaultDomain)
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+
+	defaultPort := 443
+	switch protocol {
+	case "hysteria2":
+		defaultPort = 8444
+	case "xhttp":
+		defaultPort = 9443
+	case "vless":
+		switch transport {
+		case "ws":
+			defaultPort = 8443
+		case "grpc":
+			defaultPort = 9443
+		}
+	}
+	port, err := promptInt(in, out, "Port", defaultPort)
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+
+	defaultTLS := protocol == "hysteria2" || protocol == "xhttp" || transport == "ws" || transport == "grpc"
+	tls, err := promptBool(in, out, "Enable TLS (y/n)", defaultTLS)
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+
+	tlsCertPath := ""
+	tlsKeyPath := ""
+	if tls {
+		tlsCertPath, err = promptLine(in, out, "TLS cert path (optional)", "")
+		if err != nil {
+			return inboundAddPromptResult{}, err
+		}
+		tlsKeyPath, err = promptLine(in, out, "TLS key path (optional)", "")
+		if err != nil {
+			return inboundAddPromptResult{}, err
+		}
+	}
+
+	path := ""
+	if transport == "ws" {
+		path, err = promptLine(in, out, "WS path", "/ws")
+		if err != nil {
+			return inboundAddPromptResult{}, err
+		}
+	}
+	if transport == "grpc" {
+		path, err = promptLine(in, out, "gRPC service name", "grpc")
+		if err != nil {
+			return inboundAddPromptResult{}, err
+		}
+	}
+	if transport == "xhttp" {
+		path, err = promptLine(in, out, "XHTTP path", "/xhttp")
+		if err != nil {
+			return inboundAddPromptResult{}, err
+		}
+	}
+
+	sni, err := promptLine(in, out, "SNI (optional)", "")
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+
+	reality := false
+	realityPublicKey := ""
+	realityPrivateKey := ""
+	realityShortID := ""
+	realityFingerprint := ""
+	realitySpiderX := ""
+	realityServer := ""
+	realityServerPort := 0
+	vlessFlow := ""
+	if protocol == "vless" && transport == "tcp" {
+		reality, err = promptBool(in, out, "Enable Reality (y/n)", true)
+		if err != nil {
+			return inboundAddPromptResult{}, err
+		}
+		if reality {
+			realityPublicKey, err = promptLineRequired(in, out, "Reality public key")
+			if err != nil {
+				return inboundAddPromptResult{}, err
+			}
+			realityPrivateKey, err = promptLineRequired(in, out, "Reality private key")
+			if err != nil {
+				return inboundAddPromptResult{}, err
+			}
+			realityServer, err = promptLineRequired(in, out, "Reality server (dest host)")
+			if err != nil {
+				return inboundAddPromptResult{}, err
+			}
+			realityServerPort, err = promptInt(in, out, "Reality server port", 443)
+			if err != nil {
+				return inboundAddPromptResult{}, err
+			}
+			realityShortID, err = promptLine(in, out, "Reality short id (optional)", "")
+			if err != nil {
+				return inboundAddPromptResult{}, err
+			}
+			realityFingerprint, err = promptLine(in, out, "Reality fingerprint", "chrome")
+			if err != nil {
+				return inboundAddPromptResult{}, err
+			}
+			realitySpiderX, err = promptLine(in, out, "Reality spiderX path (optional)", "")
+			if err != nil {
+				return inboundAddPromptResult{}, err
+			}
+			vlessFlow, err = promptLine(in, out, "VLESS flow", "xtls-rprx-vision")
+			if err != nil {
+				return inboundAddPromptResult{}, err
+			}
+		}
+	}
+
+	enabled, err := promptBool(in, out, "Enable inbound (y/n)", true)
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+
+	return inboundAddPromptResult{
+		protocol:           protocol,
+		transport:          transport,
+		engineRaw:          engineRaw,
+		nodeID:             nodeID,
+		domainRaw:          domainRaw,
+		port:               port,
+		tls:                tls,
+		tlsCertPath:        tlsCertPath,
+		tlsKeyPath:         tlsKeyPath,
+		path:               path,
+		sni:                sni,
+		reality:            reality,
+		realityPublicKey:   realityPublicKey,
+		realityPrivateKey:  realityPrivateKey,
+		realityShortID:     realityShortID,
+		realityFingerprint: realityFingerprint,
+		realitySpiderX:     realitySpiderX,
+		realityServer:      realityServer,
+		realityServerPort:  realityServerPort,
+		vlessFlow:          vlessFlow,
+		enabled:            enabled,
+	}, nil
+}
+
+func promptChoice(in *bufio.Reader, out io.Writer, label string, options []string, defaultValue string) (string, error) {
+	fmt.Fprintf(out, "%s:\n", label)
+	for i, opt := range options {
+		fmt.Fprintf(out, "  %d) %s\n", i+1, opt)
+	}
+
+	optionMap := make(map[string]string, len(options))
+	for _, opt := range options {
+		optionMap[strings.ToLower(opt)] = opt
+	}
+
+	for {
+		fmt.Fprintf(out, "%s [%s]: ", label, defaultValue)
+		line, err := in.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			return defaultValue, nil
+		}
+		if idx, err := strconv.Atoi(line); err == nil {
+			if idx >= 1 && idx <= len(options) {
+				return options[idx-1], nil
+			}
+		}
+		if resolved, ok := optionMap[strings.ToLower(line)]; ok {
+			return resolved, nil
+		}
+		fmt.Fprintf(out, "invalid value, choose one of: %s\n", strings.Join(options, ", "))
+	}
+}
+
+func promptLine(in *bufio.Reader, out io.Writer, label, defaultValue string) (string, error) {
+	fmt.Fprintf(out, "%s", label)
+	if defaultValue != "" {
+		fmt.Fprintf(out, " [%s]", defaultValue)
+	}
+	fmt.Fprint(out, ": ")
+	line, err := in.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return defaultValue, nil
+	}
+	return line, nil
+}
+
+func promptLineRequired(in *bufio.Reader, out io.Writer, label string) (string, error) {
+	for {
+		value, err := promptLine(in, out, label, "")
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(value) != "" {
+			return value, nil
+		}
+		fmt.Fprintln(out, "value is required")
+	}
+}
+
+func promptBool(in *bufio.Reader, out io.Writer, label string, defaultValue bool) (bool, error) {
+	def := "y"
+	if !defaultValue {
+		def = "n"
+	}
+	for {
+		fmt.Fprintf(out, "%s [%s]: ", label, def)
+		line, err := in.ReadString('\n')
+		if err != nil {
+			return false, err
+		}
+		line = strings.ToLower(strings.TrimSpace(line))
+		if line == "" {
+			return defaultValue, nil
+		}
+		switch line {
+		case "y", "yes", "true", "1":
+			return true, nil
+		case "n", "no", "false", "0":
+			return false, nil
+		default:
+			fmt.Fprintln(out, "invalid value, use y or n")
+		}
+	}
+}
+
+func promptInt(in *bufio.Reader, out io.Writer, label string, defaultValue int) (int, error) {
+	for {
+		fmt.Fprintf(out, "%s [%d]: ", label, defaultValue)
+		line, err := in.ReadString('\n')
+		if err != nil {
+			return 0, err
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			return defaultValue, nil
+		}
+		value, err := strconv.Atoi(line)
+		if err != nil {
+			fmt.Fprintln(out, "invalid number")
+			continue
+		}
+		return value, nil
+	}
+}
+
+func stdinIsTerminal(in io.Reader) bool {
+	f, ok := in.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
 func newInboundListCmd(dbPath *string) *cobra.Command {

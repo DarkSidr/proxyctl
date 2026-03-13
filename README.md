@@ -162,6 +162,14 @@ proxyctl subscription generate <user>
 proxyctl subscription export <user> --format txt
 ```
 
+Interactive mode is also available:
+
+```bash
+proxyctl inbound add
+```
+
+When `--type` is not provided and stdin is a terminal, `proxyctl` starts a guided wizard for inbound creation.
+
 ## Troubleshooting
 
 Quick operational diagnostics:
