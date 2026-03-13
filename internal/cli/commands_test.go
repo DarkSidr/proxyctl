@@ -178,3 +178,29 @@ func TestEnsureCaddyServiceHealthySkipsWithoutSystemctl(t *testing.T) {
 		t.Fatalf("output = %q, expected skip message", out.String())
 	}
 }
+
+func TestWizardMainOptionsWithoutNodes(t *testing.T) {
+	t.Parallel()
+
+	options, def := wizardMainOptions(false)
+	joined := strings.Join(options, ",")
+	if strings.Contains(joined, "inbounds") || strings.Contains(joined, "users") {
+		t.Fatalf("options should hide inbounds/users when no nodes, got %v", options)
+	}
+	if def != "nodes" {
+		t.Fatalf("default action = %q, want nodes", def)
+	}
+}
+
+func TestWizardMainOptionsWithNodes(t *testing.T) {
+	t.Parallel()
+
+	options, def := wizardMainOptions(true)
+	joined := strings.Join(options, ",")
+	if !strings.Contains(joined, "inbounds") || !strings.Contains(joined, "users") {
+		t.Fatalf("options should include inbounds/users when nodes exist, got %v", options)
+	}
+	if def != "inbounds" {
+		t.Fatalf("default action = %q, want inbounds", def)
+	}
+}

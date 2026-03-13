@@ -208,6 +208,12 @@ func (fakeNodesRepo) Create(context.Context, domain.Node) (domain.Node, error) {
 func (r fakeNodesRepo) List(context.Context) ([]domain.Node, error) {
 	return append([]domain.Node(nil), r.items...), nil
 }
+func (fakeNodesRepo) Update(context.Context, domain.Node) (domain.Node, error) {
+	return domain.Node{}, nil
+}
+func (fakeNodesRepo) Delete(context.Context, string) (bool, error) {
+	return false, nil
+}
 
 type fakeInboundsRepo struct{ items []domain.Inbound }
 

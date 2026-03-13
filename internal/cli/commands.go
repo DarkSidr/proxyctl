@@ -107,12 +107,12 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 
 			fmt.Fprintln(out, "proxyctl wizard")
 			for {
-				action, err := promptChoice(in, out, "Action", []string{
-					"inbounds",
-					"users",
-					"update proxyctl",
-					"exit",
-				}, "inbounds")
+				hasNodes, err := wizardHasNodes(cmd, *dbPath)
+				if err != nil {
+					return err
+				}
+				options, defaultAction := wizardMainOptions(hasNodes)
+				action, err := promptChoice(in, out, "Action", options, defaultAction)
 				if err != nil {
 					if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 						fmt.Fprintln(out, "wizard cancelled")
@@ -122,6 +122,10 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 				}
 
 				switch action {
+				case "nodes":
+					if err := runWizardNodesMenu(cmd, *dbPath); err != nil {
+						return err
+					}
 				case "inbounds":
 					if err := runWizardInboundsMenu(cmd, *configPath, *dbPath); err != nil {
 						return err
@@ -1297,6 +1301,372 @@ func runWizardUsersList(cmd *cobra.Command, dbPath string) error {
 		fmt.Fprintf(w, "%s\t%s\t%t\t%s\n", user.ID, user.Name, user.Enabled, user.CreatedAt.Format(time.RFC3339))
 	}
 	return w.Flush()
+}
+
+func wizardHasNodes(cmd *cobra.Command, dbPath string) (bool, error) {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return false, err
+	}
+	defer store.Close()
+
+	nodes, err := store.Nodes().List(cmd.Context())
+	if err != nil {
+		return false, err
+	}
+	return len(nodes) > 0, nil
+}
+
+func wizardMainOptions(hasNodes bool) ([]string, string) {
+	if !hasNodes {
+		return []string{
+			"nodes",
+			"update proxyctl",
+			"exit",
+		}, "nodes"
+	}
+	return []string{
+		"nodes",
+		"inbounds",
+		"users",
+		"update proxyctl",
+		"exit",
+	}, "inbounds"
+}
+
+func runWizardNodesMenu(cmd *cobra.Command, dbPath string) error {
+	in := bufio.NewReader(cmd.InOrStdin())
+	out := cmd.OutOrStdout()
+
+	for {
+		action, err := promptChoice(in, out, "Nodes", []string{
+			"list nodes",
+			"create node",
+			"open node",
+			"back",
+		}, "list nodes")
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				fmt.Fprintln(out, "nodes menu cancelled")
+				return nil
+			}
+			return err
+		}
+
+		switch action {
+		case "list nodes":
+			if err := runWizardNodesList(cmd, dbPath); err != nil {
+				return err
+			}
+		case "create node":
+			if err := runWizardNodeAdd(cmd, dbPath); err != nil {
+				return err
+			}
+		case "open node":
+			node, ok, err := promptWizardSelectNode(cmd, in, out, dbPath)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			if err := runWizardNodeMenu(cmd, in, out, dbPath, node); err != nil {
+				return err
+			}
+		default:
+			return nil
+		}
+	}
+}
+
+func runWizardNodesList(cmd *cobra.Command, dbPath string) error {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	nodes, err := store.Nodes().List(cmd.Context())
+	if err != nil {
+		return err
+	}
+	if len(nodes) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "no nodes found")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tNAME\tHOST\tROLE\tENABLED\tCREATED_AT")
+	for _, node := range nodes {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%t\t%s\n", node.ID, node.Name, node.Host, node.Role, node.Enabled, node.CreatedAt.Format(time.RFC3339))
+	}
+	return w.Flush()
+}
+
+func runWizardNodeAdd(cmd *cobra.Command, dbPath string) error {
+	in := bufio.NewReader(cmd.InOrStdin())
+	out := cmd.OutOrStdout()
+
+	name, err := promptLineRequired(in, out, "Node name")
+	if err != nil {
+		return err
+	}
+	host, err := promptLineRequired(in, out, "Node host (domain or IP)")
+	if err != nil {
+		return err
+	}
+	role, err := promptLine(in, out, "Node role", "primary")
+	if err != nil {
+		return err
+	}
+	enabled, err := promptBool(in, out, "Enable node (y/n)", true)
+	if err != nil {
+		return err
+	}
+
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	created, err := store.Nodes().Create(cmd.Context(), domain.Node{
+		Name:    strings.TrimSpace(name),
+		Host:    strings.TrimSpace(host),
+		Role:    domain.NodeRole(strings.TrimSpace(role)),
+		Enabled: enabled,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "added node: id=%s name=%s host=%s role=%s enabled=%t created_at=%s\n", created.ID, created.Name, created.Host, created.Role, created.Enabled, created.CreatedAt.Format(time.RFC3339))
+	return nil
+}
+
+func promptWizardSelectNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string) (domain.Node, bool, error) {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return domain.Node{}, false, err
+	}
+	defer store.Close()
+
+	nodes, err := store.Nodes().List(cmd.Context())
+	if err != nil {
+		return domain.Node{}, false, err
+	}
+	if len(nodes) == 0 {
+		fmt.Fprintln(out, "no nodes found")
+		return domain.Node{}, false, nil
+	}
+
+	options := make([]string, 0, len(nodes))
+	byOption := make(map[string]domain.Node, len(nodes))
+	for _, node := range nodes {
+		status := "disabled"
+		if node.Enabled {
+			status = "enabled"
+		}
+		label := fmt.Sprintf("%s (%s, %s, %s)", node.ID, node.Name, node.Host, status)
+		options = append(options, label)
+		byOption[label] = node
+	}
+
+	choice, err := promptChoice(in, out, "Select node", options, options[0])
+	if err != nil {
+		return domain.Node{}, false, err
+	}
+	return byOption[choice], true, nil
+}
+
+func runWizardNodeMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string, node domain.Node) error {
+	for {
+		enabledAction := "enable node"
+		if node.Enabled {
+			enabledAction = "disable node"
+		}
+		action, err := promptChoice(in, out, fmt.Sprintf("Node %s (%s)", node.Name, node.ID), []string{
+			"show details",
+			"edit node",
+			enabledAction,
+			"delete node",
+			"back",
+		}, "show details")
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				fmt.Fprintln(out, "node menu cancelled")
+				return nil
+			}
+			return err
+		}
+
+		switch action {
+		case "show details":
+			if err := runWizardShowNodeDetails(cmd, out, dbPath, node.ID); err != nil {
+				return err
+			}
+		case "edit node":
+			updated, err := runWizardEditNode(cmd, in, out, dbPath, node)
+			if err != nil {
+				return err
+			}
+			node = updated
+		case "enable node", "disable node":
+			updated, err := runWizardSetNodeEnabled(cmd, out, dbPath, node, action == "enable node")
+			if err != nil {
+				return err
+			}
+			node = updated
+		case "delete node":
+			deleted, err := runWizardDeleteNode(cmd, in, out, dbPath, node)
+			if err != nil {
+				return err
+			}
+			if deleted {
+				return nil
+			}
+		default:
+			return nil
+		}
+	}
+}
+
+func runWizardShowNodeDetails(cmd *cobra.Command, out io.Writer, dbPath, nodeID string) error {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	nodes, err := store.Nodes().List(cmd.Context())
+	if err != nil {
+		return err
+	}
+	inbounds, err := store.Inbounds().List(cmd.Context())
+	if err != nil {
+		return err
+	}
+
+	var node domain.Node
+	found := false
+	for _, item := range nodes {
+		if item.ID == nodeID {
+			node = item
+			found = true
+			break
+		}
+	}
+	if !found {
+		fmt.Fprintf(out, "node not found: %s\n", nodeID)
+		return nil
+	}
+
+	attached := 0
+	for _, inbound := range inbounds {
+		if inbound.NodeID == nodeID {
+			attached++
+		}
+	}
+	fmt.Fprintf(out, "id: %s\n", node.ID)
+	fmt.Fprintf(out, "name: %s\n", node.Name)
+	fmt.Fprintf(out, "host: %s\n", node.Host)
+	fmt.Fprintf(out, "role: %s\n", node.Role)
+	fmt.Fprintf(out, "enabled: %t\n", node.Enabled)
+	fmt.Fprintf(out, "created_at: %s\n", node.CreatedAt.Format(time.RFC3339))
+	fmt.Fprintf(out, "attached_inbounds: %d\n", attached)
+	return nil
+}
+
+func runWizardEditNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string, node domain.Node) (domain.Node, error) {
+	name, err := promptLine(in, out, "Node name", node.Name)
+	if err != nil {
+		return domain.Node{}, err
+	}
+	host, err := promptLine(in, out, "Node host (domain or IP)", node.Host)
+	if err != nil {
+		return domain.Node{}, err
+	}
+	role, err := promptLine(in, out, "Node role", string(node.Role))
+	if err != nil {
+		return domain.Node{}, err
+	}
+
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return domain.Node{}, err
+	}
+	defer store.Close()
+
+	updated, err := store.Nodes().Update(cmd.Context(), domain.Node{
+		ID:      node.ID,
+		Name:    strings.TrimSpace(name),
+		Host:    strings.TrimSpace(host),
+		Role:    domain.NodeRole(strings.TrimSpace(role)),
+		Enabled: node.Enabled,
+	})
+	if err != nil {
+		return domain.Node{}, err
+	}
+	fmt.Fprintf(out, "node updated: id=%s name=%s host=%s role=%s enabled=%t\n", updated.ID, updated.Name, updated.Host, updated.Role, updated.Enabled)
+	return updated, nil
+}
+
+func runWizardSetNodeEnabled(cmd *cobra.Command, out io.Writer, dbPath string, node domain.Node, enabled bool) (domain.Node, error) {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return domain.Node{}, err
+	}
+	defer store.Close()
+
+	updated, err := store.Nodes().Update(cmd.Context(), domain.Node{
+		ID:      node.ID,
+		Name:    node.Name,
+		Host:    node.Host,
+		Role:    node.Role,
+		Enabled: enabled,
+	})
+	if err != nil {
+		return domain.Node{}, err
+	}
+	fmt.Fprintf(out, "node state updated: id=%s enabled=%t\n", updated.ID, updated.Enabled)
+	return updated, nil
+}
+
+func runWizardDeleteNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string, node domain.Node) (bool, error) {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return false, err
+	}
+	defer store.Close()
+
+	inbounds, err := store.Inbounds().List(cmd.Context())
+	if err != nil {
+		return false, err
+	}
+	attached := 0
+	for _, inbound := range inbounds {
+		if inbound.NodeID == node.ID {
+			attached++
+		}
+	}
+	if attached > 0 {
+		fmt.Fprintf(out, "warning: node has %d attached inbound(s); deleting node will remove them too\n", attached)
+	}
+	confirm, err := promptBool(in, out, "Delete node (y/n)", false)
+	if err != nil {
+		return false, err
+	}
+	if !confirm {
+		fmt.Fprintln(out, "cancelled")
+		return false, nil
+	}
+
+	deleted, err := store.Nodes().Delete(cmd.Context(), node.ID)
+	if err != nil {
+		return false, err
+	}
+	fmt.Fprintf(out, "node deleted: id=%s deleted=%t\n", node.ID, deleted)
+	return deleted, nil
 }
 
 func runWizardInboundsMenu(cmd *cobra.Command, configPath, dbPath string) error {

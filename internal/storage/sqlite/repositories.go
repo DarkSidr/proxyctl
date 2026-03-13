@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"proxyctl/internal/domain"
@@ -137,6 +138,74 @@ func (r *nodeRepository) List(ctx context.Context) ([]domain.Node, error) {
 		return nil, fmt.Errorf("iterate nodes: %w", err)
 	}
 	return nodes, nil
+}
+
+func (r *nodeRepository) Update(ctx context.Context, node domain.Node) (domain.Node, error) {
+	node.ID = strings.TrimSpace(node.ID)
+	node.Name = strings.TrimSpace(node.Name)
+	node.Host = strings.TrimSpace(node.Host)
+	if node.ID == "" {
+		return domain.Node{}, fmt.Errorf("node id is required")
+	}
+	if node.Name == "" {
+		return domain.Node{}, fmt.Errorf("node name is required")
+	}
+	if node.Host == "" {
+		return domain.Node{}, fmt.Errorf("node host is required")
+	}
+	if strings.TrimSpace(string(node.Role)) == "" {
+		node.Role = domain.NodeRolePrimary
+	}
+
+	result, err := r.db.ExecContext(
+		ctx,
+		`UPDATE nodes SET name = ?, host = ?, role = ?, enabled = ? WHERE id = ?`,
+		node.Name,
+		node.Host,
+		node.Role,
+		boolToInt(node.Enabled),
+		node.ID,
+	)
+	if err != nil {
+		return domain.Node{}, fmt.Errorf("update node: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return domain.Node{}, fmt.Errorf("update node rows affected: %w", err)
+	}
+	if affected == 0 {
+		return domain.Node{}, sql.ErrNoRows
+	}
+
+	var (
+		enabled   int
+		createdAt string
+	)
+	if err := r.db.QueryRowContext(
+		ctx,
+		`SELECT id, name, host, role, enabled, created_at FROM nodes WHERE id = ?`,
+		node.ID,
+	).Scan(&node.ID, &node.Name, &node.Host, &node.Role, &enabled, &createdAt); err != nil {
+		return domain.Node{}, fmt.Errorf("read updated node: %w", err)
+	}
+	node.Enabled = intToBool(enabled)
+	node.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return domain.Node{}, fmt.Errorf("parse node created_at: %w", err)
+	}
+	return node, nil
+}
+
+func (r *nodeRepository) Delete(ctx context.Context, nodeID string) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM nodes WHERE id = ?`, strings.TrimSpace(nodeID))
+	if err != nil {
+		return false, fmt.Errorf("delete node: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("delete node rows affected: %w", err)
+	}
+	return affected > 0, nil
 }
 
 func (r *inboundRepository) Create(ctx context.Context, inbound domain.Inbound) (domain.Inbound, error) {
