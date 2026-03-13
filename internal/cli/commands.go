@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -29,6 +30,8 @@ import (
 	"proxyctl/internal/storage/sqlite"
 	subscriptionservice "proxyctl/internal/subscription/service"
 )
+
+const defaultUpdateInstallURL = "https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh"
 
 func newGroupCmd(use, short, long string) *cobra.Command {
 	return &cobra.Command{
@@ -74,6 +77,83 @@ func newInitCmd(dbPath *string) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newWizardCmd(dbPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "wizard",
+		Short: "Run interactive setup wizard",
+		Long:  "Starts an interactive wizard for common proxyctl flows (inbound setup and self-update).",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			in := bufio.NewReader(cmd.InOrStdin())
+			out := cmd.OutOrStdout()
+
+			fmt.Fprintln(out, "proxyctl wizard")
+			action, err := promptChoice(in, out, "Action", []string{
+				"inbound add (interactive)",
+				"update proxyctl",
+				"exit",
+			}, "inbound add (interactive)")
+			if err != nil {
+				return err
+			}
+
+			switch action {
+			case "inbound add (interactive)":
+				return runProxyctlSubcommand(cmd, "inbound", "add", "--db", *dbPath)
+			case "update proxyctl":
+				return runProxyctlSubcommand(cmd, "update")
+			default:
+				fmt.Fprintln(out, "wizard finished")
+				return nil
+			}
+		},
+	}
+}
+
+func newUpdateCmd() *cobra.Command {
+	installURL := defaultUpdateInstallURL
+	channel := "auto"
+	reinstallBinary := true
+
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Update proxyctl from repository",
+		Long:  "Downloads the latest installer from the upstream repository and reinstalls proxyctl.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			installURL = strings.TrimSpace(installURL)
+			channel = strings.TrimSpace(channel)
+			if installURL == "" {
+				return fmt.Errorf("--install-url is required")
+			}
+			if channel == "" {
+				channel = "auto"
+			}
+
+			updateExpr := fmt.Sprintf(
+				"curl -fsSL %s | PROXYCTL_INSTALL_CHANNEL=%s PROXYCTL_REINSTALL_BINARY=%s bash",
+				shellQuote(installURL),
+				shellQuote(channel),
+				shellQuote(boolToEnv(reinstallBinary)),
+			)
+
+			updateCmd := exec.CommandContext(cmd.Context(), "bash", "-lc", updateExpr)
+			updateCmd.Stdout = cmd.OutOrStdout()
+			updateCmd.Stderr = cmd.ErrOrStderr()
+			updateCmd.Stdin = cmd.InOrStdin()
+
+			if err := updateCmd.Run(); err != nil {
+				return fmt.Errorf("self-update failed: %w", err)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "proxyctl update completed")
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&installURL, "install-url", installURL, "Installer URL (defaults to upstream install.sh)")
+	cmd.Flags().StringVar(&channel, "channel", channel, "Install channel passed to installer (auto|release|source|url|local)")
+	cmd.Flags().BoolVar(&reinstallBinary, "reinstall-binary", reinstallBinary, "Force proxyctl binary reinstall")
+	return cmd
 }
 
 func newUserCmd(dbPath *string) *cobra.Command {
@@ -809,6 +889,33 @@ func stdinIsTerminal(in io.Reader) bool {
 		return false
 	}
 	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+func runProxyctlSubcommand(cmd *cobra.Command, args ...string) error {
+	binPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve current executable path: %w", err)
+	}
+	child := exec.CommandContext(cmd.Context(), binPath, args...)
+	child.Stdin = cmd.InOrStdin()
+	child.Stdout = cmd.OutOrStdout()
+	child.Stderr = cmd.ErrOrStderr()
+	if err := child.Run(); err != nil {
+		return fmt.Errorf("run %s: %w", strings.Join(append([]string{binPath}, args...), " "), err)
+	}
+	return nil
+}
+
+func boolToEnv(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
+}
+
+func shellQuote(s string) string {
+	// Wraps arbitrary input into a single-quoted shell literal.
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func newInboundListCmd(dbPath *string) *cobra.Command {

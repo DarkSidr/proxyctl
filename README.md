@@ -53,6 +53,12 @@ For local/offline setup from this repository:
 sudo bash install.sh
 ```
 
+Quick self-update from CLI:
+
+```bash
+sudo proxyctl update
+```
+
 Operational notes for install/update/uninstall are in `docs/INSTALLER.md`.
 
 ## Automated release build
@@ -194,6 +200,14 @@ proxyctl inbound add
 ```
 
 When `--type` is not provided and stdin is a terminal, `proxyctl` starts a guided wizard for inbound creation.
+
+Top-level wizard for common flows:
+
+```bash
+proxyctl wizard
+```
+
+The wizard includes interactive inbound setup and `update proxyctl`.
 
 ## Troubleshooting
 
