@@ -72,6 +72,18 @@ func (r *userRepository) List(ctx context.Context) ([]domain.User, error) {
 	return users, nil
 }
 
+func (r *userRepository) Delete(ctx context.Context, userID string) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID)
+	if err != nil {
+		return false, fmt.Errorf("delete user: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("delete user rows affected: %w", err)
+	}
+	return affected > 0, nil
+}
+
 func (r *nodeRepository) Create(ctx context.Context, node domain.Node) (domain.Node, error) {
 	if node.ID == "" {
 		node.ID = newID()
@@ -304,6 +316,30 @@ func (r *credentialRepository) List(ctx context.Context) ([]domain.Credential, e
 	return credentials, nil
 }
 
+func (r *credentialRepository) Delete(ctx context.Context, credentialID string) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM credentials WHERE id = ?`, credentialID)
+	if err != nil {
+		return false, fmt.Errorf("delete credential: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("delete credential rows affected: %w", err)
+	}
+	return affected > 0, nil
+}
+
+func (r *credentialRepository) DeleteByUserID(ctx context.Context, userID string) (int, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM credentials WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("delete credentials by user id: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete credentials rows affected: %w", err)
+	}
+	return int(affected), nil
+}
+
 func (r *subscriptionRepository) Upsert(ctx context.Context, subscription domain.Subscription) (domain.Subscription, error) {
 	if subscription.ID == "" {
 		subscription.ID = newID()
@@ -359,4 +395,16 @@ func (r *subscriptionRepository) GetByUserID(ctx context.Context, userID string)
 	}
 
 	return subscription, nil
+}
+
+func (r *subscriptionRepository) DeleteByUserID(ctx context.Context, userID string) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM subscriptions WHERE user_id = ?`, userID)
+	if err != nil {
+		return false, fmt.Errorf("delete subscription by user id: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("delete subscription rows affected: %w", err)
+	}
+	return affected > 0, nil
 }

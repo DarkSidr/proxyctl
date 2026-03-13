@@ -85,37 +85,48 @@ func newInitCmd(dbPath *string) *cobra.Command {
 	}
 }
 
-func newWizardCmd(dbPath *string) *cobra.Command {
+func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "wizard",
 		Short: "Run interactive setup wizard",
-		Long:  "Starts an interactive wizard for common proxyctl flows (inbound setup and self-update).",
+		Long:  "Starts an interactive wizard for common proxyctl flows (inbound setup, user management, and self-update).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			in := bufio.NewReader(cmd.InOrStdin())
 			out := cmd.OutOrStdout()
 
 			fmt.Fprintln(out, "proxyctl wizard")
-			action, err := promptChoice(in, out, "Action", []string{
-				"inbound add (interactive)",
-				"update proxyctl",
-				"exit",
-			}, "inbound add (interactive)")
-			if err != nil {
-				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-					fmt.Fprintln(out, "wizard cancelled")
+			for {
+				action, err := promptChoice(in, out, "Action", []string{
+					"inbound add (interactive)",
+					"users",
+					"update proxyctl",
+					"exit",
+				}, "inbound add (interactive)")
+				if err != nil {
+					if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+						fmt.Fprintln(out, "wizard cancelled")
+						return nil
+					}
+					return err
+				}
+
+				switch action {
+				case "inbound add (interactive)":
+					if err := runProxyctlSubcommand(cmd, "inbound", "add", "--db", *dbPath); err != nil {
+						return err
+					}
+				case "users":
+					if err := runWizardUsersMenu(cmd, *configPath, *dbPath); err != nil {
+						return err
+					}
+				case "update proxyctl":
+					if err := runProxyctlSubcommand(cmd, "update"); err != nil {
+						return err
+					}
+				default:
+					fmt.Fprintln(out, "wizard finished")
 					return nil
 				}
-				return err
-			}
-
-			switch action {
-			case "inbound add (interactive)":
-				return runProxyctlSubcommand(cmd, "inbound", "add", "--db", *dbPath)
-			case "update proxyctl":
-				return runProxyctlSubcommand(cmd, "update")
-			default:
-				fmt.Fprintln(out, "wizard finished")
-				return nil
 			}
 		},
 	}
@@ -998,6 +1009,459 @@ func runProxyctlSubcommand(cmd *cobra.Command, args ...string) error {
 		return fmt.Errorf("run %s: %w", strings.Join(append([]string{binPath}, args...), " "), err)
 	}
 	return nil
+}
+
+func runWizardUserAdd(cmd *cobra.Command, dbPath string) error {
+	in := bufio.NewReader(cmd.InOrStdin())
+	out := cmd.OutOrStdout()
+
+	name, err := promptLineRequired(in, out, "User name")
+	if err != nil {
+		return err
+	}
+	enabled, err := promptBool(in, out, "Enable user (y/n)", true)
+	if err != nil {
+		return err
+	}
+
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	created, err := store.Users().Create(cmd.Context(), domain.User{
+		Name:    strings.TrimSpace(name),
+		Enabled: enabled,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "added user: id=%s name=%s enabled=%t created_at=%s\n", created.ID, created.Name, created.Enabled, created.CreatedAt.Format(time.RFC3339))
+	return nil
+}
+
+func runWizardUsersMenu(cmd *cobra.Command, configPath, dbPath string) error {
+	in := bufio.NewReader(cmd.InOrStdin())
+	out := cmd.OutOrStdout()
+
+	for {
+		action, err := promptChoice(in, out, "Users", []string{
+			"list users",
+			"create user",
+			"open user",
+			"back",
+		}, "list users")
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				fmt.Fprintln(out, "users menu cancelled")
+				return nil
+			}
+			return err
+		}
+
+		switch action {
+		case "list users":
+			if err := runWizardUsersList(cmd, dbPath); err != nil {
+				return err
+			}
+		case "create user":
+			if err := runWizardUserAdd(cmd, dbPath); err != nil {
+				return err
+			}
+		case "open user":
+			user, ok, err := promptWizardSelectUser(cmd, in, out, dbPath)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			if err := runWizardUserMenu(cmd, in, out, configPath, dbPath, user); err != nil {
+				return err
+			}
+		default:
+			return nil
+		}
+	}
+}
+
+func runWizardUsersList(cmd *cobra.Command, dbPath string) error {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	users, err := store.Users().List(cmd.Context())
+	if err != nil {
+		return err
+	}
+	if len(users) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "no users found")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tNAME\tENABLED\tCREATED_AT")
+	for _, user := range users {
+		fmt.Fprintf(w, "%s\t%s\t%t\t%s\n", user.ID, user.Name, user.Enabled, user.CreatedAt.Format(time.RFC3339))
+	}
+	return w.Flush()
+}
+
+func promptWizardSelectUser(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string) (domain.User, bool, error) {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return domain.User{}, false, err
+	}
+	defer store.Close()
+
+	users, err := store.Users().List(cmd.Context())
+	if err != nil {
+		return domain.User{}, false, err
+	}
+	if len(users) == 0 {
+		fmt.Fprintln(out, "no users found")
+		return domain.User{}, false, nil
+	}
+
+	userChoice, userByChoice, err := promptUserChoice(in, out, users, "Select user")
+	if err != nil {
+		return domain.User{}, false, err
+	}
+	return userByChoice[userChoice], true, nil
+}
+
+func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
+	for {
+		action, err := promptChoice(in, out, fmt.Sprintf("User %s (%s)", user.Name, user.ID), []string{
+			"show configs",
+			"delete specific config",
+			"delete user completely",
+			"back",
+		}, "show configs")
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				fmt.Fprintln(out, "user menu cancelled")
+				return nil
+			}
+			return err
+		}
+
+		switch action {
+		case "show configs":
+			if err := runWizardShowUserConfigs(cmd, out, dbPath, user); err != nil {
+				return err
+			}
+		case "delete specific config":
+			if err := runWizardDeleteSpecificUserConfig(cmd, in, out, configPath, dbPath, user); err != nil {
+				return err
+			}
+		case "delete user completely":
+			deleted, err := runWizardDeleteUserCompletely(cmd, in, out, configPath, dbPath, user)
+			if err != nil {
+				return err
+			}
+			if deleted {
+				return nil
+			}
+		default:
+			return nil
+		}
+	}
+}
+
+type wizardUserConfigKind string
+
+const (
+	wizardUserConfigCredential   wizardUserConfigKind = "credential"
+	wizardUserConfigSubscription wizardUserConfigKind = "subscription"
+)
+
+type wizardUserConfigItem struct {
+	Kind               wizardUserConfigKind
+	CredentialID       string
+	InboundID          string
+	InboundSummary     string
+	CredentialKind     domain.CredentialKind
+	SecretPreview      string
+	SubscriptionOutput string
+	SubscriptionExists bool
+}
+
+func runWizardShowUserConfigs(cmd *cobra.Command, out io.Writer, dbPath string, user domain.User) error {
+	items, err := listWizardUserConfigs(cmd, dbPath, user.ID)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "user: %s (%s)\n", user.Name, user.ID)
+	if len(items) == 0 {
+		fmt.Fprintln(out, "configs: none")
+		return nil
+	}
+	for _, item := range items {
+		switch item.Kind {
+		case wizardUserConfigCredential:
+			fmt.Fprintf(out, "- credential: id=%s inbound=%s kind=%s secret=%s\n", item.CredentialID, item.InboundSummary, item.CredentialKind, item.SecretPreview)
+		case wizardUserConfigSubscription:
+			fmt.Fprintf(out, "- subscription: output_path=%s file_exists=%t\n", item.SubscriptionOutput, item.SubscriptionExists)
+		}
+	}
+	return nil
+}
+
+func runWizardDeleteSpecificUserConfig(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
+	items, err := listWizardUserConfigs(cmd, dbPath, user.ID)
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		fmt.Fprintln(out, "no configs to delete")
+		return nil
+	}
+
+	options := make([]string, 0, len(items))
+	byOption := make(map[string]wizardUserConfigItem, len(items))
+	for _, item := range items {
+		var option string
+		if item.Kind == wizardUserConfigCredential {
+			option = fmt.Sprintf("credential %s (%s on %s)", item.CredentialID, item.CredentialKind, item.InboundSummary)
+		} else {
+			option = fmt.Sprintf("subscription (%s)", item.SubscriptionOutput)
+		}
+		options = append(options, option)
+		byOption[option] = item
+	}
+
+	choice, err := promptChoice(in, out, "Config to delete", options, options[0])
+	if err != nil {
+		return err
+	}
+	selected := byOption[choice]
+	confirm, err := promptBool(in, out, "Confirm delete selected config (y/n)", false)
+	if err != nil {
+		return err
+	}
+	if !confirm {
+		fmt.Fprintln(out, "cancelled")
+		return nil
+	}
+
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	switch selected.Kind {
+	case wizardUserConfigCredential:
+		deleted, err := store.Credentials().Delete(cmd.Context(), selected.CredentialID)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "credential deleted: id=%s deleted=%t\n", selected.CredentialID, deleted)
+	case wizardUserConfigSubscription:
+		deletedSub, err := store.Subscriptions().DeleteByUserID(cmd.Context(), user.ID)
+		if err != nil {
+			return err
+		}
+		subscriptionDir, err := resolveSubscriptionDir(configPath)
+		if err != nil {
+			return err
+		}
+		removedFiles, err := cleanupUserSubscriptionFiles(user.ID, subscriptionDir, selected.SubscriptionOutput)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "subscription deleted: metadata=%t files_removed=%d\n", deletedSub, removedFiles)
+	default:
+		return fmt.Errorf("unsupported config kind: %s", selected.Kind)
+	}
+	return nil
+}
+
+func runWizardDeleteUserCompletely(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) (bool, error) {
+	confirm, err := promptBool(in, out, "Delete user completely (credentials, subscription metadata/files, user record) (y/n)", false)
+	if err != nil {
+		return false, err
+	}
+	if !confirm {
+		fmt.Fprintln(out, "cancelled")
+		return false, nil
+	}
+
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return false, err
+	}
+	defer store.Close()
+
+	subPath := ""
+	sub, subErr := store.Subscriptions().GetByUserID(cmd.Context(), user.ID)
+	if subErr == nil {
+		subPath = strings.TrimSpace(sub.OutputPath)
+	}
+
+	deletedCreds, err := store.Credentials().DeleteByUserID(cmd.Context(), user.ID)
+	if err != nil {
+		return false, err
+	}
+	deletedSub, err := store.Subscriptions().DeleteByUserID(cmd.Context(), user.ID)
+	if err != nil {
+		return false, err
+	}
+	deletedUser, err := store.Users().Delete(cmd.Context(), user.ID)
+	if err != nil {
+		return false, err
+	}
+	if !deletedUser {
+		fmt.Fprintf(out, "user not found: %s\n", user.ID)
+		return false, nil
+	}
+
+	subscriptionDir, err := resolveSubscriptionDir(configPath)
+	if err != nil {
+		return false, err
+	}
+	removedFiles, err := cleanupUserSubscriptionFiles(user.ID, subscriptionDir, subPath)
+	if err != nil {
+		return false, err
+	}
+
+	fmt.Fprintf(out, "user fully deleted: id=%s name=%s\n", user.ID, user.Name)
+	fmt.Fprintf(out, "deleted credentials: %d\n", deletedCreds)
+	fmt.Fprintf(out, "deleted subscription metadata: %t\n", deletedSub)
+	fmt.Fprintf(out, "removed subscription files: %d\n", removedFiles)
+	return true, nil
+}
+
+func listWizardUserConfigs(cmd *cobra.Command, dbPath, userID string) ([]wizardUserConfigItem, error) {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+
+	credentials, err := store.Credentials().List(cmd.Context())
+	if err != nil {
+		return nil, err
+	}
+	inbounds, err := store.Inbounds().List(cmd.Context())
+	if err != nil {
+		return nil, err
+	}
+	inboundByID := make(map[string]domain.Inbound, len(inbounds))
+	for _, inbound := range inbounds {
+		inboundByID[inbound.ID] = inbound
+	}
+
+	items := make([]wizardUserConfigItem, 0)
+	for _, cred := range credentials {
+		if cred.UserID != userID {
+			continue
+		}
+		summary := cred.InboundID
+		if inbound, ok := inboundByID[cred.InboundID]; ok {
+			host := strings.TrimSpace(inbound.Domain)
+			if host == "" {
+				host = "<no-domain>"
+			}
+			summary = fmt.Sprintf("%s/%s %s:%d", inbound.Type, inbound.Transport, host, inbound.Port)
+		}
+		items = append(items, wizardUserConfigItem{
+			Kind:           wizardUserConfigCredential,
+			CredentialID:   cred.ID,
+			InboundID:      cred.InboundID,
+			InboundSummary: summary,
+			CredentialKind: cred.Kind,
+			SecretPreview:  redactSecretPreview(cred.Secret),
+		})
+	}
+
+	sub, err := store.Subscriptions().GetByUserID(cmd.Context(), userID)
+	if err == nil {
+		outputPath := strings.TrimSpace(sub.OutputPath)
+		_, statErr := os.Stat(outputPath)
+		items = append(items, wizardUserConfigItem{
+			Kind:               wizardUserConfigSubscription,
+			SubscriptionOutput: outputPath,
+			SubscriptionExists: statErr == nil,
+		})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Kind != items[j].Kind {
+			return items[i].Kind < items[j].Kind
+		}
+		return items[i].CredentialID < items[j].CredentialID
+	})
+	return items, nil
+}
+
+func redactSecretPreview(secret string) string {
+	value := strings.TrimSpace(secret)
+	if value == "" {
+		return "<empty>"
+	}
+	if len(value) <= 8 {
+		return value
+	}
+	return value[:4] + "..." + value[len(value)-4:]
+}
+
+func promptUserChoice(in *bufio.Reader, out io.Writer, users []domain.User, label string) (string, map[string]domain.User, error) {
+	options := make([]string, 0, len(users))
+	userByChoice := make(map[string]domain.User, len(users))
+	for _, user := range users {
+		state := "enabled"
+		if !user.Enabled {
+			state = "disabled"
+		}
+		item := fmt.Sprintf("%s (%s, %s)", user.ID, user.Name, state)
+		options = append(options, item)
+		userByChoice[item] = user
+	}
+	choice, err := promptChoice(in, out, label, options, options[0])
+	if err != nil {
+		return "", nil, err
+	}
+	return choice, userByChoice, nil
+}
+
+func resolveSubscriptionDir(configPath string) (string, error) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return config.DefaultAppConfig().Paths.Subscription, nil
+	}
+	return cfg.Paths.Subscription, nil
+}
+
+func cleanupUserSubscriptionFiles(userID, subscriptionDir, storedOutputPath string) (int, error) {
+	paths := []string{
+		filepath.Join(subscriptionDir, userID+".txt"),
+		filepath.Join(subscriptionDir, userID+".base64"),
+		filepath.Join(subscriptionDir, userID+".json"),
+	}
+	if strings.TrimSpace(storedOutputPath) != "" {
+		paths = append(paths, strings.TrimSpace(storedOutputPath))
+	}
+	unique := compactUnique(paths)
+
+	removed := 0
+	for _, p := range unique {
+		err := os.Remove(p)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return removed, fmt.Errorf("remove subscription file %q: %w", p, err)
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 func boolToEnv(v bool) string {

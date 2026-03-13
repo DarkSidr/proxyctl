@@ -21,6 +21,7 @@ type Migrator interface {
 type UserRepository interface {
 	Create(ctx context.Context, user domain.User) (domain.User, error)
 	List(ctx context.Context) ([]domain.User, error)
+	Delete(ctx context.Context, userID string) (bool, error)
 }
 
 // NodeRepository defines persistence operations for nodes.
@@ -39,12 +40,15 @@ type InboundRepository interface {
 type CredentialRepository interface {
 	Create(ctx context.Context, credential domain.Credential) (domain.Credential, error)
 	List(ctx context.Context) ([]domain.Credential, error)
+	Delete(ctx context.Context, credentialID string) (bool, error)
+	DeleteByUserID(ctx context.Context, userID string) (int, error)
 }
 
 // SubscriptionRepository defines persistence operations for subscriptions.
 type SubscriptionRepository interface {
 	Upsert(ctx context.Context, subscription domain.Subscription) (domain.Subscription, error)
 	GetByUserID(ctx context.Context, userID string) (domain.Subscription, error)
+	DeleteByUserID(ctx context.Context, userID string) (bool, error)
 }
 
 // Store groups persistence ports used by application layer.

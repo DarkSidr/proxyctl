@@ -44,7 +44,7 @@ func NewRootCmd() *cobra.Command {
 
 	rootCmd.AddCommand(
 		newInitCmd(&dbPath),
-		newWizardCmd(&dbPath),
+		newWizardCmd(&configPath, &dbPath),
 		newUpdateCmd(),
 		newStatusCmd(&configPath, &dbPath),
 		newUserCmd(&dbPath),
