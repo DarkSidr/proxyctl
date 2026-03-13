@@ -67,6 +67,12 @@ func TestRenderBuildsXrayConfigAndClientArtifacts(t *testing.T) {
 			StreamSettings struct {
 				Network  string `json:"network"`
 				Security string `json:"security"`
+				TLS      struct {
+					Certificates []struct {
+						CertificateFile string `json:"certificateFile"`
+						KeyFile         string `json:"keyFile"`
+					} `json:"certificates"`
+				} `json:"tlsSettings"`
 			} `json:"streamSettings"`
 		} `json:"inbounds"`
 	}
@@ -84,6 +90,15 @@ func TestRenderBuildsXrayConfigAndClientArtifacts(t *testing.T) {
 	}
 	if cfg.Inbounds[0].StreamSettings.Security != "tls" {
 		t.Fatalf("stream security = %q, want tls", cfg.Inbounds[0].StreamSettings.Security)
+	}
+	if len(cfg.Inbounds[0].StreamSettings.TLS.Certificates) != 1 {
+		t.Fatalf("tls certificates count = %d, want 1", len(cfg.Inbounds[0].StreamSettings.TLS.Certificates))
+	}
+	if cfg.Inbounds[0].StreamSettings.TLS.Certificates[0].CertificateFile != "/caddy/certificates/acme-v02.api.letsencrypt.org-directory/edge.example.com/edge.example.com.crt" {
+		t.Fatalf("certificateFile = %q, want default caddy path", cfg.Inbounds[0].StreamSettings.TLS.Certificates[0].CertificateFile)
+	}
+	if cfg.Inbounds[0].StreamSettings.TLS.Certificates[0].KeyFile != "/caddy/certificates/acme-v02.api.letsencrypt.org-directory/edge.example.com/edge.example.com.key" {
+		t.Fatalf("keyFile = %q, want default caddy path", cfg.Inbounds[0].StreamSettings.TLS.Certificates[0].KeyFile)
 	}
 
 	if len(got.ClientArtifacts) != 1 {
@@ -215,5 +230,47 @@ func TestRenderBuildsVLESSRealityConfigAndClientArtifacts(t *testing.T) {
 	}
 	if cfg.Inbounds[0].StreamSettings.Security != "reality" {
 		t.Fatalf("stream security = %q, want reality", cfg.Inbounds[0].StreamSettings.Security)
+	}
+}
+
+func TestRenderXHTTPTLSUsesExplicitCertificatePaths(t *testing.T) {
+	t.Parallel()
+
+	r := New(nil)
+	got, err := r.Render(context.Background(), renderer.BuildRequest{
+		Node: domain.Node{Host: "node.example.com"},
+		Inbounds: []domain.Inbound{
+			{
+				ID:          "in-xhttp",
+				Type:        domain.ProtocolXHTTP,
+				Engine:      domain.EngineXray,
+				Port:        9443,
+				Transport:   "xhttp",
+				TLSEnabled:  true,
+				Domain:      "darksidr.icu",
+				TLSCertPath: "/custom/fullchain.pem",
+				TLSKeyPath:  "/custom/privkey.pem",
+				Enabled:     true,
+			},
+		},
+		Credentials: []domain.Credential{
+			{
+				ID:        "cred-xhttp",
+				InboundID: "in-xhttp",
+				Kind:      domain.CredentialKindUUID,
+				Secret:    "22222222-2222-2222-2222-222222222222",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Render() unexpected error: %v", err)
+	}
+
+	body := string(got.PreviewJSON)
+	if !strings.Contains(body, `"certificateFile": "/custom/fullchain.pem"`) {
+		t.Fatalf("expected explicit certificateFile, got: %s", body)
+	}
+	if !strings.Contains(body, `"keyFile": "/custom/privkey.pem"`) {
+		t.Fatalf("expected explicit keyFile, got: %s", body)
 	}
 }

@@ -98,7 +98,13 @@ type xhttpSettings struct {
 }
 
 type tlsSettings struct {
-	ServerName string `json:"serverName,omitempty"`
+	ServerName   string           `json:"serverName,omitempty"`
+	Certificates []tlsCertificate `json:"certificates,omitempty"`
+}
+
+type tlsCertificate struct {
+	CertificateFile string `json:"certificateFile"`
+	KeyFile         string `json:"keyFile"`
 }
 
 type realitySettings struct {
@@ -212,7 +218,18 @@ func buildXHTTPInbound(node domain.Node, inbound domain.Inbound, credentials []d
 	var tlsCfg *tlsSettings
 	if inbound.TLSEnabled {
 		security = "tls"
-		tlsCfg = &tlsSettings{ServerName: serverName(inbound, node.Host)}
+		certPath, keyPath := resolveXHTTPTLSPaths(node.Host, inbound)
+		tlsCfg = &tlsSettings{
+			ServerName: serverName(inbound, node.Host),
+		}
+		if certPath != "" && keyPath != "" {
+			tlsCfg.Certificates = []tlsCertificate{
+				{
+					CertificateFile: certPath,
+					KeyFile:         keyPath,
+				},
+			}
+		}
 	}
 
 	return inboundConfig{
@@ -375,6 +392,26 @@ func vlessRealityURI(host string, inbound domain.Inbound, uuid, publicKey, sni, 
 	u.RawQuery = q.Encode()
 	u.Fragment = "proxyctl-" + inbound.ID
 	return u.String()
+}
+
+func resolveXHTTPTLSPaths(host string, inbound domain.Inbound) (string, string) {
+	certPath := strings.TrimSpace(inbound.TLSCertPath)
+	keyPath := strings.TrimSpace(inbound.TLSKeyPath)
+	if certPath != "" && keyPath != "" {
+		return certPath, keyPath
+	}
+	server := serverName(inbound, host)
+	if server == "" {
+		return certPath, keyPath
+	}
+	base := "/caddy/certificates/acme-v02.api.letsencrypt.org-directory/" + server + "/" + server
+	if certPath == "" {
+		certPath = base + ".crt"
+	}
+	if keyPath == "" {
+		keyPath = base + ".key"
+	}
+	return certPath, keyPath
 }
 
 func serverName(inbound domain.Inbound, fallbackHost string) string {
