@@ -191,9 +191,12 @@ func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []d
 		Users:      rawUsers,
 	}
 	if inbound.TLSEnabled {
+		certPath, keyPath := resolveTLSPaths(node.Host, inbound)
 		cfg.TLS = &tlsConfig{
-			Enabled:    true,
-			ServerName: serverName(inbound, node.Host),
+			Enabled:         true,
+			ServerName:      serverName(inbound, node.Host),
+			CertificatePath: certPath,
+			KeyPath:         keyPath,
 		}
 	}
 	if inbound.Transport == "ws" {
@@ -250,7 +253,7 @@ func buildHysteria2Inbound(node domain.Node, inbound domain.Inbound, credentials
 		Users:      rawUsers,
 	}
 	if inbound.TLSEnabled {
-		certPath, keyPath := resolveHysteria2TLSPaths(node.Host, inbound)
+		certPath, keyPath := resolveTLSPaths(node.Host, inbound)
 		cfg.TLS = &tlsConfig{
 			Enabled:         true,
 			ServerName:      serverName(inbound, node.Host),
@@ -261,7 +264,7 @@ func buildHysteria2Inbound(node domain.Node, inbound domain.Inbound, credentials
 	return cfg, clients, nil
 }
 
-func resolveHysteria2TLSPaths(host string, inbound domain.Inbound) (string, string) {
+func resolveTLSPaths(host string, inbound domain.Inbound) (string, string) {
 	certPath := strings.TrimSpace(inbound.TLSCertPath)
 	keyPath := strings.TrimSpace(inbound.TLSKeyPath)
 	if certPath != "" && keyPath != "" {

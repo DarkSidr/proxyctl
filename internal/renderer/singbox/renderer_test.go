@@ -243,3 +243,42 @@ func TestRenderHysteria2TLSIncludesCertificatePaths(t *testing.T) {
 		t.Fatalf("expected key_path in preview, got: %s", body)
 	}
 }
+
+func TestRenderVLESSGRPCTLSIncludesCertificatePaths(t *testing.T) {
+	t.Parallel()
+
+	r := New(nil)
+	got, err := r.Render(context.Background(), renderer.BuildRequest{
+		Node: domain.Node{Host: "darksidr.icu"},
+		Inbounds: []domain.Inbound{
+			{
+				ID:         "in-vless-grpc",
+				Type:       domain.ProtocolVLESS,
+				Engine:     domain.EngineSingBox,
+				Port:       10443,
+				Transport:  "grpc",
+				Path:       "grpc",
+				TLSEnabled: true,
+				Enabled:    true,
+			},
+		},
+		Credentials: []domain.Credential{
+			{
+				ID:        "cred-vless",
+				InboundID: "in-vless-grpc",
+				Kind:      domain.CredentialKindUUID,
+				Secret:    "11111111-1111-1111-1111-111111111111",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Render() unexpected error: %v", err)
+	}
+	body := string(got.PreviewJSON)
+	if !strings.Contains(body, `"certificate_path": "/caddy/certificates/acme-v02.api.letsencrypt.org-directory/darksidr.icu/darksidr.icu.crt"`) {
+		t.Fatalf("expected certificate_path in preview, got: %s", body)
+	}
+	if !strings.Contains(body, `"key_path": "/caddy/certificates/acme-v02.api.letsencrypt.org-directory/darksidr.icu/darksidr.icu.key"`) {
+		t.Fatalf("expected key_path in preview, got: %s", body)
+	}
+}
