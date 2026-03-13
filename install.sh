@@ -19,9 +19,15 @@ readonly BIN_DIR="/usr/local/bin"
 readonly SYSTEMD_DIR="/etc/systemd/system"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 
-PROXYCTL_BINARY_URL="${PROXYCTL_BINARY_URL:-https://raw.githubusercontent.com/DarkSidr/proxyctl/main/proxyctl}"
+PROXYCTL_BINARY_URL="${PROXYCTL_BINARY_URL:-}"
+PROXYCTL_INSTALL_CHANNEL="${PROXYCTL_INSTALL_CHANNEL:-auto}"
 PROXYCTL_VERSION="${PROXYCTL_VERSION:-latest}"
 PROXYCTL_REINSTALL_BINARY="${PROXYCTL_REINSTALL_BINARY:-0}"
+PROXYCTL_SOURCE_ARCHIVE_URL="${PROXYCTL_SOURCE_ARCHIVE_URL:-https://codeload.github.com/DarkSidr/proxyctl/tar.gz/refs/heads/main}"
+PROXYCTL_MAIN_BINARY_URL="${PROXYCTL_MAIN_BINARY_URL:-https://raw.githubusercontent.com/DarkSidr/proxyctl/main/proxyctl}"
+PROXYCTL_ENABLE_AUTO_UPDATE="${PROXYCTL_ENABLE_AUTO_UPDATE:-0}"
+PROXYCTL_AUTO_UPDATE_SCHEDULE="${PROXYCTL_AUTO_UPDATE_SCHEDULE:-daily}"
+PROXYCTL_AUTO_UPDATE_INSTALL_URL="${PROXYCTL_AUTO_UPDATE_INSTALL_URL:-https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh}"
 
 # Optional runtime URLs for environments where apt packages are unavailable.
 SINGBOX_BINARY_URL="${SINGBOX_BINARY_URL:-}"
@@ -212,9 +218,102 @@ extract_and_install_binary() {
       ;;
   esac
 
-  [[ -n "${found}" && -f "${found}" ]] || fail "binary ${binary_name} not found in ${archive}"
+  if [[ -z "${found}" || ! -f "${found}" ]]; then
+    rm -rf "${tmp_extract}"
+    return 1
+  fi
   install -m 0755 "${found}" "${target_path}"
   rm -rf "${tmp_extract}"
+}
+
+install_proxyctl_from_url() {
+  local source_url="$1"
+  local target="$2"
+  local tmpdir filename tmp
+
+  tmpdir="$(mktemp -d)"
+  filename="$(basename "${source_url%%\?*}")"
+  [[ -n "${filename}" ]] || filename="proxyctl.bin"
+  tmp="${tmpdir}/${filename}"
+
+  if ! download_file "${source_url}" "${tmp}"; then
+    rm -rf "${tmpdir}"
+    return 1
+  fi
+  if ! extract_and_install_binary "${tmp}" "proxyctl" "${target}"; then
+    rm -rf "${tmpdir}"
+    return 1
+  fi
+
+  rm -rf "${tmpdir}"
+  return 0
+}
+
+install_proxyctl_from_release() {
+  local target="$1"
+  local url
+
+  url="$(resolve_proxyctl_release_asset_url || true)"
+  if [[ -z "${url}" ]]; then
+    return 1
+  fi
+
+  if ! install_proxyctl_from_url "${url}" "${target}"; then
+    return 1
+  fi
+
+  log "Installed proxyctl binary from release asset: ${url}"
+  return 0
+}
+
+install_proxyctl_from_source() {
+  local target="$1"
+  local tmpdir archive src_root output
+
+  if ! command -v go >/dev/null 2>&1; then
+    apt_install golang-go
+  fi
+  command -v go >/dev/null 2>&1 || return 1
+
+  tmpdir="$(mktemp -d)"
+  archive="${tmpdir}/proxyctl-source.tar.gz"
+  output="${tmpdir}/proxyctl"
+
+  if ! download_file "${PROXYCTL_SOURCE_ARCHIVE_URL}" "${archive}"; then
+    rm -rf "${tmpdir}"
+    return 1
+  fi
+  if ! tar -xzf "${archive}" -C "${tmpdir}"; then
+    rm -rf "${tmpdir}"
+    return 1
+  fi
+
+  src_root="$(find "${tmpdir}" -mindepth 1 -maxdepth 1 -type d | head -n1 || true)"
+  if [[ -z "${src_root}" ]]; then
+    rm -rf "${tmpdir}"
+    return 1
+  fi
+
+  if ! (
+    cd "${src_root}" && \
+      GOCACHE="${tmpdir}/.cache/go-build" \
+      GOMODCACHE="${tmpdir}/.cache/go-mod" \
+      CGO_ENABLED=0 \
+      go build -trimpath -o "${output}" ./cmd/proxyctl
+  ); then
+    rm -rf "${tmpdir}"
+    return 1
+  fi
+
+  install -m 0755 "${output}" "${target}"
+  rm -rf "${tmpdir}"
+  log "Installed proxyctl binary from source build (${PROXYCTL_SOURCE_ARCHIVE_URL})"
+  return 0
+}
+
+verify_proxyctl_binary() {
+  local target="$1"
+  "${target}" --version >/dev/null 2>&1 || return 1
 }
 
 write_if_absent() {
@@ -272,51 +371,92 @@ read_packaged_file_or_default() {
 
 install_proxyctl_binary() {
   local target="${BIN_DIR}/proxyctl"
+  local channel
+  channel="$(printf '%s' "${PROXYCTL_INSTALL_CHANNEL}" | tr '[:upper:]' '[:lower:]')"
 
-  if [[ -x "${target}" && "${PROXYCTL_REINSTALL_BINARY}" != "1" && -z "${PROXYCTL_BINARY_URL}" ]]; then
+  case "${channel}" in
+    auto|release|source|url|local)
+      ;;
+    *)
+      fail "invalid PROXYCTL_INSTALL_CHANNEL=${PROXYCTL_INSTALL_CHANNEL}. Expected: auto|release|source|url|local"
+      ;;
+  esac
+
+  if [[ -x "${target}" && "${PROXYCTL_REINSTALL_BINARY}" != "1" && -z "${PROXYCTL_BINARY_URL}" && "${channel}" == "auto" ]]; then
     log "Existing proxyctl binary found at ${target}; skipping reinstall"
     return 0
   fi
 
   if [[ -n "${PROXYCTL_BINARY_URL}" ]]; then
-    local tmpdir filename tmp source_url
-    tmpdir="$(mktemp -d)"
-    source_url="${PROXYCTL_BINARY_URL}"
-    filename="$(basename "${source_url%%\?*}")"
-    [[ -n "${filename}" ]] || filename="proxyctl.bin"
-    tmp="${tmpdir}/${filename}"
-    if ! download_file "${source_url}" "${tmp}"; then
-      local fallback_url=""
-      if is_proxyctl_latest_download_url "${source_url}"; then
-        fallback_url="$(resolve_proxyctl_release_asset_url || true)"
+    if install_proxyctl_from_url "${PROXYCTL_BINARY_URL}" "${target}"; then
+      log "Installed proxyctl binary from PROXYCTL_BINARY_URL"
+      if ! verify_proxyctl_binary "${target}"; then
+        fail "installed proxyctl binary is not executable"
       fi
+      return 0
+    fi
 
-      if [[ -n "${fallback_url}" && ! "${fallback_url}" =~ ^https?:// ]]; then
-        fallback_url=""
-      fi
-
-      if [[ -n "${fallback_url}" ]]; then
-        warn "Failed to download ${source_url}; trying resolved asset ${fallback_url}"
-        filename="$(basename "${fallback_url%%\?*}")"
-        [[ -n "${filename}" ]] || filename="proxyctl.bin"
-        tmp="${tmpdir}/${filename}"
-        download_file "${fallback_url}" "${tmp}"
-      else
-        rm -rf "${tmpdir}"
-        fail "failed to download proxyctl binary from ${source_url}"
+    if is_proxyctl_latest_download_url "${PROXYCTL_BINARY_URL}"; then
+      warn "Failed to download ${PROXYCTL_BINARY_URL}; trying auto-resolved latest release asset"
+      if install_proxyctl_from_release "${target}"; then
+        if ! verify_proxyctl_binary "${target}"; then
+          fail "installed proxyctl binary is not executable"
+        fi
+        return 0
       fi
     fi
-    extract_and_install_binary "${tmp}" "proxyctl" "${target}"
-    rm -rf "${tmpdir}"
-    log "Installed proxyctl binary from PROXYCTL_BINARY_URL"
-    return 0
+
+    if [[ "${channel}" == "url" ]]; then
+      fail "failed to download proxyctl binary from ${PROXYCTL_BINARY_URL}"
+    fi
+
+    warn "Failed to install proxyctl via PROXYCTL_BINARY_URL; continuing with channel=${channel}"
   fi
 
-  local local_binary="${SCRIPT_DIR}/proxyctl"
-  if [[ -x "${local_binary}" ]]; then
-    install -m 0755 "${local_binary}" "${target}"
-    log "Installed proxyctl binary from ${local_binary}"
-    return 0
+  if [[ "${channel}" == "release" || "${channel}" == "auto" ]]; then
+    if install_proxyctl_from_release "${target}"; then
+      if ! verify_proxyctl_binary "${target}"; then
+        fail "installed proxyctl binary is not executable"
+      fi
+      return 0
+    fi
+    [[ "${channel}" == "auto" ]] || fail "failed to install proxyctl binary from release assets"
+    warn "Release asset install failed; trying source build"
+  fi
+
+  if [[ "${channel}" == "source" || "${channel}" == "auto" ]]; then
+    if install_proxyctl_from_source "${target}"; then
+      if ! verify_proxyctl_binary "${target}"; then
+        fail "installed proxyctl binary is not executable"
+      fi
+      return 0
+    fi
+    [[ "${channel}" == "auto" ]] || fail "failed to build/install proxyctl from source"
+    warn "Source build failed; trying local binary and main branch URL fallback"
+  fi
+
+  if [[ "${channel}" == "local" || "${channel}" == "auto" ]]; then
+    local local_binary="${SCRIPT_DIR}/proxyctl"
+    if [[ -x "${local_binary}" ]]; then
+      install -m 0755 "${local_binary}" "${target}"
+      log "Installed proxyctl binary from ${local_binary}"
+      if ! verify_proxyctl_binary "${target}"; then
+        fail "installed proxyctl binary is not executable"
+      fi
+      return 0
+    fi
+    [[ "${channel}" == "auto" ]] || fail "local proxyctl binary not found at ${local_binary}"
+  fi
+
+  if [[ "${channel}" == "auto" ]]; then
+    if install_proxyctl_from_url "${PROXYCTL_MAIN_BINARY_URL}" "${target}"; then
+      log "Installed proxyctl binary from main branch URL fallback"
+      if ! verify_proxyctl_binary "${target}"; then
+        fail "installed proxyctl binary is not executable"
+      fi
+      return 0
+    fi
+    warn "Main branch binary URL fallback failed"
   fi
 
   if [[ -x "${target}" ]]; then
@@ -324,7 +464,7 @@ install_proxyctl_binary() {
     return 0
   fi
 
-  fail "proxyctl binary source is not available. Set PROXYCTL_BINARY_URL or place executable ./proxyctl next to install.sh"
+  fail "proxyctl binary source is not available. Use PROXYCTL_BINARY_URL or PROXYCTL_INSTALL_CHANNEL=source"
 }
 
 install_or_verify_runtime_binary() {
@@ -366,7 +506,10 @@ install_or_verify_runtime_binary() {
     [[ -n "${filename}" ]] || filename="${binary_name}.bin"
     tmp="${tmpdir}/${filename}"
     download_file "${env_url}" "${tmp}"
-    extract_and_install_binary "${tmp}" "${binary_name}" "${BIN_DIR}/${binary_name}"
+    if ! extract_and_install_binary "${tmp}" "${binary_name}" "${BIN_DIR}/${binary_name}"; then
+      rm -rf "${tmpdir}"
+      fail "failed to install ${binary_name} from ${env_url}"
+    fi
     rm -rf "${tmpdir}"
     log "Installed ${binary_name} from URL"
     return 0
@@ -485,6 +628,58 @@ EOT
 
   systemctl daemon-reload
   log "Installed systemd units and reloaded daemon"
+}
+
+install_auto_update() {
+  if [[ "${PROXYCTL_ENABLE_AUTO_UPDATE}" != "1" ]]; then
+    return 0
+  fi
+
+  local updater_script="/usr/local/sbin/proxyctl-self-update"
+  local updater_service="${SYSTEMD_DIR}/proxyctl-self-update.service"
+  local updater_timer="${SYSTEMD_DIR}/proxyctl-self-update.timer"
+  local script_content service_content timer_content
+
+  script_content="$(cat <<EOT
+#!/usr/bin/env bash
+set -Eeuo pipefail
+curl -fsSL '${PROXYCTL_AUTO_UPDATE_INSTALL_URL}' | PROXYCTL_REINSTALL_BINARY=1 PROXYCTL_INSTALL_CHANNEL='${PROXYCTL_INSTALL_CHANNEL}' PROXYCTL_ENABLE_AUTO_UPDATE=1 bash
+EOT
+)"
+
+  service_content="$(cat <<'EOT'
+[Unit]
+Description=proxyctl self update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/proxyctl-self-update
+EOT
+)"
+
+  timer_content="$(cat <<EOT
+[Unit]
+Description=Run proxyctl self update periodically
+
+[Timer]
+OnCalendar=${PROXYCTL_AUTO_UPDATE_SCHEDULE}
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target
+EOT
+)"
+
+  write_managed_file "${updater_script}" 0755 "${script_content}"
+  write_managed_file "${updater_service}" 0644 "${service_content}"
+  write_managed_file "${updater_timer}" 0644 "${timer_content}"
+
+  systemctl daemon-reload
+  systemctl enable --now proxyctl-self-update.timer
+  log "Enabled auto-update timer: proxyctl-self-update.timer (${PROXYCTL_AUTO_UPDATE_SCHEDULE})"
 }
 
 install_default_config() {
@@ -643,6 +838,9 @@ Next steps:
 5. Apply validated runtime update flow:
    sudo proxyctl validate --config /etc/proxy-orchestrator/proxyctl.yaml
    sudo proxyctl apply --config /etc/proxy-orchestrator/proxyctl.yaml
+6. Optional auto-update timer:
+   sudo PROXYCTL_ENABLE_AUTO_UPDATE=1 bash install.sh
+   sudo systemctl list-timers proxyctl-self-update.timer
 EOF_STEPS
 }
 
@@ -663,6 +861,7 @@ main() {
 
   ensure_directories
   install_systemd_units
+  install_auto_update
   install_default_config
   install_default_runtime_files
   init_sqlite

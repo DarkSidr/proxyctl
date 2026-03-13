@@ -33,6 +33,20 @@ One-command installer entrypoint (stage 11):
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh)
 ```
 
+Reliable update/reinstall (forces source rebuild):
+
+```bash
+sudo PROXYCTL_REINSTALL_BINARY=1 PROXYCTL_INSTALL_CHANNEL=source \
+  bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh)
+```
+
+Enable periodic self-update timer:
+
+```bash
+sudo PROXYCTL_ENABLE_AUTO_UPDATE=1 \
+  bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh)
+```
+
 For local/offline setup from this repository:
 
 ```bash
@@ -40,6 +54,17 @@ sudo bash install.sh
 ```
 
 Operational notes for install/update/uninstall are in `docs/INSTALLER.md`.
+
+## Automated release build
+
+GitHub Actions builds and publishes `proxyctl-linux-amd64` automatically when a tag `v*` is pushed.
+
+Example:
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
 
 ## Reverse proxy backend selection
 

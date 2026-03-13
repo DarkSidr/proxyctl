@@ -7,9 +7,19 @@ bash <(curl -fsSL <INSTALL_SH_URL>)
 ```
 
 Optional environment variables:
-- `PROXYCTL_BINARY_URL` — URL to `proxyctl` binary/archive (default: `https://raw.githubusercontent.com/DarkSidr/proxyctl/main/proxyctl`).
-  - If you explicitly set a `releases/latest/download/...` URL and it returns `404`, installer automatically resolves a compatible `linux/amd64` asset from the latest GitHub release and retries.
+- `PROXYCTL_INSTALL_CHANNEL` — install strategy for `proxyctl` binary:
+  - `auto` (default): `release -> source build -> local ./proxyctl -> main branch binary URL`.
+  - `release`: only GitHub release asset (`linux/amd64` resolved via GitHub API).
+  - `source`: build from source archive (`go build ./cmd/proxyctl`).
+  - `url`: only `PROXYCTL_BINARY_URL`.
+  - `local`: only local `./proxyctl` next to `install.sh`.
+- `PROXYCTL_BINARY_URL` — URL to `proxyctl` binary/archive (optional override).
+- `PROXYCTL_SOURCE_ARCHIVE_URL` — source tarball URL for `source`/`auto` modes (default: `https://codeload.github.com/DarkSidr/proxyctl/tar.gz/refs/heads/main`).
+- `PROXYCTL_MAIN_BINARY_URL` — fallback raw main-branch binary URL used by `auto`.
 - `PROXYCTL_REINSTALL_BINARY=1` — force overwrite of existing `/usr/local/bin/proxyctl`.
+- `PROXYCTL_ENABLE_AUTO_UPDATE=1` — install and enable `proxyctl-self-update.timer`.
+- `PROXYCTL_AUTO_UPDATE_SCHEDULE` — `systemd` timer schedule (default: `daily`).
+- `PROXYCTL_AUTO_UPDATE_INSTALL_URL` — installer URL used by auto-update script.
 - `SINGBOX_BINARY_URL` — fallback URL for `sing-box` binary/archive.
 - `XRAY_BINARY_URL` — fallback URL for `xray` binary/archive.
   - If runtime package is unavailable in apt, installer auto-resolves latest Linux amd64 asset from upstream GitHub release.
@@ -26,10 +36,16 @@ Supported OS (MVP):
 - SQLite schema init is safe for repeated runs (`CREATE TABLE IF NOT EXISTS`).
 
 ## Update notes
-1. Re-run installer with a new binary URL:
+1. Re-run installer (recommended strategy: source build when release assets are missing):
 
 ```bash
-sudo PROXYCTL_BINARY_URL=<new-binary-url> PROXYCTL_REINSTALL_BINARY=1 bash install.sh
+sudo PROXYCTL_REINSTALL_BINARY=1 PROXYCTL_INSTALL_CHANNEL=source bash install.sh
+```
+
+or with explicit URL:
+
+```bash
+sudo PROXYCTL_REINSTALL_BINARY=1 PROXYCTL_INSTALL_CHANNEL=url PROXYCTL_BINARY_URL=<new-binary-url> bash install.sh
 ```
 
 2. Review unit file backups if installer updated units:
@@ -43,6 +59,21 @@ sudo systemctl restart proxyctl-sing-box.service
 sudo systemctl restart proxyctl-xray.service
 sudo systemctl restart proxyctl-caddy.service
 # or proxyctl-nginx.service if nginx backend is selected
+```
+
+## Auto-update timer
+
+Install/update and enable periodic self-update:
+
+```bash
+sudo PROXYCTL_ENABLE_AUTO_UPDATE=1 PROXYCTL_REINSTALL_BINARY=1 bash install.sh
+sudo systemctl list-timers proxyctl-self-update.timer
+```
+
+Run once manually:
+
+```bash
+sudo systemctl start proxyctl-self-update.service
 ```
 
 ## Uninstall notes

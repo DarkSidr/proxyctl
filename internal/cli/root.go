@@ -8,6 +8,9 @@ import (
 	"proxyctl/internal/config"
 )
 
+// Version is injected at build time via -ldflags "-X proxyctl/internal/cli.Version=<value>".
+var Version = "dev"
+
 // NewRootCmd constructs the root CLI command for proxyctl.
 func NewRootCmd() *cobra.Command {
 	defaults := config.DefaultAppConfig()
@@ -20,7 +23,7 @@ func NewRootCmd() *cobra.Command {
 		Long:          "proxyctl is a CLI orchestrator for single-node VPS proxy runtimes (sing-box/Xray) with safe revision lifecycle.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Version:       "0.1.0-skeleton",
+		Version:       Version,
 	}
 
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", config.DefaultConfigFile, "Path to proxyctl configuration file")
