@@ -42,6 +42,7 @@ type InboundRepository interface {
 type CredentialRepository interface {
 	Create(ctx context.Context, credential domain.Credential) (domain.Credential, error)
 	List(ctx context.Context) ([]domain.Credential, error)
+	Update(ctx context.Context, credential domain.Credential) (domain.Credential, error)
 	Delete(ctx context.Context, credentialID string) (bool, error)
 	DeleteByUserID(ctx context.Context, userID string) (int, error)
 }

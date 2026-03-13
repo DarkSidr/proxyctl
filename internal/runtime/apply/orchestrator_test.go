@@ -232,6 +232,9 @@ func (fakeCredentialsRepo) Create(context.Context, domain.Credential) (domain.Cr
 func (r fakeCredentialsRepo) List(context.Context) ([]domain.Credential, error) {
 	return append([]domain.Credential(nil), r.items...), nil
 }
+func (fakeCredentialsRepo) Update(context.Context, domain.Credential) (domain.Credential, error) {
+	return domain.Credential{}, nil
+}
 func (fakeCredentialsRepo) Delete(context.Context, string) (bool, error) {
 	return false, nil
 }

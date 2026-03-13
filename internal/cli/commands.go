@@ -106,6 +106,7 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 			out := cmd.OutOrStdout()
 
 			fmt.Fprintln(out, "proxyctl wizard")
+			fmt.Fprintf(out, "=== VERSION: %s ===\n", strings.TrimSpace(Version))
 			for {
 				hasNodes, err := wizardHasNodes(cmd, *dbPath)
 				if err != nil {
@@ -638,7 +639,11 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				cred, err := createCredentialForInbound(created, linkUserID)
+				defaultLabel := linkUserID
+				if linkedUser, linkedErr := findUserByID(cmd.Context(), store, linkUserID); linkedErr == nil {
+					defaultLabel = linkedUser.Name
+				}
+				cred, err := createCredentialForInbound(created, linkUserID, defaultLabel)
 				if err != nil {
 					return err
 				}
@@ -1910,7 +1915,11 @@ func runWizardAttachExistingUserToInbound(cmd *cobra.Command, in *bufio.Reader, 
 		return nil
 	}
 
-	credential, err := createCredentialForInbound(inbound, user.ID)
+	label, err := promptLine(in, out, "Client label (URI name)", user.Name)
+	if err != nil {
+		return err
+	}
+	credential, err := createCredentialForInbound(inbound, user.ID, label)
 	if err != nil {
 		return err
 	}
@@ -1954,6 +1963,35 @@ func findCredentialByUserAndInbound(credentials []domain.Credential, userID, inb
 		}
 	}
 	return domain.Credential{}, false
+}
+
+func credentialLabel(credential domain.Credential) string {
+	var metadata struct {
+		Label string `json:"label"`
+	}
+	if strings.TrimSpace(credential.Metadata) != "" {
+		_ = json.Unmarshal([]byte(credential.Metadata), &metadata)
+	}
+	return strings.TrimSpace(metadata.Label)
+}
+
+func setCredentialLabelMetadata(existingMetadata, label string) string {
+	trimmedLabel := strings.TrimSpace(label)
+	if trimmedLabel == "" {
+		return strings.TrimSpace(existingMetadata)
+	}
+
+	raw := strings.TrimSpace(existingMetadata)
+	meta := map[string]any{}
+	if raw != "" {
+		_ = json.Unmarshal([]byte(raw), &meta)
+	}
+	meta["label"] = trimmedLabel
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return raw
+	}
+	return string(encoded)
 }
 
 func runWizardShowInboundUsers(cmd *cobra.Command, out io.Writer, dbPath string, inbound domain.Inbound) error {
@@ -2015,6 +2053,7 @@ type wizardUserConfigItem struct {
 	NodeHost           string
 	CredentialKind     domain.CredentialKind
 	CredentialSecret   string
+	CredentialMetadata string
 	SecretPreview      string
 	ClientURI          string
 	ClientURIError     string
@@ -2085,6 +2124,7 @@ func runWizardOpenCredential(cmd *cobra.Command, in *bufio.Reader, out io.Writer
 			"show details",
 			"print URI",
 			"print URI with fingerprint",
+			"set client label",
 			"show full secret",
 			"delete credential",
 			"back",
@@ -2104,6 +2144,9 @@ func runWizardOpenCredential(cmd *cobra.Command, in *bufio.Reader, out io.Writer
 			fmt.Fprintf(out, "port: %d\n", selected.InboundPort)
 			fmt.Fprintf(out, "node_id: %s\n", selected.NodeID)
 			fmt.Fprintf(out, "node_host: %s\n", selected.NodeHost)
+			if label := credentialLabel(domain.Credential{Metadata: selected.CredentialMetadata}); label != "" {
+				fmt.Fprintf(out, "label: %s\n", label)
+			}
 			fmt.Fprintf(out, "secret(masked): %s\n", selected.SecretPreview)
 			if strings.TrimSpace(selected.ClientURI) != "" {
 				fmt.Fprintf(out, "uri: %s\n", selected.ClientURI)
@@ -2128,6 +2171,41 @@ func runWizardOpenCredential(cmd *cobra.Command, in *bufio.Reader, out io.Writer
 			if strings.TrimSpace(fingerprinted) != "" {
 				fmt.Fprintln(out, fingerprinted)
 			}
+		case "set client label":
+			newLabel, err := promptLine(in, out, "Client label", credentialLabel(domain.Credential{Metadata: selected.CredentialMetadata}))
+			if err != nil {
+				return err
+			}
+			store, err := openStoreWithInit(cmd.Context(), dbPath)
+			if err != nil {
+				return err
+			}
+			updatedCred, err := store.Credentials().Update(cmd.Context(), domain.Credential{
+				ID:        selected.CredentialID,
+				UserID:    user.ID,
+				InboundID: selected.InboundID,
+				Kind:      selected.CredentialKind,
+				Secret:    selected.CredentialSecret,
+				Metadata:  setCredentialLabelMetadata(selected.CredentialMetadata, newLabel),
+			})
+			closeErr := store.Close()
+			if err != nil {
+				return err
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+			selected.CredentialMetadata = updatedCred.Metadata
+			items, listErr := listWizardUserConfigs(cmd, dbPath, user.ID)
+			if listErr == nil {
+				for _, item := range items {
+					if item.Kind == wizardUserConfigCredential && item.CredentialID == selected.CredentialID {
+						selected = item
+						break
+					}
+				}
+			}
+			fmt.Fprintf(out, "label updated: %s\n", strings.TrimSpace(newLabel))
 		case "show full secret":
 			confirm, err := promptBool(in, out, "Print full secret to terminal (y/n)", false)
 			if err != nil {
@@ -2369,21 +2447,22 @@ func listWizardUserConfigs(cmd *cobra.Command, dbPath, userID string) ([]wizardU
 			clientURIError = fmt.Sprintf("inbound %q not found", cred.InboundID)
 		}
 		items = append(items, wizardUserConfigItem{
-			Kind:             wizardUserConfigCredential,
-			CredentialID:     cred.ID,
-			InboundID:        cred.InboundID,
-			InboundSummary:   summary,
-			InboundType:      inboundType,
-			InboundTransport: inboundTransport,
-			InboundDomain:    inboundDomain,
-			InboundPort:      inboundPort,
-			NodeID:           nodeID,
-			NodeHost:         nodeHost,
-			CredentialKind:   cred.Kind,
-			CredentialSecret: cred.Secret,
-			SecretPreview:    redactSecretPreview(cred.Secret),
-			ClientURI:        clientURI,
-			ClientURIError:   clientURIError,
+			Kind:               wizardUserConfigCredential,
+			CredentialID:       cred.ID,
+			InboundID:          cred.InboundID,
+			InboundSummary:     summary,
+			InboundType:        inboundType,
+			InboundTransport:   inboundTransport,
+			InboundDomain:      inboundDomain,
+			InboundPort:        inboundPort,
+			NodeID:             nodeID,
+			NodeHost:           nodeHost,
+			CredentialKind:     cred.Kind,
+			CredentialSecret:   cred.Secret,
+			CredentialMetadata: cred.Metadata,
+			SecretPreview:      redactSecretPreview(cred.Secret),
+			ClientURI:          clientURI,
+			ClientURIError:     clientURIError,
 		})
 	}
 
@@ -2663,7 +2742,20 @@ func findNodeByID(ctx context.Context, store *sqlite.Store, nodeID string) (doma
 	return domain.Node{}, fmt.Errorf("node %q not found", nodeID)
 }
 
-func createCredentialForInbound(inbound domain.Inbound, userID string) (domain.Credential, error) {
+func findUserByID(ctx context.Context, store *sqlite.Store, userID string) (domain.User, error) {
+	users, err := store.Users().List(ctx)
+	if err != nil {
+		return domain.User{}, fmt.Errorf("list users: %w", err)
+	}
+	for _, user := range users {
+		if user.ID == userID {
+			return user, nil
+		}
+	}
+	return domain.User{}, fmt.Errorf("user %q not found", userID)
+}
+
+func createCredentialForInbound(inbound domain.Inbound, userID, label string) (domain.Credential, error) {
 	kind := domain.CredentialKindUUID
 	secret := ""
 	switch inbound.Type {
@@ -2684,11 +2776,13 @@ func createCredentialForInbound(inbound domain.Inbound, userID string) (domain.C
 		return domain.Credential{}, fmt.Errorf("unsupported inbound protocol for auto credential: %s", inbound.Type)
 	}
 
+	metadata := setCredentialLabelMetadata("", label)
 	return domain.Credential{
 		UserID:    strings.TrimSpace(userID),
 		InboundID: inbound.ID,
 		Kind:      kind,
 		Secret:    secret,
+		Metadata:  metadata,
 	}, nil
 }
 

@@ -205,7 +205,7 @@ func buildXHTTPInbound(node domain.Node, inbound domain.Inbound, credentials []d
 			Protocol:     domain.ProtocolXHTTP,
 			InboundID:    inbound.ID,
 			CredentialID: cred.ID,
-			URI:          xhttpURI(node.Host, inbound, secret),
+			URI:          xhttpURI(node.Host, inbound, cred),
 		})
 	}
 	if len(cfgClients) == 0 {
@@ -304,7 +304,7 @@ func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []d
 			Protocol:     domain.ProtocolVLESS,
 			InboundID:    inbound.ID,
 			CredentialID: cred.ID,
-			URI:          vlessRealityURI(node.Host, inbound, secret, realityPublicKey, realityServerName, realityFingerprint, realityFlow),
+			URI:          vlessRealityURI(node.Host, inbound, cred, realityPublicKey, realityServerName, realityFingerprint, realityFlow),
 		})
 	}
 	if len(cfgClients) == 0 {
@@ -339,10 +339,10 @@ func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []d
 	}, clients, nil
 }
 
-func xhttpURI(host string, inbound domain.Inbound, uuid string) string {
+func xhttpURI(host string, inbound domain.Inbound, credential domain.Credential) string {
 	u := url.URL{
 		Scheme: "vless",
-		User:   url.User(strings.TrimSpace(uuid)),
+		User:   url.User(strings.TrimSpace(credential.Secret)),
 		Host:   fmt.Sprintf("%s:%d", strings.TrimSpace(host), inbound.Port),
 	}
 	q := url.Values{}
@@ -360,14 +360,14 @@ func xhttpURI(host string, inbound domain.Inbound, uuid string) string {
 	q.Set("path", normalizePath(inbound.Path))
 
 	u.RawQuery = q.Encode()
-	u.Fragment = "proxyctl-" + inbound.ID
+	u.Fragment = clientLabel(credential, inbound.ID)
 	return u.String()
 }
 
-func vlessRealityURI(host string, inbound domain.Inbound, uuid, publicKey, sni, fingerprint, flow string) string {
+func vlessRealityURI(host string, inbound domain.Inbound, credential domain.Credential, publicKey, sni, fingerprint, flow string) string {
 	u := url.URL{
 		Scheme: "vless",
-		User:   url.User(strings.TrimSpace(uuid)),
+		User:   url.User(strings.TrimSpace(credential.Secret)),
 		Host:   fmt.Sprintf("%s:%d", strings.TrimSpace(host), inbound.Port),
 	}
 	q := url.Values{}
@@ -390,7 +390,7 @@ func vlessRealityURI(host string, inbound domain.Inbound, uuid, publicKey, sni, 
 		q.Set("spx", normalizePath(spx))
 	}
 	u.RawQuery = q.Encode()
-	u.Fragment = "proxyctl-" + inbound.ID
+	u.Fragment = clientLabel(credential, inbound.ID)
 	return u.String()
 }
 
@@ -429,6 +429,19 @@ func hostHeader(inbound domain.Inbound, fallbackHost string) string {
 		return strings.TrimSpace(inbound.Domain)
 	}
 	return strings.TrimSpace(fallbackHost)
+}
+
+func clientLabel(credential domain.Credential, inboundID string) string {
+	var metadata struct {
+		Label string `json:"label"`
+	}
+	if strings.TrimSpace(credential.Metadata) != "" {
+		_ = json.Unmarshal([]byte(credential.Metadata), &metadata)
+	}
+	if label := strings.TrimSpace(metadata.Label); label != "" {
+		return label
+	}
+	return "proxyctl-" + strings.TrimSpace(inboundID)
 }
 
 func normalizePath(path string) string {

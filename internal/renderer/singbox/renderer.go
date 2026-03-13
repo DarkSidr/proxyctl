@@ -171,7 +171,7 @@ func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []d
 			Protocol:     domain.ProtocolVLESS,
 			InboundID:    inbound.ID,
 			CredentialID: cred.ID,
-			URI:          vlessURI(node.Host, inbound, cred.Secret),
+			URI:          vlessURI(node.Host, inbound, cred),
 		})
 	}
 	if len(users) == 0 {
@@ -230,7 +230,7 @@ func buildHysteria2Inbound(node domain.Node, inbound domain.Inbound, credentials
 			Protocol:     domain.ProtocolHysteria2,
 			InboundID:    inbound.ID,
 			CredentialID: cred.ID,
-			URI:          hysteria2URI(node.Host, inbound, cred.Secret),
+			URI:          hysteria2URI(node.Host, inbound, cred),
 		})
 	}
 	if len(users) == 0 {
@@ -291,11 +291,11 @@ func serverName(inbound domain.Inbound, fallbackHost string) string {
 	return strings.TrimSpace(fallbackHost)
 }
 
-func vlessURI(host string, inbound domain.Inbound, uuid string) string {
+func vlessURI(host string, inbound domain.Inbound, credential domain.Credential) string {
 	connectHost := endpointHost(inbound, host)
 	u := url.URL{
 		Scheme: "vless",
-		User:   url.User(strings.TrimSpace(uuid)),
+		User:   url.User(strings.TrimSpace(credential.Secret)),
 		Host:   fmt.Sprintf("%s:%d", strings.TrimSpace(connectHost), inbound.Port),
 	}
 	q := url.Values{}
@@ -329,14 +329,14 @@ func vlessURI(host string, inbound domain.Inbound, uuid string) string {
 		}
 	}
 	u.RawQuery = q.Encode()
-	u.Fragment = "proxyctl-" + inbound.ID
+	u.Fragment = clientLabel(credential, inbound.ID)
 	return u.String()
 }
 
-func hysteria2URI(host string, inbound domain.Inbound, password string) string {
+func hysteria2URI(host string, inbound domain.Inbound, credential domain.Credential) string {
 	u := url.URL{
 		Scheme: "hysteria2",
-		User:   url.User(strings.TrimSpace(password)),
+		User:   url.User(strings.TrimSpace(credential.Secret)),
 		Host:   fmt.Sprintf("%s:%d", strings.TrimSpace(host), inbound.Port),
 	}
 	q := url.Values{}
@@ -348,7 +348,7 @@ func hysteria2URI(host string, inbound domain.Inbound, password string) string {
 		q.Set("insecure", "0")
 	}
 	u.RawQuery = q.Encode()
-	u.Fragment = "proxyctl-" + inbound.ID
+	u.Fragment = clientLabel(credential, inbound.ID)
 	return u.String()
 }
 
@@ -377,4 +377,17 @@ func wsHostHeader(inbound domain.Inbound, fallbackHost string) string {
 		return strings.TrimSpace(inbound.SNI)
 	}
 	return strings.TrimSpace(fallbackHost)
+}
+
+func clientLabel(credential domain.Credential, inboundID string) string {
+	var metadata struct {
+		Label string `json:"label"`
+	}
+	if strings.TrimSpace(credential.Metadata) != "" {
+		_ = json.Unmarshal([]byte(credential.Metadata), &metadata)
+	}
+	if label := strings.TrimSpace(metadata.Label); label != "" {
+		return label
+	}
+	return "proxyctl-" + strings.TrimSpace(inboundID)
 }

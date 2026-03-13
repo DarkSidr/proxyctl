@@ -51,6 +51,7 @@ func TestRenderBuildsSingBoxConfigAndClientArtifacts(t *testing.T) {
 				InboundID: "in-vless",
 				Kind:      domain.CredentialKindUUID,
 				Secret:    "11111111-1111-1111-1111-111111111111",
+				Metadata:  `{"label":"kamil-main"}`,
 			},
 			{
 				ID:        "cred-hy2",
@@ -117,6 +118,9 @@ func TestRenderBuildsSingBoxConfigAndClientArtifacts(t *testing.T) {
 			}
 			if query.Get("sni") != "vpn.example.com" {
 				t.Fatalf("vless sni query = %q, want vpn.example.com", query.Get("sni"))
+			}
+			if parsed.Fragment != "kamil-main" {
+				t.Fatalf("vless uri fragment = %q, want kamil-main", parsed.Fragment)
 			}
 		case domain.ProtocolHysteria2:
 			hasHY2 = true

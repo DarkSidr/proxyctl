@@ -385,6 +385,56 @@ func (r *credentialRepository) List(ctx context.Context) ([]domain.Credential, e
 	return credentials, nil
 }
 
+func (r *credentialRepository) Update(ctx context.Context, credential domain.Credential) (domain.Credential, error) {
+	credential.ID = strings.TrimSpace(credential.ID)
+	if credential.ID == "" {
+		return domain.Credential{}, fmt.Errorf("credential id is required")
+	}
+
+	result, err := r.db.ExecContext(
+		ctx,
+		`UPDATE credentials SET user_id = ?, inbound_id = ?, kind = ?, secret = ?, metadata = ? WHERE id = ?`,
+		credential.UserID,
+		credential.InboundID,
+		credential.Kind,
+		credential.Secret,
+		credential.Metadata,
+		credential.ID,
+	)
+	if err != nil {
+		return domain.Credential{}, fmt.Errorf("update credential: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return domain.Credential{}, fmt.Errorf("update credential rows affected: %w", err)
+	}
+	if affected == 0 {
+		return domain.Credential{}, sql.ErrNoRows
+	}
+
+	var createdAt string
+	if err := r.db.QueryRowContext(
+		ctx,
+		`SELECT id, user_id, inbound_id, kind, secret, metadata, created_at FROM credentials WHERE id = ?`,
+		credential.ID,
+	).Scan(
+		&credential.ID,
+		&credential.UserID,
+		&credential.InboundID,
+		&credential.Kind,
+		&credential.Secret,
+		&credential.Metadata,
+		&createdAt,
+	); err != nil {
+		return domain.Credential{}, fmt.Errorf("read updated credential: %w", err)
+	}
+	credential.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return domain.Credential{}, fmt.Errorf("parse credential created_at: %w", err)
+	}
+	return credential, nil
+}
+
 func (r *credentialRepository) Delete(ctx context.Context, credentialID string) (bool, error) {
 	result, err := r.db.ExecContext(ctx, `DELETE FROM credentials WHERE id = ?`, credentialID)
 	if err != nil {

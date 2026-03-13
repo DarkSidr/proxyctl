@@ -3,6 +3,7 @@ package xray
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -178,6 +179,7 @@ func TestRenderBuildsVLESSRealityConfigAndClientArtifacts(t *testing.T) {
 				InboundID: "in-vless-reality",
 				Kind:      domain.CredentialKindUUID,
 				Secret:    "e1cb2423-ffc5-4c1e-a092-a04827525568",
+				Metadata:  `{"label":"kamil-reality"}`,
 			},
 		},
 	}
@@ -205,6 +207,13 @@ func TestRenderBuildsVLESSRealityConfigAndClientArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(uri, "type=tcp") {
 		t.Fatalf("reality uri = %q, expected type=tcp", uri)
+	}
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		t.Fatalf("parse reality uri: %v", err)
+	}
+	if parsed.Fragment != "kamil-reality" {
+		t.Fatalf("reality uri fragment = %q, want kamil-reality", parsed.Fragment)
 	}
 
 	var cfg struct {
