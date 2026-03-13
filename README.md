@@ -30,7 +30,7 @@ make smoke-help
 One-command installer entrypoint (stage 11):
 
 ```bash
-bash <(curl -fsSL <INSTALL_SH_URL>)
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh)
 ```
 
 For local/offline setup from this repository:
