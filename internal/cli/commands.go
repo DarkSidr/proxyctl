@@ -897,16 +897,19 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath, linkedUserID string) (in
 }
 
 func promptChoice(in *bufio.Reader, out io.Writer, label string, options []string, defaultValue string) (string, error) {
-	fmt.Fprintf(out, "%s:\n", label)
-	for i, opt := range options {
-		fmt.Fprintf(out, "  %d) %s\n", i+1, opt)
-	}
+	displayOptions := make([]string, 0, len(options))
 	backOption := ""
 	for _, opt := range options {
-		if strings.EqualFold(strings.TrimSpace(opt), "back") {
+		if backOption == "" && strings.EqualFold(strings.TrimSpace(opt), "back") {
 			backOption = opt
-			break
+			continue
 		}
+		displayOptions = append(displayOptions, opt)
+	}
+
+	fmt.Fprintf(out, "%s:\n", label)
+	for i, opt := range displayOptions {
+		fmt.Fprintf(out, "  %d) %s\n", i+1, opt)
 	}
 	if backOption != "" {
 		fmt.Fprintln(out, "  0) back")
@@ -931,14 +934,19 @@ func promptChoice(in *bufio.Reader, out io.Writer, label string, options []strin
 			if idx == 0 && backOption != "" {
 				return backOption, nil
 			}
-			if idx >= 1 && idx <= len(options) {
-				return options[idx-1], nil
+			if idx >= 1 && idx <= len(displayOptions) {
+				return displayOptions[idx-1], nil
 			}
 		}
 		if resolved, ok := optionMap[strings.ToLower(line)]; ok {
 			return resolved, nil
 		}
-		fmt.Fprintf(out, "invalid value, choose one of: %s\n", strings.Join(options, ", "))
+		allowed := make([]string, 0, len(displayOptions)+1)
+		allowed = append(allowed, displayOptions...)
+		if backOption != "" {
+			allowed = append(allowed, "0 (back)")
+		}
+		fmt.Fprintf(out, "invalid value, choose one of: %s\n", strings.Join(allowed, ", "))
 	}
 }
 
