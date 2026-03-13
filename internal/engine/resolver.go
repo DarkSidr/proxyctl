@@ -24,6 +24,7 @@ var protocolMatrix = map[domain.Protocol]ProtocolRule{
 		DefaultEngine: domain.EngineSingBox,
 		SupportedEngines: map[domain.Engine]struct{}{
 			domain.EngineSingBox: {},
+			domain.EngineXray:    {},
 		},
 		AllowedTransports: map[string]struct{}{
 			"tcp":  {},

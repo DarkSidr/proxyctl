@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 
@@ -60,7 +61,19 @@ func (s *Store) Init(ctx context.Context) error {
 			return fmt.Errorf("apply schema: %w", err)
 		}
 	}
+	for _, statement := range schemaMigrations {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil && !isDuplicateColumnError(err) {
+			return fmt.Errorf("apply schema migration: %w", err)
+		}
+	}
 	return nil
+}
+
+func isDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
 
 func (s *Store) Users() storage.UserRepository { return s.users }

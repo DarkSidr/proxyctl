@@ -260,16 +260,25 @@ func newInboundCmd(dbPath *string) *cobra.Command {
 
 func newInboundAddCmd(dbPath *string) *cobra.Command {
 	var (
-		protocol  string
-		transport string
-		engineRaw string
-		nodeID    string
-		domainRaw string
-		port      int
-		tls       bool
-		path      string
-		sni       string
-		enabled   bool
+		protocol           string
+		transport          string
+		engineRaw          string
+		nodeID             string
+		domainRaw          string
+		port               int
+		tls                bool
+		path               string
+		sni                string
+		reality            bool
+		realityPublicKey   string
+		realityPrivateKey  string
+		realityShortID     string
+		realityFingerprint string
+		realitySpiderX     string
+		realityServer      string
+		realityServerPort  int
+		vlessFlow          string
+		enabled            bool
 	)
 
 	cmd := &cobra.Command{
@@ -296,6 +305,39 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 			}
 			defer store.Close()
 
+			if reality {
+				if strings.ToLower(strings.TrimSpace(protocol)) != string(domain.ProtocolVLESS) {
+					return fmt.Errorf("--reality is supported only for --type vless")
+				}
+				if strings.ToLower(strings.TrimSpace(transport)) != "tcp" {
+					return fmt.Errorf("--reality requires --transport tcp")
+				}
+				if strings.TrimSpace(engineRaw) == "" {
+					engineRaw = string(domain.EngineXray)
+				}
+				if strings.ToLower(strings.TrimSpace(engineRaw)) != string(domain.EngineXray) {
+					return fmt.Errorf("--reality requires --engine xray")
+				}
+				if strings.TrimSpace(realityPublicKey) == "" {
+					return fmt.Errorf("--reality-public-key is required when --reality is enabled")
+				}
+				if strings.TrimSpace(realityPrivateKey) == "" {
+					return fmt.Errorf("--reality-private-key is required when --reality is enabled")
+				}
+				if strings.TrimSpace(realityServer) == "" {
+					return fmt.Errorf("--reality-server is required when --reality is enabled")
+				}
+				if realityServerPort <= 0 || realityServerPort > 65535 {
+					return fmt.Errorf("--reality-server-port must be in range 1..65535 when --reality is enabled")
+				}
+				if strings.TrimSpace(realityFingerprint) == "" {
+					realityFingerprint = "chrome"
+				}
+				if strings.TrimSpace(vlessFlow) == "" {
+					vlessFlow = "xtls-rprx-vision"
+				}
+			}
+
 			resolvedEngine, err := engine.Resolve(engine.ResolutionRequest{
 				Protocol:        domain.Protocol(strings.ToLower(strings.TrimSpace(protocol))),
 				Transport:       transport,
@@ -306,16 +348,25 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 			}
 
 			created, err := store.Inbounds().Create(cmd.Context(), domain.Inbound{
-				Type:       domain.Protocol(strings.ToLower(strings.TrimSpace(protocol))),
-				Engine:     resolvedEngine,
-				NodeID:     strings.TrimSpace(nodeID),
-				Domain:     strings.TrimSpace(domainRaw),
-				Port:       port,
-				TLSEnabled: tls,
-				Transport:  strings.ToLower(strings.TrimSpace(transport)),
-				Path:       strings.TrimSpace(path),
-				SNI:        strings.TrimSpace(sni),
-				Enabled:    enabled,
+				Type:               domain.Protocol(strings.ToLower(strings.TrimSpace(protocol))),
+				Engine:             resolvedEngine,
+				NodeID:             strings.TrimSpace(nodeID),
+				Domain:             strings.TrimSpace(domainRaw),
+				Port:               port,
+				TLSEnabled:         tls,
+				Transport:          strings.ToLower(strings.TrimSpace(transport)),
+				Path:               strings.TrimSpace(path),
+				SNI:                strings.TrimSpace(sni),
+				RealityEnabled:     reality,
+				RealityPublicKey:   strings.TrimSpace(realityPublicKey),
+				RealityPrivateKey:  strings.TrimSpace(realityPrivateKey),
+				RealityShortID:     strings.TrimSpace(realityShortID),
+				RealityFingerprint: strings.TrimSpace(realityFingerprint),
+				RealitySpiderX:     strings.TrimSpace(realitySpiderX),
+				RealityServer:      strings.TrimSpace(realityServer),
+				RealityServerPort:  realityServerPort,
+				VLESSFlow:          strings.TrimSpace(vlessFlow),
+				Enabled:            enabled,
 			})
 			if err != nil {
 				return err
@@ -323,7 +374,7 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 
 			fmt.Fprintf(
 				cmd.OutOrStdout(),
-				"added inbound: id=%s type=%s transport=%s engine=%s node_id=%s port=%d tls=%t enabled=%t created_at=%s\n",
+				"added inbound: id=%s type=%s transport=%s engine=%s node_id=%s port=%d tls=%t reality=%t flow=%s enabled=%t created_at=%s\n",
 				created.ID,
 				created.Type,
 				created.Transport,
@@ -331,6 +382,8 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 				created.NodeID,
 				created.Port,
 				created.TLSEnabled,
+				created.RealityEnabled,
+				created.VLESSFlow,
 				created.Enabled,
 				created.CreatedAt.Format(time.RFC3339),
 			)
@@ -347,6 +400,15 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 	cmd.Flags().BoolVar(&tls, "tls", false, "Enable TLS for this inbound")
 	cmd.Flags().StringVar(&path, "path", "", "Transport path")
 	cmd.Flags().StringVar(&sni, "sni", "", "TLS SNI override")
+	cmd.Flags().BoolVar(&reality, "reality", false, "Enable VLESS Reality mode (requires --type vless --transport tcp --engine xray)")
+	cmd.Flags().StringVar(&realityPublicKey, "reality-public-key", "", "Reality public key (used in subscription URI as pbk)")
+	cmd.Flags().StringVar(&realityPrivateKey, "reality-private-key", "", "Reality private key (used in Xray inbound realitySettings.privateKey)")
+	cmd.Flags().StringVar(&realityShortID, "reality-short-id", "", "Reality short ID (sid)")
+	cmd.Flags().StringVar(&realityFingerprint, "reality-fingerprint", "", "Reality client fingerprint (fp), default: chrome")
+	cmd.Flags().StringVar(&realitySpiderX, "reality-spider-x", "", "Reality spiderX path (spx)")
+	cmd.Flags().StringVar(&realityServer, "reality-server", "", "Reality handshake destination server (dest host)")
+	cmd.Flags().IntVar(&realityServerPort, "reality-server-port", 0, "Reality handshake destination server port (dest port)")
+	cmd.Flags().StringVar(&vlessFlow, "vless-flow", "", "VLESS flow (for Reality typically xtls-rprx-vision)")
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "Whether inbound is enabled")
 
 	return cmd
@@ -370,11 +432,11 @@ func newInboundListCmd(dbPath *string) *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tTYPE\tENGINE\tNODE_ID\tDOMAIN\tPORT\tTLS\tTRANSPORT\tPATH\tSNI\tENABLED\tCREATED_AT")
+			fmt.Fprintln(w, "ID\tTYPE\tENGINE\tNODE_ID\tDOMAIN\tPORT\tTLS\tREALITY\tTRANSPORT\tPATH\tSNI\tFLOW\tENABLED\tCREATED_AT")
 			for _, inbound := range inbounds {
 				fmt.Fprintf(
 					w,
-					"%s\t%s\t%s\t%s\t%s\t%d\t%t\t%s\t%s\t%s\t%t\t%s\n",
+					"%s\t%s\t%s\t%s\t%s\t%d\t%t\t%t\t%s\t%s\t%s\t%s\t%t\t%s\n",
 					inbound.ID,
 					inbound.Type,
 					inbound.Engine,
@@ -382,9 +444,11 @@ func newInboundListCmd(dbPath *string) *cobra.Command {
 					inbound.Domain,
 					inbound.Port,
 					inbound.TLSEnabled,
+					inbound.RealityEnabled,
 					inbound.Transport,
 					inbound.Path,
 					inbound.SNI,
+					inbound.VLESSFlow,
 					inbound.Enabled,
 					inbound.CreatedAt.Format(time.RFC3339),
 				)

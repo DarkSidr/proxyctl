@@ -23,6 +23,15 @@ func TestResolveCompatibleMatrix(t *testing.T) {
 			want: domain.EngineSingBox,
 		},
 		{
+			name: "vless accepts explicit xray",
+			req: ResolutionRequest{
+				Protocol:        domain.ProtocolVLESS,
+				Transport:       "tcp",
+				PreferredEngine: domain.EngineXray,
+			},
+			want: domain.EngineXray,
+		},
+		{
 			name: "hysteria2 accepts explicit sing-box",
 			req: ResolutionRequest{
 				Protocol:        domain.ProtocolHysteria2,

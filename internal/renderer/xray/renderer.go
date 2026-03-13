@@ -78,15 +78,17 @@ type inboundSettings struct {
 }
 
 type clientConfig struct {
-	ID string `json:"id"`
+	ID   string `json:"id"`
+	Flow string `json:"flow,omitempty"`
 }
 
 type streamSettings struct {
-	Network       string         `json:"network"`
-	Security      string         `json:"security"`
-	XHTTPSettings xhttpSettings  `json:"xhttpSettings"`
-	TLSSettings   *tlsSettings   `json:"tlsSettings,omitempty"`
-	Sockopt       *sockoptConfig `json:"sockopt,omitempty"`
+	Network         string           `json:"network"`
+	Security        string           `json:"security"`
+	XHTTPSettings   *xhttpSettings   `json:"xhttpSettings,omitempty"`
+	RealitySettings *realitySettings `json:"realitySettings,omitempty"`
+	TLSSettings     *tlsSettings     `json:"tlsSettings,omitempty"`
+	Sockopt         *sockoptConfig   `json:"sockopt,omitempty"`
 }
 
 type xhttpSettings struct {
@@ -97,6 +99,15 @@ type xhttpSettings struct {
 
 type tlsSettings struct {
 	ServerName string `json:"serverName,omitempty"`
+}
+
+type realitySettings struct {
+	Show        bool     `json:"show"`
+	Dest        string   `json:"dest"`
+	Xver        int      `json:"xver"`
+	ServerNames []string `json:"serverNames"`
+	PrivateKey  string   `json:"privateKey"`
+	ShortIDs    []string `json:"shortIds,omitempty"`
 }
 
 type sniffingConfig struct {
@@ -142,6 +153,13 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 		}
 
 		switch inbound.Type {
+		case domain.ProtocolVLESS:
+			cfg, items, err := buildVLESSInbound(req.Node, inbound, byInbound[inbound.ID])
+			if err != nil {
+				return configDoc{}, nil, err
+			}
+			cfgInbounds = append(cfgInbounds, cfg)
+			clients = append(clients, items...)
 		case domain.ProtocolXHTTP:
 			cfg, items, err := buildXHTTPInbound(req.Node, inbound, byInbound[inbound.ID])
 			if err != nil {
@@ -209,12 +227,97 @@ func buildXHTTPInbound(node domain.Node, inbound domain.Inbound, credentials []d
 		StreamSettings: streamSettings{
 			Network:  "xhttp",
 			Security: security,
-			XHTTPSettings: xhttpSettings{
+			XHTTPSettings: &xhttpSettings{
 				Path: path,
 				Host: host,
 				Mode: "auto",
 			},
 			TLSSettings: tlsCfg,
+		},
+	}, clients, nil
+}
+
+func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []domain.Credential) (inboundConfig, []renderer.ClientArtifact, error) {
+	if inbound.Transport != "tcp" {
+		return inboundConfig{}, nil, fmt.Errorf("inbound %q has unsupported vless transport %q for xray (supported: tcp)", inbound.ID, inbound.Transport)
+	}
+	if !inbound.RealityEnabled {
+		return inboundConfig{}, nil, fmt.Errorf("xray vless inbound %q requires reality mode to be enabled", inbound.ID)
+	}
+
+	realityServerName := serverName(inbound, node.Host)
+	realityPublicKey := strings.TrimSpace(inbound.RealityPublicKey)
+	realityPrivateKey := strings.TrimSpace(inbound.RealityPrivateKey)
+	realityServer := strings.TrimSpace(inbound.RealityServer)
+	realityFlow := strings.TrimSpace(inbound.VLESSFlow)
+	realityFingerprint := strings.TrimSpace(inbound.RealityFingerprint)
+	if realityFlow == "" {
+		realityFlow = "xtls-rprx-vision"
+	}
+	if realityFingerprint == "" {
+		realityFingerprint = "chrome"
+	}
+	if realityPublicKey == "" {
+		return inboundConfig{}, nil, fmt.Errorf("xray vless inbound %q requires reality public key", inbound.ID)
+	}
+	if realityPrivateKey == "" {
+		return inboundConfig{}, nil, fmt.Errorf("xray vless inbound %q requires reality private key", inbound.ID)
+	}
+	if realityServer == "" {
+		return inboundConfig{}, nil, fmt.Errorf("xray vless inbound %q requires reality server", inbound.ID)
+	}
+	if inbound.RealityServerPort < 1 || inbound.RealityServerPort > 65535 {
+		return inboundConfig{}, nil, fmt.Errorf("xray vless inbound %q has invalid reality server port %d", inbound.ID, inbound.RealityServerPort)
+	}
+
+	var (
+		cfgClients []clientConfig
+		clients    []renderer.ClientArtifact
+	)
+	for _, cred := range credentials {
+		secret := strings.TrimSpace(cred.Secret)
+		if cred.Kind != domain.CredentialKindUUID || secret == "" {
+			continue
+		}
+		cfgClients = append(cfgClients, clientConfig{
+			ID:   secret,
+			Flow: realityFlow,
+		})
+		clients = append(clients, renderer.ClientArtifact{
+			Protocol:     domain.ProtocolVLESS,
+			InboundID:    inbound.ID,
+			CredentialID: cred.ID,
+			URI:          vlessRealityURI(node.Host, inbound, secret, realityPublicKey, realityServerName, realityFingerprint, realityFlow),
+		})
+	}
+	if len(cfgClients) == 0 {
+		return inboundConfig{}, nil, fmt.Errorf("inbound %q requires at least one uuid credential", inbound.ID)
+	}
+
+	realityCfg := &realitySettings{
+		Show:        false,
+		Dest:        fmt.Sprintf("%s:%d", realityServer, inbound.RealityServerPort),
+		Xver:        0,
+		ServerNames: []string{realityServerName},
+		PrivateKey:  realityPrivateKey,
+	}
+	if sid := strings.TrimSpace(inbound.RealityShortID); sid != "" {
+		realityCfg.ShortIDs = []string{sid}
+	}
+
+	return inboundConfig{
+		Tag:      "vless-" + inbound.ID,
+		Listen:   "::",
+		Port:     inbound.Port,
+		Protocol: "vless",
+		Settings: inboundSettings{
+			Clients:    cfgClients,
+			Decryption: "none",
+		},
+		StreamSettings: streamSettings{
+			Network:         "tcp",
+			Security:        "reality",
+			RealitySettings: realityCfg,
 		},
 	}, clients, nil
 }
@@ -239,6 +342,36 @@ func xhttpURI(host string, inbound domain.Inbound, uuid string) string {
 	}
 	q.Set("path", normalizePath(inbound.Path))
 
+	u.RawQuery = q.Encode()
+	u.Fragment = "proxyctl-" + inbound.ID
+	return u.String()
+}
+
+func vlessRealityURI(host string, inbound domain.Inbound, uuid, publicKey, sni, fingerprint, flow string) string {
+	u := url.URL{
+		Scheme: "vless",
+		User:   url.User(strings.TrimSpace(uuid)),
+		Host:   fmt.Sprintf("%s:%d", strings.TrimSpace(host), inbound.Port),
+	}
+	q := url.Values{}
+	q.Set("encryption", "none")
+	q.Set("type", "tcp")
+	q.Set("security", "reality")
+	q.Set("pbk", strings.TrimSpace(publicKey))
+	q.Set("headerType", "none")
+	q.Set("fp", strings.TrimSpace(fingerprint))
+	if strings.TrimSpace(flow) != "" {
+		q.Set("flow", strings.TrimSpace(flow))
+	}
+	if strings.TrimSpace(sni) != "" {
+		q.Set("sni", strings.TrimSpace(sni))
+	}
+	if sid := strings.TrimSpace(inbound.RealityShortID); sid != "" {
+		q.Set("sid", sid)
+	}
+	if spx := strings.TrimSpace(inbound.RealitySpiderX); spx != "" {
+		q.Set("spx", normalizePath(spx))
+	}
 	u.RawQuery = q.Encode()
 	u.Fragment = "proxyctl-" + inbound.ID
 	return u.String()

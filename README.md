@@ -55,6 +55,62 @@ To keep default behavior, use:
 reverse_proxy: caddy
 ```
 
+## Decoy site template (manual refresh)
+
+If you want to update decoy web assets from the upstream repository before rendering:
+
+```bash
+sudo mkdir -p /usr/share/proxy-orchestrator/templates/decoy-site/assets
+sudo curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/templates/decoy-site/index.html \
+  -o /usr/share/proxy-orchestrator/templates/decoy-site/index.html
+sudo curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/templates/decoy-site/assets/style.css \
+  -o /usr/share/proxy-orchestrator/templates/decoy-site/assets/style.css
+```
+
+Then rebuild and apply runtime artifacts:
+
+```bash
+proxyctl render
+proxyctl apply
+```
+
+Expected confirmation includes:
+- `decoy assets: 2 files`
+- `built artifacts: sing-box.json, xray.json`
+- `validated artifacts: sing-box.json, xray.json`
+- `service restart: proxyctl-sing-box.service`
+
+## VLESS Reality (Xray)
+
+To generate `vless://` links with `security=reality` and `flow=xtls-rprx-vision`, create a VLESS inbound on Xray with TCP transport:
+
+```bash
+proxyctl inbound add \
+  --type vless \
+  --engine xray \
+  --transport tcp \
+  --node-id <NODE_ID> \
+  --domain darksidr.icu \
+  --port 443 \
+  --sni www.intel.com \
+  --reality \
+  --reality-public-key <REALITY_PUBLIC_KEY> \
+  --reality-private-key <REALITY_PRIVATE_KEY> \
+  --reality-short-id 797e \
+  --reality-fingerprint chrome \
+  --reality-spider-x /Jx6iYQje4UnbubT \
+  --reality-server www.intel.com \
+  --reality-server-port 443 \
+  --vless-flow xtls-rprx-vision
+```
+
+Then regenerate subscriptions:
+
+```bash
+proxyctl subscription generate <user>
+proxyctl subscription export <user> --format txt
+```
+
 ## Troubleshooting
 
 Quick operational diagnostics:

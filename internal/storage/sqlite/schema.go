@@ -26,6 +26,15 @@ var schemaStatements = []string{
 		transport TEXT,
 		path TEXT,
 		sni TEXT,
+		reality_enabled INTEGER NOT NULL DEFAULT 0,
+		reality_public_key TEXT,
+		reality_private_key TEXT,
+		reality_short_id TEXT,
+		reality_fingerprint TEXT,
+		reality_spider_x TEXT,
+		reality_server TEXT,
+		reality_server_port INTEGER NOT NULL DEFAULT 0,
+		vless_flow TEXT,
 		enabled INTEGER NOT NULL DEFAULT 1,
 		created_at TEXT NOT NULL,
 		FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
@@ -52,4 +61,16 @@ var schemaStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_inbounds_node_id ON inbounds(node_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_credentials_user_id ON credentials(user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_credentials_inbound_id ON credentials(inbound_id)`,
+}
+
+var schemaMigrations = []string{
+	`ALTER TABLE inbounds ADD COLUMN reality_enabled INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE inbounds ADD COLUMN reality_public_key TEXT`,
+	`ALTER TABLE inbounds ADD COLUMN reality_private_key TEXT`,
+	`ALTER TABLE inbounds ADD COLUMN reality_short_id TEXT`,
+	`ALTER TABLE inbounds ADD COLUMN reality_fingerprint TEXT`,
+	`ALTER TABLE inbounds ADD COLUMN reality_spider_x TEXT`,
+	`ALTER TABLE inbounds ADD COLUMN reality_server TEXT`,
+	`ALTER TABLE inbounds ADD COLUMN reality_server_port INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE inbounds ADD COLUMN vless_flow TEXT`,
 }

@@ -71,18 +71,27 @@ type Node struct {
 
 // Inbound configures one inbound listener.
 type Inbound struct {
-	ID         string
-	Type       Protocol
-	Engine     Engine
-	NodeID     string
-	Domain     string
-	Port       int
-	TLSEnabled bool
-	Transport  string
-	Path       string
-	SNI        string
-	Enabled    bool
-	CreatedAt  time.Time
+	ID                 string
+	Type               Protocol
+	Engine             Engine
+	NodeID             string
+	Domain             string
+	Port               int
+	TLSEnabled         bool
+	Transport          string
+	Path               string
+	SNI                string
+	RealityEnabled     bool
+	RealityPublicKey   string
+	RealityPrivateKey  string
+	RealityShortID     string
+	RealityFingerprint string
+	RealitySpiderX     string
+	RealityServer      string
+	RealityServerPort  int
+	VLESSFlow          string
+	Enabled            bool
+	CreatedAt          time.Time
 }
 
 // Credential stores one user/inbound access secret.
