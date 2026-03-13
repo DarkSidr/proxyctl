@@ -125,8 +125,8 @@ resolve_proxyctl_release_asset_url() {
 
   local assets
   assets="$(printf '%s\n' "${response}" \
-    | grep -oE '"browser_download_url":"[^"]+"' \
-    | sed -E 's/^"browser_download_url":"(.*)"$/\1/' \
+    | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+"' \
+    | sed -E 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"(.*)"$/\1/' \
     | sed 's#\\/#/#g')" || true
 
   [[ -n "${assets}" ]] || return 1
@@ -172,8 +172,8 @@ resolve_github_latest_asset_url() {
 
   local assets
   assets="$(printf '%s\n' "${response}" \
-    | grep -oE '"browser_download_url":"[^"]+"' \
-    | sed -E 's/^"browser_download_url":"(.*)"$/\1/' \
+    | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+"' \
+    | sed -E 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"(.*)"$/\1/' \
     | sed 's#\\/#/#g')" || true
 
   [[ -n "${assets}" ]] || return 1
