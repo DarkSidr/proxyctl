@@ -211,6 +211,7 @@ proxyctl wizard
 
 The wizard includes interactive inbound setup and `update proxyctl`.
 When you run just `proxyctl` in an interactive terminal, wizard starts automatically.
+At the end of inbound wizard you can pick a user, and proxyctl will print a ready client URI immediately.
 
 ## Troubleshooting
 

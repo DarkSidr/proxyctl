@@ -3,6 +3,8 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -404,6 +406,7 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 		realityServerPort  int
 		vlessFlow          string
 		enabled            bool
+		linkUserID         string
 	)
 
 	cmd := &cobra.Command{
@@ -411,6 +414,7 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 		Short: "Add inbound",
 		Long:  "Creates a new inbound profile for one protocol/port.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			usedWizard := false
 			if strings.TrimSpace(protocol) == "" {
 				if !stdinIsTerminal(cmd.InOrStdin()) {
 					return fmt.Errorf("--type is required")
@@ -419,6 +423,7 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				usedWizard = true
 				protocol = prompted.protocol
 				transport = prompted.transport
 				engineRaw = prompted.engineRaw
@@ -440,6 +445,7 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 				realityServerPort = prompted.realityServerPort
 				vlessFlow = prompted.vlessFlow
 				enabled = prompted.enabled
+				linkUserID = prompted.linkUserID
 			}
 
 			if strings.TrimSpace(protocol) == "" {
@@ -545,6 +551,26 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 				created.Enabled,
 				created.CreatedAt.Format(time.RFC3339),
 			)
+
+			if usedWizard && strings.TrimSpace(linkUserID) != "" {
+				node, err := findNodeByID(cmd.Context(), store, created.NodeID)
+				if err != nil {
+					return err
+				}
+				cred, err := createCredentialForInbound(created, linkUserID)
+				if err != nil {
+					return err
+				}
+				createdCred, err := store.Credentials().Create(cmd.Context(), cred)
+				if err != nil {
+					return fmt.Errorf("create credential for immediate client URI: %w", err)
+				}
+				uri, err := renderSingleClientURI(cmd.Context(), node, created, createdCred)
+				if err != nil {
+					return fmt.Errorf("build client URI: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "client uri: %s\n", uri)
+			}
 			return nil
 		},
 	}
@@ -596,6 +622,7 @@ type inboundAddPromptResult struct {
 	realityServerPort  int
 	vlessFlow          string
 	enabled            bool
+	linkUserID         string
 }
 
 func promptInboundAddWizard(cmd *cobra.Command, dbPath string) (inboundAddPromptResult, error) {
@@ -784,6 +811,33 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath string) (inboundAddPrompt
 		return inboundAddPromptResult{}, err
 	}
 
+	linkUserID := ""
+	users, err := store.Users().List(cmd.Context())
+	if err != nil {
+		return inboundAddPromptResult{}, err
+	}
+	linkOptions := []string{"skip"}
+	userByOption := map[string]string{}
+	for _, user := range users {
+		if !user.Enabled {
+			continue
+		}
+		item := fmt.Sprintf("%s (%s)", user.ID, user.Name)
+		linkOptions = append(linkOptions, item)
+		userByOption[item] = user.ID
+	}
+	if len(linkOptions) > 1 {
+		linkChoice, err := promptChoice(in, out, "Create client link for user", linkOptions, "skip")
+		if err != nil {
+			return inboundAddPromptResult{}, err
+		}
+		if linkChoice != "skip" {
+			linkUserID = userByOption[linkChoice]
+		}
+	} else {
+		fmt.Fprintln(out, "No enabled users found, skipping immediate client link creation")
+	}
+
 	return inboundAddPromptResult{
 		protocol:           protocol,
 		transport:          transport,
@@ -806,6 +860,7 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath string) (inboundAddPrompt
 		realityServerPort:  realityServerPort,
 		vlessFlow:          vlessFlow,
 		enabled:            enabled,
+		linkUserID:         linkUserID,
 	}, nil
 }
 
@@ -1067,6 +1122,112 @@ func compareSemVersion(a, b semVersion) int {
 		return -1
 	}
 	return strings.Compare(a.pre, b.pre)
+}
+
+func findNodeByID(ctx context.Context, store *sqlite.Store, nodeID string) (domain.Node, error) {
+	nodes, err := store.Nodes().List(ctx)
+	if err != nil {
+		return domain.Node{}, fmt.Errorf("list nodes: %w", err)
+	}
+	for _, node := range nodes {
+		if node.ID == nodeID {
+			return node, nil
+		}
+	}
+	return domain.Node{}, fmt.Errorf("node %q not found", nodeID)
+}
+
+func createCredentialForInbound(inbound domain.Inbound, userID string) (domain.Credential, error) {
+	kind := domain.CredentialKindUUID
+	secret := ""
+	switch inbound.Type {
+	case domain.ProtocolVLESS, domain.ProtocolXHTTP:
+		uuid, err := randomUUIDv4()
+		if err != nil {
+			return domain.Credential{}, fmt.Errorf("generate UUID credential: %w", err)
+		}
+		secret = uuid
+	case domain.ProtocolHysteria2:
+		kind = domain.CredentialKindPassword
+		password, err := randomHex(16)
+		if err != nil {
+			return domain.Credential{}, fmt.Errorf("generate password credential: %w", err)
+		}
+		secret = password
+	default:
+		return domain.Credential{}, fmt.Errorf("unsupported inbound protocol for auto credential: %s", inbound.Type)
+	}
+
+	return domain.Credential{
+		UserID:    strings.TrimSpace(userID),
+		InboundID: inbound.ID,
+		Kind:      kind,
+		Secret:    secret,
+	}, nil
+}
+
+func renderSingleClientURI(ctx context.Context, node domain.Node, inbound domain.Inbound, credential domain.Credential) (string, error) {
+	req := renderer.BuildRequest{
+		Node:        node,
+		Inbounds:    []domain.Inbound{inbound},
+		Credentials: []domain.Credential{credential},
+	}
+
+	var (
+		result renderer.RenderResult
+		err    error
+	)
+	if inbound.Engine == domain.EngineXray {
+		result, err = xray.New(nil).Render(ctx, req)
+		if err != nil {
+			return "", fmt.Errorf("render xray client URI: %w", err)
+		}
+	} else {
+		result, err = singbox.New(nil).Render(ctx, req)
+		if err != nil {
+			return "", fmt.Errorf("render sing-box client URI: %w", err)
+		}
+	}
+
+	for _, item := range result.ClientArtifacts {
+		if item.CredentialID == credential.ID && strings.TrimSpace(item.URI) != "" {
+			return item.URI, nil
+		}
+	}
+	for _, item := range result.ClientArtifacts {
+		if strings.TrimSpace(item.URI) != "" {
+			return item.URI, nil
+		}
+	}
+	return "", fmt.Errorf("renderer did not produce client URI")
+}
+
+func randomUUIDv4() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf(
+		"%08x-%04x-%04x-%04x-%012x",
+		b[0:4],
+		b[4:6],
+		b[6:8],
+		b[8:10],
+		b[10:16],
+	), nil
+}
+
+func randomHex(bytes int) (string, error) {
+	if bytes <= 0 {
+		return "", fmt.Errorf("bytes must be positive")
+	}
+	b := make([]byte, bytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func newInboundListCmd(dbPath *string) *cobra.Command {
