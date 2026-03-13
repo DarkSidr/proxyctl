@@ -213,6 +213,7 @@ The wizard includes interactive inbound setup and `update proxyctl`.
 When you run just `proxyctl` in an interactive terminal, wizard starts automatically.
 At the end of inbound wizard you can pick a user, and proxyctl will print a ready client URI immediately.
 Main wizard includes `users` submenu: list users, create user, open specific user, inspect configs, delete selected config, or delete user completely (with full cleanup).
+Inside `open credential`, you can print URI with fingerprint presets (`chrome/google`, `safari`, `firefox`, `edge`, etc.) or custom value.
 
 ## Troubleshooting
 

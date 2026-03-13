@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1138,6 +1139,7 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 	for {
 		action, err := promptChoice(in, out, fmt.Sprintf("User %s (%s)", user.Name, user.ID), []string{
 			"show configs",
+			"open credential",
 			"delete specific config",
 			"delete user completely",
 			"back",
@@ -1153,6 +1155,10 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 		switch action {
 		case "show configs":
 			if err := runWizardShowUserConfigs(cmd, out, dbPath, user); err != nil {
+				return err
+			}
+		case "open credential":
+			if err := runWizardOpenCredential(cmd, in, out, dbPath, user); err != nil {
 				return err
 			}
 		case "delete specific config":
@@ -1185,8 +1191,17 @@ type wizardUserConfigItem struct {
 	CredentialID       string
 	InboundID          string
 	InboundSummary     string
+	InboundType        domain.Protocol
+	InboundTransport   string
+	InboundDomain      string
+	InboundPort        int
+	NodeID             string
+	NodeHost           string
 	CredentialKind     domain.CredentialKind
+	CredentialSecret   string
 	SecretPreview      string
+	ClientURI          string
+	ClientURIError     string
 	SubscriptionOutput string
 	SubscriptionExists bool
 }
@@ -1206,11 +1221,136 @@ func runWizardShowUserConfigs(cmd *cobra.Command, out io.Writer, dbPath string, 
 		switch item.Kind {
 		case wizardUserConfigCredential:
 			fmt.Fprintf(out, "- credential: id=%s inbound=%s kind=%s secret=%s\n", item.CredentialID, item.InboundSummary, item.CredentialKind, item.SecretPreview)
+			if strings.TrimSpace(item.ClientURI) != "" {
+				fmt.Fprintf(out, "  uri: %s\n", item.ClientURI)
+			} else if strings.TrimSpace(item.ClientURIError) != "" {
+				fmt.Fprintf(out, "  uri: <unavailable> (%s)\n", item.ClientURIError)
+			}
 		case wizardUserConfigSubscription:
 			fmt.Fprintf(out, "- subscription: output_path=%s file_exists=%t\n", item.SubscriptionOutput, item.SubscriptionExists)
 		}
 	}
 	return nil
+}
+
+func runWizardOpenCredential(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string, user domain.User) error {
+	items, err := listWizardUserConfigs(cmd, dbPath, user.ID)
+	if err != nil {
+		return err
+	}
+
+	credentials := make([]wizardUserConfigItem, 0)
+	for _, item := range items {
+		if item.Kind == wizardUserConfigCredential {
+			credentials = append(credentials, item)
+		}
+	}
+	if len(credentials) == 0 {
+		fmt.Fprintln(out, "no credentials found")
+		return nil
+	}
+
+	options := make([]string, 0, len(credentials))
+	byOption := make(map[string]wizardUserConfigItem, len(credentials))
+	for _, item := range credentials {
+		option := fmt.Sprintf("%s (%s on %s)", item.CredentialID, item.CredentialKind, item.InboundSummary)
+		options = append(options, option)
+		byOption[option] = item
+	}
+
+	choice, err := promptChoice(in, out, "Credential", options, options[0])
+	if err != nil {
+		return err
+	}
+	selected := byOption[choice]
+
+	for {
+		action, err := promptChoice(in, out, fmt.Sprintf("Credential %s", selected.CredentialID), []string{
+			"show details",
+			"print URI",
+			"print URI with fingerprint",
+			"show full secret",
+			"delete credential",
+			"back",
+		}, "show details")
+		if err != nil {
+			return err
+		}
+
+		switch action {
+		case "show details":
+			fmt.Fprintf(out, "id: %s\n", selected.CredentialID)
+			fmt.Fprintf(out, "kind: %s\n", selected.CredentialKind)
+			fmt.Fprintf(out, "inbound_id: %s\n", selected.InboundID)
+			fmt.Fprintf(out, "protocol: %s\n", selected.InboundType)
+			fmt.Fprintf(out, "transport: %s\n", selected.InboundTransport)
+			fmt.Fprintf(out, "domain: %s\n", selected.InboundDomain)
+			fmt.Fprintf(out, "port: %d\n", selected.InboundPort)
+			fmt.Fprintf(out, "node_id: %s\n", selected.NodeID)
+			fmt.Fprintf(out, "node_host: %s\n", selected.NodeHost)
+			fmt.Fprintf(out, "secret(masked): %s\n", selected.SecretPreview)
+			if strings.TrimSpace(selected.ClientURI) != "" {
+				fmt.Fprintf(out, "uri: %s\n", selected.ClientURI)
+			} else {
+				fmt.Fprintf(out, "uri: <unavailable> (%s)\n", selected.ClientURIError)
+			}
+		case "print URI":
+			if strings.TrimSpace(selected.ClientURI) == "" {
+				fmt.Fprintf(out, "uri unavailable: %s\n", selected.ClientURIError)
+			} else {
+				fmt.Fprintln(out, selected.ClientURI)
+			}
+		case "print URI with fingerprint":
+			if strings.TrimSpace(selected.ClientURI) == "" {
+				fmt.Fprintf(out, "uri unavailable: %s\n", selected.ClientURIError)
+				continue
+			}
+			fingerprinted, err := buildURIWithFingerprint(in, out, selected.ClientURI)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(fingerprinted) != "" {
+				fmt.Fprintln(out, fingerprinted)
+			}
+		case "show full secret":
+			confirm, err := promptBool(in, out, "Print full secret to terminal (y/n)", false)
+			if err != nil {
+				return err
+			}
+			if confirm {
+				fmt.Fprintf(out, "secret: %s\n", selected.CredentialSecret)
+			} else {
+				fmt.Fprintln(out, "cancelled")
+			}
+		case "delete credential":
+			confirm, err := promptBool(in, out, "Delete this credential (y/n)", false)
+			if err != nil {
+				return err
+			}
+			if !confirm {
+				fmt.Fprintln(out, "cancelled")
+				continue
+			}
+
+			store, err := openStoreWithInit(cmd.Context(), dbPath)
+			if err != nil {
+				return err
+			}
+			deleted, err := store.Credentials().Delete(cmd.Context(), selected.CredentialID)
+			closeErr := store.Close()
+			if err != nil {
+				return err
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+
+			fmt.Fprintf(out, "credential deleted: id=%s deleted=%t\n", selected.CredentialID, deleted)
+			return nil
+		default:
+			return nil
+		}
+	}
 }
 
 func runWizardDeleteSpecificUserConfig(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
@@ -1353,6 +1493,14 @@ func listWizardUserConfigs(cmd *cobra.Command, dbPath, userID string) ([]wizardU
 	if err != nil {
 		return nil, err
 	}
+	nodes, err := store.Nodes().List(cmd.Context())
+	if err != nil {
+		return nil, err
+	}
+	nodeByID := make(map[string]domain.Node, len(nodes))
+	for _, node := range nodes {
+		nodeByID[node.ID] = node
+	}
 	inboundByID := make(map[string]domain.Inbound, len(inbounds))
 	for _, inbound := range inbounds {
 		inboundByID[inbound.ID] = inbound
@@ -1364,20 +1512,62 @@ func listWizardUserConfigs(cmd *cobra.Command, dbPath, userID string) ([]wizardU
 			continue
 		}
 		summary := cred.InboundID
+		var (
+			inboundType      domain.Protocol
+			inboundTransport string
+			inboundDomain    string
+			inboundPort      int
+			nodeID           string
+			nodeHost         string
+		)
 		if inbound, ok := inboundByID[cred.InboundID]; ok {
 			host := strings.TrimSpace(inbound.Domain)
 			if host == "" {
 				host = "<no-domain>"
 			}
 			summary = fmt.Sprintf("%s/%s %s:%d", inbound.Type, inbound.Transport, host, inbound.Port)
+			inboundType = inbound.Type
+			inboundTransport = inbound.Transport
+			inboundDomain = inbound.Domain
+			inboundPort = inbound.Port
+			nodeID = inbound.NodeID
+			if node, hasNode := nodeByID[inbound.NodeID]; hasNode {
+				nodeHost = node.Host
+			}
+		}
+		clientURI := ""
+		clientURIError := ""
+		if inbound, ok := inboundByID[cred.InboundID]; ok {
+			node, hasNode := nodeByID[inbound.NodeID]
+			if hasNode {
+				uri, uriErr := renderSingleClientURI(cmd.Context(), node, inbound, cred)
+				if uriErr != nil {
+					clientURIError = uriErr.Error()
+				} else {
+					clientURI = uri
+				}
+			} else {
+				clientURIError = fmt.Sprintf("node %q not found", inbound.NodeID)
+			}
+		} else {
+			clientURIError = fmt.Sprintf("inbound %q not found", cred.InboundID)
 		}
 		items = append(items, wizardUserConfigItem{
-			Kind:           wizardUserConfigCredential,
-			CredentialID:   cred.ID,
-			InboundID:      cred.InboundID,
-			InboundSummary: summary,
-			CredentialKind: cred.Kind,
-			SecretPreview:  redactSecretPreview(cred.Secret),
+			Kind:             wizardUserConfigCredential,
+			CredentialID:     cred.ID,
+			InboundID:        cred.InboundID,
+			InboundSummary:   summary,
+			InboundType:      inboundType,
+			InboundTransport: inboundTransport,
+			InboundDomain:    inboundDomain,
+			InboundPort:      inboundPort,
+			NodeID:           nodeID,
+			NodeHost:         nodeHost,
+			CredentialKind:   cred.Kind,
+			CredentialSecret: cred.Secret,
+			SecretPreview:    redactSecretPreview(cred.Secret),
+			ClientURI:        clientURI,
+			ClientURIError:   clientURIError,
 		})
 	}
 
@@ -1410,6 +1600,62 @@ func redactSecretPreview(secret string) string {
 		return value
 	}
 	return value[:4] + "..." + value[len(value)-4:]
+}
+
+func buildURIWithFingerprint(in *bufio.Reader, out io.Writer, rawURI string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURI))
+	if err != nil {
+		return "", fmt.Errorf("parse client uri: %w", err)
+	}
+
+	if strings.ToLower(u.Scheme) != "vless" {
+		fmt.Fprintln(out, "fingerprint preset is supported only for vless:// URIs")
+		return "", nil
+	}
+
+	query := u.Query()
+	if strings.ToLower(strings.TrimSpace(query.Get("security"))) != "reality" {
+		fmt.Fprintln(out, "fingerprint is usually relevant for Reality links (security=reality); applying anyway")
+	}
+
+	preset, err := promptChoice(in, out, "Fingerprint preset", []string{
+		"chrome (google)",
+		"safari",
+		"firefox",
+		"edge",
+		"ios",
+		"android",
+		"custom",
+	}, "chrome (google)")
+	if err != nil {
+		return "", err
+	}
+
+	fp := ""
+	switch preset {
+	case "chrome (google)":
+		fp = "chrome"
+	case "safari":
+		fp = "safari"
+	case "firefox":
+		fp = "firefox"
+	case "edge":
+		fp = "edge"
+	case "ios":
+		fp = "ios"
+	case "android":
+		fp = "android"
+	default:
+		custom, err := promptLineRequired(in, out, "Custom fingerprint")
+		if err != nil {
+			return "", err
+		}
+		fp = strings.TrimSpace(custom)
+	}
+
+	query.Set("fp", fp)
+	u.RawQuery = query.Encode()
+	return u.String(), nil
 }
 
 func promptUserChoice(in *bufio.Reader, out io.Writer, users []domain.User, label string) (string, map[string]domain.User, error) {
