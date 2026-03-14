@@ -11,11 +11,16 @@ readonly RUNTIME_ROOT="${CONFIG_ROOT}/runtime"
 readonly CADDY_RUNTIME_DIR="${RUNTIME_ROOT}/caddy"
 readonly NGINX_RUNTIME_DIR="${RUNTIME_ROOT}/nginx"
 readonly DECOY_RUNTIME_DIR="${RUNTIME_ROOT}/decoy-site"
+readonly SHARE_ROOT="/usr/share/proxy-orchestrator"
+readonly SHARE_TEMPLATES_DIR="${SHARE_ROOT}/templates"
+readonly SHARE_ACTIVE_DECOY_DIR="${SHARE_TEMPLATES_DIR}/decoy-site"
+readonly SHARE_DECOY_LIBRARY_DIR="${SHARE_ROOT}/decoy-templates"
 readonly STATE_ROOT="/var/lib/proxy-orchestrator"
 readonly BACKUP_ROOT="/var/backups/proxy-orchestrator"
 readonly DB_PATH="${STATE_ROOT}/proxyctl.db"
 readonly CONFIG_PATH="${CONFIG_ROOT}/proxyctl.yaml"
 readonly BIN_DIR="/usr/local/bin"
+readonly SBIN_DIR="/usr/local/sbin"
 readonly SYSTEMD_DIR="/etc/systemd/system"
 SCRIPT_SOURCE="${BASH_SOURCE[0]-$0}"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${SCRIPT_SOURCE}")" >/dev/null 2>&1 && pwd -P)"
@@ -30,12 +35,24 @@ PROXYCTL_ENABLE_AUTO_UPDATE="${PROXYCTL_ENABLE_AUTO_UPDATE:-0}"
 PROXYCTL_ENABLE_CADDY_ON_INSTALL="${PROXYCTL_ENABLE_CADDY_ON_INSTALL:-1}"
 PROXYCTL_AUTO_UPDATE_SCHEDULE="${PROXYCTL_AUTO_UPDATE_SCHEDULE:-daily}"
 PROXYCTL_AUTO_UPDATE_INSTALL_URL="${PROXYCTL_AUTO_UPDATE_INSTALL_URL:-https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh}"
+PROXYCTL_REVERSE_PROXY="${PROXYCTL_REVERSE_PROXY:-}"
+PROXYCTL_PUBLIC_DOMAIN="${PROXYCTL_PUBLIC_DOMAIN:-}"
+PROXYCTL_CONTACT_EMAIL="${PROXYCTL_CONTACT_EMAIL:-}"
+PROXYCTL_PROMPT_CONFIG="${PROXYCTL_PROMPT_CONFIG:-auto}"
+PROXYCTL_DECOY_TEMPLATE="${PROXYCTL_DECOY_TEMPLATE:-random}"
+PROXYCTL_DECOY_TEMPLATE_BASE_URL="${PROXYCTL_DECOY_TEMPLATE_BASE_URL:-https://raw.githubusercontent.com/DarkSidr/proxyctl/main/packaging/defaults/decoy-templates}"
 
 # Optional runtime URLs for environments where apt packages are unavailable.
 SINGBOX_BINARY_URL="${SINGBOX_BINARY_URL:-}"
 XRAY_BINARY_URL="${XRAY_BINARY_URL:-}"
 
 APT_UPDATED=0
+SELECTED_REVERSE_PROXY="caddy"
+SELECTED_PUBLIC_DOMAIN=""
+SELECTED_CONTACT_EMAIL=""
+SELECTED_DECOY_TEMPLATE="random"
+DECOY_INDEX_CONTENT=""
+DECOY_STYLE_CONTENT=""
 
 log() {
   printf '[%s] %s\n' "${INSTALL_TAG}" "$*"
@@ -65,6 +82,222 @@ require_root() {
 require_cmd() {
   local cmd="$1"
   command -v "${cmd}" >/dev/null 2>&1 || fail "required command not found: ${cmd}"
+}
+
+can_prompt() {
+  local mode
+  mode="$(printf '%s' "${PROXYCTL_PROMPT_CONFIG}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${mode}" == "0" || "${mode}" == "false" || "${mode}" == "no" ]]; then
+    return 1
+  fi
+  [[ -t 0 ]]
+}
+
+prompt_with_default() {
+  local label="$1"
+  local default_value="$2"
+  local answer=""
+  local prompt="${label}"
+
+  if [[ -n "${default_value}" ]]; then
+    prompt+=" [${default_value}]"
+  fi
+  prompt+=": "
+
+  read -r -p "${prompt}" answer || true
+  if [[ -z "${answer}" ]]; then
+    printf '%s\n' "${default_value}"
+  else
+    printf '%s\n' "${answer}"
+  fi
+}
+
+prompt_reverse_proxy_choice() {
+  local current="$1"
+  local answer=""
+  local normalized
+  while true; do
+    read -r -p "Reverse proxy (caddy/nginx) [${current}]: " answer || true
+    answer="${answer:-${current}}"
+    normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
+    case "${normalized}" in
+      caddy|nginx)
+        printf '%s\n' "${normalized}"
+        return 0
+        ;;
+      *)
+        warn "Unsupported reverse proxy choice: ${answer}. Use caddy or nginx."
+        ;;
+    esac
+  done
+}
+
+prompt_decoy_template_choice() {
+  local current="$1"
+  local answer=""
+  local normalized
+  while true; do
+    read -r -p "Decoy site template (random/login/pizza-club/support-desk/default) [${current}]: " answer || true
+    answer="${answer:-${current}}"
+    normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
+    case "${normalized}" in
+      random|login|pizza-club|support-desk|default)
+        printf '%s\n' "${normalized}"
+        return 0
+        ;;
+      *)
+        warn "Unsupported decoy template: ${answer}. Use random/login/pizza-club/support-desk/default."
+        ;;
+    esac
+  done
+}
+
+resolve_decoy_template_choice() {
+  local requested="$1"
+  local normalized
+  normalized="$(printf '%s' "${requested}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${normalized}" != "random" && "${normalized}" != "login" && "${normalized}" != "pizza-club" && "${normalized}" != "support-desk" && "${normalized}" != "default" ]]; then
+    normalized="random"
+  fi
+  if [[ "${normalized}" == "random" ]]; then
+    local choices=("login" "pizza-club" "support-desk")
+    local idx=$((RANDOM % ${#choices[@]}))
+    printf '%s\n' "${choices[${idx}]}"
+    return 0
+  fi
+  printf '%s\n' "${normalized}"
+}
+
+build_decoy_assets() {
+  local requested="$1"
+  local resolved src_base index_path style_path
+  resolved="$(resolve_decoy_template_choice "${requested}")"
+  SELECTED_DECOY_TEMPLATE="${resolved}"
+
+  src_base="${SHARE_DECOY_LIBRARY_DIR}/${resolved}"
+  index_path="${src_base}/index.html"
+  style_path="${src_base}/assets/style.css"
+  if [[ ! -f "${index_path}" || ! -f "${style_path}" ]]; then
+    warn "Decoy template ${resolved} is missing in ${SHARE_DECOY_LIBRARY_DIR}; falling back to default"
+    resolved="default"
+    SELECTED_DECOY_TEMPLATE="${resolved}"
+    src_base="${SHARE_DECOY_LIBRARY_DIR}/${resolved}"
+    index_path="${src_base}/index.html"
+    style_path="${src_base}/assets/style.css"
+  fi
+
+  [[ -f "${index_path}" ]] || fail "missing decoy template index: ${index_path}"
+  [[ -f "${style_path}" ]] || fail "missing decoy template style: ${style_path}"
+  DECOY_INDEX_CONTENT="$(cat "${index_path}")"
+  DECOY_STYLE_CONTENT="$(cat "${style_path}")"
+}
+
+read_decoy_template_file() {
+  local template_name="$1"
+  local rel_path="$2"
+  local packaged="${SCRIPT_DIR}/packaging/defaults/decoy-templates/${template_name}/${rel_path}"
+  local remote="${PROXYCTL_DECOY_TEMPLATE_BASE_URL}/${template_name}/${rel_path}"
+  local content=""
+
+  if [[ -f "${packaged}" ]]; then
+    cat "${packaged}"
+    return 0
+  fi
+  if content="$(curl -fsSL --retry 3 --retry-delay 1 --connect-timeout 10 "${remote}" 2>/dev/null)"; then
+    printf '%s' "${content}"
+    return 0
+  fi
+  return 1
+}
+
+install_decoy_template_library() {
+  local templates=("default" "login" "pizza-club" "support-desk")
+  local template_name index style
+
+  install -d -m 0755 "${SHARE_DECOY_LIBRARY_DIR}" "${SHARE_ACTIVE_DECOY_DIR}/assets"
+
+  for template_name in "${templates[@]}"; do
+    index="$(read_decoy_template_file "${template_name}" "index.html" || true)"
+    style="$(read_decoy_template_file "${template_name}" "assets/style.css" || true)"
+    if [[ -z "${index}" || -z "${style}" ]]; then
+      fail "failed to load decoy template files for ${template_name}"
+    fi
+    write_managed_file "${SHARE_DECOY_LIBRARY_DIR}/${template_name}/index.html" 0644 "${index}"
+    write_managed_file "${SHARE_DECOY_LIBRARY_DIR}/${template_name}/assets/style.css" 0644 "${style}"
+  done
+  log "Installed decoy template library: ${SHARE_DECOY_LIBRARY_DIR}"
+}
+
+activate_decoy_template() {
+  local index_content="$1"
+  local style_content="$2"
+  write_managed_file "${DECOY_RUNTIME_DIR}/index.html" 0644 "${index_content}"
+  write_managed_file "${DECOY_RUNTIME_DIR}/assets/style.css" 0644 "${style_content}"
+  write_managed_file "${SHARE_ACTIVE_DECOY_DIR}/index.html" 0644 "${index_content}"
+  write_managed_file "${SHARE_ACTIVE_DECOY_DIR}/assets/style.css" 0644 "${style_content}"
+}
+
+configure_install_preferences() {
+  local existing_reverse_proxy="caddy"
+  local existing_domain=""
+  local existing_email=""
+  local prompt_enabled="0"
+
+  if [[ -f "${CONFIG_PATH}" ]]; then
+    existing_reverse_proxy="$(awk -F':' '/^[[:space:]]*reverse_proxy:[[:space:]]*/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}' "${CONFIG_PATH}" || true)"
+    existing_domain="$(awk -F':' '/^[[:space:]]*domain:[[:space:]]*/ {sub(/^[[:space:]]*/, "", $2); gsub(/^"|"$/, "", $2); print $2; exit}' "${CONFIG_PATH}" || true)"
+    existing_email="$(awk -F':' '/^[[:space:]]*contact_email:[[:space:]]*/ {sub(/^[[:space:]]*/, "", $2); gsub(/^"|"$/, "", $2); print $2; exit}' "${CONFIG_PATH}" || true)"
+  fi
+  if [[ "${existing_reverse_proxy}" != "nginx" ]]; then
+    existing_reverse_proxy="caddy"
+  fi
+
+  SELECTED_REVERSE_PROXY="${existing_reverse_proxy}"
+  SELECTED_PUBLIC_DOMAIN="${existing_domain}"
+  SELECTED_CONTACT_EMAIL="${existing_email}"
+
+  if [[ -n "${PROXYCTL_REVERSE_PROXY}" ]]; then
+    SELECTED_REVERSE_PROXY="$(printf '%s' "${PROXYCTL_REVERSE_PROXY}" | tr '[:upper:]' '[:lower:]')"
+  fi
+  if [[ "${SELECTED_REVERSE_PROXY}" != "caddy" && "${SELECTED_REVERSE_PROXY}" != "nginx" ]]; then
+    warn "Invalid PROXYCTL_REVERSE_PROXY=${PROXYCTL_REVERSE_PROXY}; falling back to caddy"
+    SELECTED_REVERSE_PROXY="caddy"
+  fi
+
+  if [[ -n "${PROXYCTL_PUBLIC_DOMAIN}" ]]; then
+    SELECTED_PUBLIC_DOMAIN="${PROXYCTL_PUBLIC_DOMAIN}"
+  fi
+  if [[ -n "${PROXYCTL_CONTACT_EMAIL}" ]]; then
+    SELECTED_CONTACT_EMAIL="${PROXYCTL_CONTACT_EMAIL}"
+  fi
+  if [[ -n "${PROXYCTL_DECOY_TEMPLATE}" ]]; then
+    SELECTED_DECOY_TEMPLATE="$(printf '%s' "${PROXYCTL_DECOY_TEMPLATE}" | tr '[:upper:]' '[:lower:]')"
+  fi
+
+  if can_prompt; then
+    prompt_enabled="1"
+  fi
+
+  if [[ "${prompt_enabled}" == "1" ]]; then
+    log "Interactive setup: reverse proxy and public endpoint settings"
+    SELECTED_REVERSE_PROXY="$(prompt_reverse_proxy_choice "${SELECTED_REVERSE_PROXY}")"
+    if [[ "${SELECTED_REVERSE_PROXY}" == "caddy" ]]; then
+      SELECTED_PUBLIC_DOMAIN="$(prompt_with_default "Public domain (required for automatic HTTPS)" "${SELECTED_PUBLIC_DOMAIN}")"
+      SELECTED_CONTACT_EMAIL="$(prompt_with_default "ACME contact email (optional but recommended)" "${SELECTED_CONTACT_EMAIL}")"
+    else
+      SELECTED_PUBLIC_DOMAIN="$(prompt_with_default "Public domain (optional for subscriptions)" "${SELECTED_PUBLIC_DOMAIN}")"
+    fi
+    SELECTED_DECOY_TEMPLATE="$(prompt_decoy_template_choice "${SELECTED_DECOY_TEMPLATE}")"
+  fi
+
+  SELECTED_PUBLIC_DOMAIN="$(printf '%s' "${SELECTED_PUBLIC_DOMAIN}" | xargs || true)"
+  SELECTED_CONTACT_EMAIL="$(printf '%s' "${SELECTED_CONTACT_EMAIL}" | xargs || true)"
+  SELECTED_DECOY_TEMPLATE="$(resolve_decoy_template_choice "${SELECTED_DECOY_TEMPLATE}")"
+  log "Selected reverse proxy: ${SELECTED_REVERSE_PROXY}"
+  if [[ -n "${SELECTED_PUBLIC_DOMAIN}" ]]; then
+    log "Selected public domain: ${SELECTED_PUBLIC_DOMAIN}"
+  fi
+  log "Selected decoy template: ${SELECTED_DECOY_TEMPLATE}"
 }
 
 detect_os() {
@@ -527,6 +760,11 @@ ensure_directories() {
     "${NGINX_RUNTIME_DIR}"
     "${DECOY_RUNTIME_DIR}"
     "${DECOY_RUNTIME_DIR}/assets"
+    "${SHARE_ROOT}"
+    "${SHARE_TEMPLATES_DIR}"
+    "${SHARE_ACTIVE_DECOY_DIR}"
+    "${SHARE_ACTIVE_DECOY_DIR}/assets"
+    "${SHARE_DECOY_LIBRARY_DIR}"
     "${STATE_ROOT}"
     "${STATE_ROOT}/subscriptions"
     "${STATE_ROOT}/revisions"
@@ -631,6 +869,59 @@ EOT
   log "Installed systemd units and reloaded daemon"
 }
 
+install_uninstall_script() {
+  local script_content
+  script_content="$(read_packaged_file_or_default "${SCRIPT_DIR}/packaging/scripts/proxyctl-uninstall.sh" "$(cat <<'EOT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+IFS=$'\n\t'
+
+TAG="proxyctl-uninstall"
+YES=0
+
+log() {
+  printf '[%s] %s\n' "${TAG}" "$*"
+}
+
+fail() {
+  log "ERROR: $*"
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --yes) YES=1 ;;
+    *) fail "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+if [[ "${YES}" -ne 1 ]]; then
+  printf "This will remove proxyctl and its data. Continue? [y/N]: "
+  read -r ans
+  ans="$(printf '%s' "${ans}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${ans}" != "y" && "${ans}" != "yes" ]]; then
+    log "Cancelled"
+    exit 1
+  fi
+fi
+
+systemctl disable --now proxyctl-sing-box.service proxyctl-xray.service proxyctl-caddy.service proxyctl-nginx.service proxyctl-self-update.service proxyctl-self-update.timer >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/proxyctl-*.service /etc/systemd/system/proxyctl-self-update.timer
+systemctl daemon-reload || true
+systemctl reset-failed || true
+
+rm -f /usr/local/bin/proxyctl /usr/local/bin/sing-box /usr/local/bin/xray /usr/local/sbin/proxyctl-self-update /usr/local/sbin/proxyctl-uninstall
+rm -rf /etc/proxy-orchestrator /var/lib/proxy-orchestrator /var/backups/proxy-orchestrator /usr/share/proxy-orchestrator
+
+log "proxyctl purge completed"
+EOT
+)")"
+
+  write_managed_file "${SBIN_DIR}/proxyctl-uninstall" 0755 "${script_content}"
+}
+
 install_auto_update() {
   if [[ "${PROXYCTL_ENABLE_AUTO_UPDATE}" != "1" ]]; then
     return 0
@@ -684,9 +975,18 @@ EOT
 }
 
 install_default_config() {
-  local content
-  content="$(read_packaged_file_or_default "${SCRIPT_DIR}/packaging/defaults/proxyctl.yaml" "$(cat <<'EOT'
-reverse_proxy: caddy
+  if [[ -f "${CONFIG_PATH}" ]]; then
+    log "Keeping existing file: ${CONFIG_PATH}"
+    return 0
+  fi
+
+  local https_value="false"
+  if [[ "${SELECTED_REVERSE_PROXY}" == "caddy" && -n "${SELECTED_PUBLIC_DOMAIN}" ]]; then
+    https_value="true"
+  fi
+
+  cat >"${CONFIG_PATH}" <<EOT
+reverse_proxy: ${SELECTED_REVERSE_PROXY}
 
 storage:
   sqlite_path: /var/lib/proxy-orchestrator/proxyctl.db
@@ -698,25 +998,50 @@ runtime:
   nginx_unit: proxyctl-nginx.service
 
 public:
-  domain: ""
-  https: true
-  contact_email: ""
+  domain: "${SELECTED_PUBLIC_DOMAIN}"
+  https: ${https_value}
+  contact_email: "${SELECTED_CONTACT_EMAIL}"
 EOT
-)")"
-
-  write_if_absent "${CONFIG_PATH}" 0640 "${content}"
+  chmod 0640 "${CONFIG_PATH}"
+  log "Created: ${CONFIG_PATH}"
 }
 
 install_default_runtime_files() {
   local caddy_content nginx_content decoy_index decoy_style
 
-  caddy_content="$(read_packaged_file_or_default "${SCRIPT_DIR}/packaging/defaults/runtime/caddy/Caddyfile" "$(cat <<'EOT'
+  caddy_content="$(cat <<'EOT'
 :80 {
   root * /etc/proxy-orchestrator/runtime/decoy-site
   file_server
 }
 EOT
-)")"
+)"
+  if [[ "${SELECTED_REVERSE_PROXY}" == "caddy" && -n "${SELECTED_PUBLIC_DOMAIN}" ]]; then
+    if [[ -n "${SELECTED_CONTACT_EMAIL}" ]]; then
+      caddy_content="$(cat <<EOT
+{
+  email ${SELECTED_CONTACT_EMAIL}
+}
+
+${SELECTED_PUBLIC_DOMAIN} {
+  root * /etc/proxy-orchestrator/runtime/decoy-site
+  file_server
+}
+EOT
+)"
+    else
+      caddy_content="$(cat <<EOT
+${SELECTED_PUBLIC_DOMAIN} {
+  root * /etc/proxy-orchestrator/runtime/decoy-site
+  file_server
+}
+EOT
+)"
+    fi
+  elif [[ -f "${SCRIPT_DIR}/packaging/defaults/runtime/caddy/Caddyfile" ]]; then
+    caddy_content="$(cat "${SCRIPT_DIR}/packaging/defaults/runtime/caddy/Caddyfile")"
+  fi
+
   nginx_content="$(read_packaged_file_or_default "${SCRIPT_DIR}/packaging/defaults/runtime/nginx/nginx.conf" "$(cat <<'EOT'
 events {}
 
@@ -735,88 +1060,70 @@ http {
 }
 EOT
 )")"
-  decoy_index="$(read_packaged_file_or_default "${SCRIPT_DIR}/packaging/defaults/runtime/decoy-site/index.html" "$(cat <<'EOT'
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Service Portal</title>
-  <link rel="stylesheet" href="/assets/style.css">
-</head>
-<body>
-  <main class="container">
-    <h1>Service Portal</h1>
-    <p>This endpoint is available and serving static content.</p>
-  </main>
-</body>
-</html>
-EOT
-)")"
-  decoy_style="$(read_packaged_file_or_default "${SCRIPT_DIR}/packaging/defaults/runtime/decoy-site/assets/style.css" "$(cat <<'EOT'
-:root {
-  --bg: #f2f4f6;
-  --fg: #1e2933;
-  --accent: #0f766e;
-}
+  build_decoy_assets "${SELECTED_DECOY_TEMPLATE}"
+  decoy_index="${DECOY_INDEX_CONTENT}"
+  decoy_style="${DECOY_STYLE_CONTENT}"
 
-* {
-  box-sizing: border-box;
-}
+  if [[ "${SELECTED_REVERSE_PROXY}" == "caddy" && -n "${SELECTED_PUBLIC_DOMAIN}" ]]; then
+    if [[ -f "${CADDY_RUNTIME_DIR}/Caddyfile" ]]; then
+      if grep -Eq '^[[:space:]]*:80[[:space:]]*\{' "${CADDY_RUNTIME_DIR}/Caddyfile"; then
+        write_managed_file "${CADDY_RUNTIME_DIR}/Caddyfile" 0640 "${caddy_content}"
+      else
+        log "Keeping existing custom file: ${CADDY_RUNTIME_DIR}/Caddyfile"
+      fi
+    else
+      write_if_absent "${CADDY_RUNTIME_DIR}/Caddyfile" 0640 "${caddy_content}"
+    fi
+  else
+    write_if_absent "${CADDY_RUNTIME_DIR}/Caddyfile" 0640 "${caddy_content}"
+  fi
 
-body {
-  margin: 0;
-  min-height: 100vh;
-  font-family: "Georgia", serif;
-  color: var(--fg);
-  background: radial-gradient(circle at top, #ffffff, var(--bg));
-  display: grid;
-  place-items: center;
-}
-
-.container {
-  width: min(640px, 90vw);
-  padding: 2rem;
-  border: 1px solid #d8dee3;
-  background: #ffffff;
-  box-shadow: 0 16px 30px rgba(30, 41, 51, 0.08);
-}
-
-h1 {
-  margin: 0 0 0.75rem;
-  font-size: clamp(1.5rem, 3vw, 2rem);
-  color: var(--accent);
-}
-
-p {
-  margin: 0;
-  line-height: 1.5;
-}
-EOT
-)")"
-
-  write_if_absent "${CADDY_RUNTIME_DIR}/Caddyfile" 0640 "${caddy_content}"
   write_if_absent "${NGINX_RUNTIME_DIR}/nginx.conf" 0640 "${nginx_content}"
-  write_if_absent "${DECOY_RUNTIME_DIR}/index.html" 0644 "${decoy_index}"
-  write_if_absent "${DECOY_RUNTIME_DIR}/assets/style.css" 0644 "${decoy_style}"
+  activate_decoy_template "${decoy_index}" "${decoy_style}"
 }
 
-ensure_caddy_service() {
-  if [[ "${PROXYCTL_ENABLE_CADDY_ON_INSTALL}" != "1" ]]; then
+ensure_selected_reverse_proxy_service() {
+  if [[ "${SELECTED_REVERSE_PROXY}" != "caddy" && "${SELECTED_REVERSE_PROXY}" != "nginx" ]]; then
+    warn "Unknown reverse proxy selection: ${SELECTED_REVERSE_PROXY}; skipping service management"
+    return 0
+  fi
+
+  if [[ "${SELECTED_REVERSE_PROXY}" == "caddy" && "${PROXYCTL_ENABLE_CADDY_ON_INSTALL}" != "1" ]]; then
     log "Skipping caddy auto-enable (PROXYCTL_ENABLE_CADDY_ON_INSTALL=${PROXYCTL_ENABLE_CADDY_ON_INSTALL})"
     return 0
   fi
 
-  if ! systemctl list-unit-files proxyctl-caddy.service >/dev/null 2>&1; then
-    warn "proxyctl-caddy.service is not installed; skipping caddy auto-enable"
+  local selected_unit=""
+  local other_unit=""
+  local stock_other_unit=""
+  if [[ "${SELECTED_REVERSE_PROXY}" == "caddy" ]]; then
+    selected_unit="proxyctl-caddy.service"
+    other_unit="proxyctl-nginx.service"
+    stock_other_unit="nginx.service"
+  else
+    selected_unit="proxyctl-nginx.service"
+    other_unit="proxyctl-caddy.service"
+    stock_other_unit=""
+  fi
+
+  if systemctl list-unit-files "${other_unit}" >/dev/null 2>&1; then
+    systemctl disable --now "${other_unit}" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "${stock_other_unit}" ]] && systemctl list-unit-files "${stock_other_unit}" >/dev/null 2>&1; then
+    systemctl disable --now "${stock_other_unit}" >/dev/null 2>&1 || true
+  fi
+
+  if ! systemctl list-unit-files "${selected_unit}" >/dev/null 2>&1; then
+    warn "${selected_unit} is not installed; skipping reverse proxy auto-enable"
     return 0
   fi
 
-  log "Ensuring caddy service is enabled and running"
-  if systemctl enable --now proxyctl-caddy.service >/dev/null 2>&1; then
-    log "Caddy service is enabled and active"
+  log "Ensuring ${selected_unit} is enabled and running"
+  if systemctl enable --now "${selected_unit}" >/dev/null 2>&1; then
+    log "${selected_unit} is enabled and active"
   else
-    warn "Failed to enable/start proxyctl-caddy.service automatically (possibly port conflict). Check: systemctl status proxyctl-caddy.service"
+    warn "Failed to enable/start ${selected_unit}. Check: systemctl status ${selected_unit}"
   fi
 }
 
@@ -862,6 +1169,12 @@ Next steps:
 6. Optional auto-update timer:
    sudo PROXYCTL_ENABLE_AUTO_UPDATE=1 bash install.sh
    sudo systemctl list-timers proxyctl-self-update.timer
+7. Decoy template library and switching:
+   # Upload your own templates here: <name>/index.html + <name>/assets/style.css
+   ls -la /usr/share/proxy-orchestrator/decoy-templates
+   sudo proxyctl wizard   # Settings -> switch decoy template
+8. Full uninstall (purge):
+   sudo proxyctl uninstall --yes
 EOF_STEPS
 }
 
@@ -880,12 +1193,15 @@ main() {
   install_or_verify_runtime_binary "sing-box" "${SINGBOX_BINARY_URL}" "SINGBOX_BINARY_URL" sing-box singbox
   install_or_verify_runtime_binary "xray" "${XRAY_BINARY_URL}" "XRAY_BINARY_URL" xray xray-core
 
+  configure_install_preferences
   ensure_directories
   install_systemd_units
+  install_uninstall_script
   install_auto_update
+  install_decoy_template_library
   install_default_config
   install_default_runtime_files
-  ensure_caddy_service
+  ensure_selected_reverse_proxy_service
   init_sqlite
 
   log "Installed ${APP_NAME} ${PROXYCTL_VERSION} layout on host"

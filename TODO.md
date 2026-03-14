@@ -175,6 +175,22 @@
   - per-node apply status + heartbeat;
   - show stale nodes and last sync timestamp in diagnostics.
 
+### 11) 3x-ui migration UX and installer target profile
+- Rework subscription naming/export style to be closer to 3x-ui conventions:
+  - use familiar labels/remarks and URI naming patterns that 3x-ui users expect;
+  - align field names in CLI output where possible (without breaking protocol correctness);
+  - minimize migration friction for users moving from 3x-ui panel.
+- Add compatibility mode for 3x-ui-like subscription presentation:
+  - optional toggle in config/wizard;
+  - keep current mode available as default/fallback until validated.
+- Installer profile selection:
+  - during install ask what runtime stack user wants in final result: `xray only`, `sing-box only`, or `both`;
+  - install/enable only selected runtime units and binaries by default;
+  - avoid unnecessary services and reduce conflict surface on first boot.
+- Wizard profile control:
+  - add settings item to switch runtime profile post-install (`xray only` / `sing-box only` / `both`);
+  - apply service enable/disable changes safely with confirmation and status report.
+
 ## Additional ideas (assistant suggestions, not user-requested)
 
 ### A1) Safe operation mode

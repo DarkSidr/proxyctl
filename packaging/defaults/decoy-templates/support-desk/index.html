@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Support Desk</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <main class="wrap">
+    <section class="ticket">
+      <h1>Support Desk Queue</h1>
+      <p class="hint">Submit a ticket and our team will respond via email.</p>
+      <form id="support-form" class="form" autocomplete="off">
+        <label>Work email</label>
+        <input type="email" name="email" placeholder="name@company.com" required>
+        <label>Request</label>
+        <textarea name="request" rows="4" placeholder="Describe your issue" required></textarea>
+        <button type="submit">Send ticket</button>
+      </form>
+      <p id="error" class="error" role="alert" aria-live="polite"></p>
+    </section>
+  </main>
+  <script>
+    const form = document.getElementById("support-form");
+    const error = document.getElementById("error");
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      error.textContent = "The submitted data is incorrect. Please verify fields and try again.";
+    });
+  </script>
+</body>
+</html>

@@ -46,6 +46,7 @@ func NewRootCmd() *cobra.Command {
 		newInitCmd(&dbPath),
 		newWizardCmd(&configPath, &dbPath),
 		newUpdateCmd(),
+		newUninstallCmd(),
 		newStatusCmd(&configPath, &dbPath),
 		newUserCmd(&dbPath),
 		newNodeCmd(&dbPath),

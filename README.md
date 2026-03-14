@@ -33,6 +33,31 @@ One-command installer entrypoint (stage 11):
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh)
 ```
 
+Installer now asks interactively (when a TTY is available):
+- reverse proxy backend (`caddy` by default),
+- public domain,
+- ACME contact email (for Caddy automatic TLS).
+- decoy site template (`random` by default; login, pizza-club, support-desk, default).
+
+For non-interactive provisioning you can pass values via env:
+
+```bash
+sudo PROXYCTL_PROMPT_CONFIG=0 \
+  PROXYCTL_REVERSE_PROXY=caddy \
+  PROXYCTL_PUBLIC_DOMAIN=darksidr.icu \
+  PROXYCTL_CONTACT_EMAIL=ops@example.com \
+  PROXYCTL_DECOY_TEMPLATE=random \
+  bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh)
+```
+
+Installer creates decoy template library on VPS at `/usr/share/proxy-orchestrator/decoy-templates`.
+You can upload your own templates there using structure: `<name>/index.html` and `<name>/assets/style.css`.
+
+`proxyctl wizard` now includes:
+- `settings -> set decoy site path`
+- `settings -> switch decoy template`
+It also includes `uninstall proxyctl` for full VPS cleanup.
+
 Reliable update/reinstall (forces source rebuild):
 
 ```bash
@@ -63,6 +88,18 @@ sudo proxyctl update
 After successful update it also checks `proxyctl-caddy.service` and auto-starts it when inactive (can be disabled with `--ensure-caddy=false`).
 
 Operational notes for install/update/uninstall are in `docs/INSTALLER.md`.
+
+Full purge command:
+
+```bash
+proxyctl uninstall --yes
+```
+
+Optional runtime package purge too:
+
+```bash
+proxyctl uninstall --yes --remove-runtime-packages
+```
 
 ## Automated release build
 

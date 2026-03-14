@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"proxyctl/internal/config"
 	"proxyctl/internal/domain"
@@ -42,6 +43,7 @@ import (
 
 const defaultUpdateInstallURL = "https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh"
 const defaultLatestReleaseAPIURL = "https://api.github.com/repos/DarkSidr/proxyctl/releases/latest"
+const defaultUninstallScriptPath = "/usr/local/sbin/proxyctl-uninstall"
 
 var lookPath = exec.LookPath
 var runCommandOutput = func(ctx context.Context, name string, args ...string) (string, error) {
@@ -135,8 +137,16 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 					if err := runWizardUsersMenu(cmd, *configPath, *dbPath); err != nil {
 						return err
 					}
+				case "settings":
+					if err := runWizardSettingsMenu(cmd, *configPath); err != nil {
+						return err
+					}
 				case "update proxyctl":
 					if err := runProxyctlSubcommand(cmd, "update"); err != nil {
+						return err
+					}
+				case "uninstall proxyctl":
+					if err := runWizardUninstall(cmd, in, out); err != nil {
 						return err
 					}
 				default:
@@ -228,6 +238,52 @@ func newUpdateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&reinstallBinary, "reinstall-binary", reinstallBinary, "Force proxyctl binary reinstall")
 	cmd.Flags().BoolVar(&force, "force", force, "Bypass version comparison and force update")
 	cmd.Flags().BoolVar(&ensureCaddy, "ensure-caddy", ensureCaddy, "Check proxyctl-caddy.service state after update and auto-start it when inactive")
+	return cmd
+}
+
+func newUninstallCmd() *cobra.Command {
+	yes := false
+	removeRuntimePackages := false
+	scriptPath := defaultUninstallScriptPath
+
+	cmd := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Completely remove proxyctl from host",
+		Long:  "Runs uninstall script that removes proxyctl services, binaries, configs and state from the current host.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if os.Geteuid() != 0 {
+				return fmt.Errorf("uninstall requires root privileges")
+			}
+			scriptPath = strings.TrimSpace(scriptPath)
+			if scriptPath == "" {
+				return fmt.Errorf("--script-path is required")
+			}
+			if _, err := os.Stat(scriptPath); err != nil {
+				return fmt.Errorf("uninstall script not found at %q", scriptPath)
+			}
+			if !yes {
+				return fmt.Errorf("refusing to run uninstall without --yes")
+			}
+
+			uninstallArgs := []string{"--yes"}
+			if removeRuntimePackages {
+				uninstallArgs = append(uninstallArgs, "--remove-runtime-packages")
+			}
+
+			uninstallCmd := exec.CommandContext(cmd.Context(), scriptPath, uninstallArgs...)
+			uninstallCmd.Stdout = cmd.OutOrStdout()
+			uninstallCmd.Stderr = cmd.ErrOrStderr()
+			uninstallCmd.Stdin = cmd.InOrStdin()
+			if err := uninstallCmd.Run(); err != nil {
+				return fmt.Errorf("run uninstall script: %w", err)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm destructive uninstall")
+	cmd.Flags().BoolVar(&removeRuntimePackages, "remove-runtime-packages", false, "Also purge caddy/nginx apt packages")
+	cmd.Flags().StringVar(&scriptPath, "script-path", scriptPath, "Path to uninstall script")
 	return cmd
 }
 
@@ -1326,7 +1382,9 @@ func wizardMainOptions(hasNodes bool) ([]string, string) {
 	if !hasNodes {
 		return []string{
 			"nodes",
+			"settings",
 			"update proxyctl",
+			"uninstall proxyctl",
 			"exit",
 		}, "nodes"
 	}
@@ -1334,9 +1392,247 @@ func wizardMainOptions(hasNodes bool) ([]string, string) {
 		"nodes",
 		"inbounds",
 		"users",
+		"settings",
 		"update proxyctl",
+		"uninstall proxyctl",
 		"exit",
 	}, "inbounds"
+}
+
+func runWizardUninstall(cmd *cobra.Command, in *bufio.Reader, out io.Writer) error {
+	confirm, err := promptBool(in, out, "Permanently uninstall proxyctl and purge all data from this VPS (y/n)", false)
+	if err != nil {
+		return err
+	}
+	if !confirm {
+		fmt.Fprintln(out, "cancelled")
+		return nil
+	}
+	purgeRuntime, err := promptBool(in, out, "Also purge caddy/nginx apt packages (y/n)", false)
+	if err != nil {
+		return err
+	}
+	args := []string{"uninstall", "--yes"}
+	if purgeRuntime {
+		args = append(args, "--remove-runtime-packages")
+	}
+	return runProxyctlSubcommand(cmd, args...)
+}
+
+func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
+	in := bufio.NewReader(cmd.InOrStdin())
+	out := cmd.OutOrStdout()
+
+	for {
+		action, err := promptChoice(in, out, "Settings", []string{
+			"show settings",
+			"set decoy site path",
+			"switch decoy template",
+			"back",
+		}, "show settings")
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				fmt.Fprintln(out, "settings menu cancelled")
+				return nil
+			}
+			return err
+		}
+
+		switch action {
+		case "show settings":
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "reverse_proxy: %s\n", cfg.ReverseProxy)
+			fmt.Fprintf(out, "public.domain: %s\n", strings.TrimSpace(cfg.Public.Domain))
+			fmt.Fprintf(out, "paths.decoy_site_dir: %s\n", strings.TrimSpace(cfg.Paths.DecoySiteDir))
+		case "set decoy site path":
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return err
+			}
+
+			nextPath, err := promptLine(in, out, "Decoy site directory", strings.TrimSpace(cfg.Paths.DecoySiteDir))
+			if err != nil {
+				return err
+			}
+			nextPath = strings.TrimSpace(nextPath)
+			if nextPath == "" {
+				fmt.Fprintln(out, "value is required")
+				continue
+			}
+			if !filepath.IsAbs(nextPath) {
+				fmt.Fprintln(out, "path must be absolute")
+				continue
+			}
+
+			if err := os.MkdirAll(nextPath, 0o755); err != nil {
+				return fmt.Errorf("create decoy site directory: %w", err)
+			}
+			if err := setConfigDecoySiteDir(configPath, nextPath); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "updated config: paths.decoy_site_dir=%s\n", nextPath)
+			fmt.Fprintln(out, "run `proxyctl render` and `proxyctl apply` to refresh runtime assets")
+		case "switch decoy template":
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return err
+			}
+			templatesRoot := resolveDecoyTemplateLibraryPath(cfg)
+			templates, err := listDecoyTemplates(templatesRoot)
+			if err != nil {
+				return err
+			}
+			if len(templates) == 0 {
+				fmt.Fprintf(out, "no decoy templates found in %s\n", templatesRoot)
+				fmt.Fprintln(out, "upload templates there as <name>/index.html + <name>/assets/style.css")
+				continue
+			}
+			choice, err := promptChoice(in, out, "Decoy template", append(templates, "back"), templates[0])
+			if err != nil {
+				return err
+			}
+			if isBackOptionLabel(choice) {
+				continue
+			}
+			srcDir := filepath.Join(templatesRoot, choice)
+			if err := activateDecoyTemplateFromDir(cfg, srcDir); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "activated decoy template: %s\n", choice)
+			fmt.Fprintln(out, "template applied to runtime and active templates directory")
+		default:
+			return nil
+		}
+	}
+}
+
+func resolveDecoyTemplateLibraryPath(cfg config.AppConfig) string {
+	base := strings.TrimSpace(filepath.Dir(cfg.Paths.TemplatesDir))
+	if base == "" || base == "." || base == "/" {
+		return "/usr/share/proxy-orchestrator/decoy-templates"
+	}
+	return filepath.Join(base, "decoy-templates")
+}
+
+func listDecoyTemplates(root string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read decoy template directory %q: %w", root, err)
+	}
+
+	items := make([]string, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name())
+		if name == "" {
+			continue
+		}
+		if !decoyTemplateLooksValid(filepath.Join(root, name)) {
+			continue
+		}
+		items = append(items, name)
+	}
+	sort.Strings(items)
+	return items, nil
+}
+
+func decoyTemplateLooksValid(dir string) bool {
+	indexPath := filepath.Join(dir, "index.html")
+	stylePath := filepath.Join(dir, "assets", "style.css")
+	if _, err := os.Stat(indexPath); err != nil {
+		return false
+	}
+	if _, err := os.Stat(stylePath); err != nil {
+		return false
+	}
+	return true
+}
+
+func activateDecoyTemplateFromDir(cfg config.AppConfig, srcDir string) error {
+	indexPath := filepath.Join(srcDir, "index.html")
+	stylePath := filepath.Join(srcDir, "assets", "style.css")
+	indexContent, err := os.ReadFile(indexPath)
+	if err != nil {
+		return fmt.Errorf("read template index %q: %w", indexPath, err)
+	}
+	styleContent, err := os.ReadFile(stylePath)
+	if err != nil {
+		return fmt.Errorf("read template style %q: %w", stylePath, err)
+	}
+
+	runtimeDecoyDir := strings.TrimSpace(cfg.Paths.DecoySiteDir)
+	activeTemplateDir := filepath.Join(strings.TrimSpace(cfg.Paths.TemplatesDir), "decoy-site")
+	if err := os.MkdirAll(filepath.Join(runtimeDecoyDir, "assets"), 0o755); err != nil {
+		return fmt.Errorf("create runtime decoy directory: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(activeTemplateDir, "assets"), 0o755); err != nil {
+		return fmt.Errorf("create active decoy template directory: %w", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(runtimeDecoyDir, "index.html"), indexContent, 0o644); err != nil {
+		return fmt.Errorf("write runtime decoy index: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDecoyDir, "assets", "style.css"), styleContent, 0o644); err != nil {
+		return fmt.Errorf("write runtime decoy style: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(activeTemplateDir, "index.html"), indexContent, 0o644); err != nil {
+		return fmt.Errorf("write active template index: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(activeTemplateDir, "assets", "style.css"), styleContent, 0o644); err != nil {
+		return fmt.Errorf("write active template style: %w", err)
+	}
+	return nil
+}
+
+func setConfigDecoySiteDir(configPath, decoyPath string) error {
+	decoyPath = strings.TrimSpace(decoyPath)
+	if decoyPath == "" {
+		return fmt.Errorf("decoy path is required")
+	}
+
+	root := map[string]any{}
+	mode := os.FileMode(0o640)
+	if info, err := os.Stat(configPath); err == nil {
+		mode = info.Mode().Perm()
+	}
+
+	raw, err := os.ReadFile(configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read config %q: %w", configPath, err)
+	}
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		if err := yaml.Unmarshal(raw, &root); err != nil {
+			return fmt.Errorf("parse config %q: %w", configPath, err)
+		}
+	}
+
+	pathsRaw, ok := root["paths"]
+	if !ok {
+		root["paths"] = map[string]any{}
+		pathsRaw = root["paths"]
+	}
+	pathsMap, ok := pathsRaw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("config key paths is not an object")
+	}
+	pathsMap["decoy_site_dir"] = decoyPath
+
+	rendered, err := yaml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("encode config %q: %w", configPath, err)
+	}
+	if err := os.WriteFile(configPath, rendered, mode); err != nil {
+		return fmt.Errorf("write config %q: %w", configPath, err)
+	}
+	return nil
 }
 
 func runWizardNodesMenu(cmd *cobra.Command, dbPath string) error {

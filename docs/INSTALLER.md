@@ -19,6 +19,12 @@ Optional environment variables:
 - `PROXYCTL_REINSTALL_BINARY=1` — force overwrite of existing `/usr/local/bin/proxyctl`.
 - `PROXYCTL_ENABLE_AUTO_UPDATE=1` — install and enable `proxyctl-self-update.timer`.
 - `PROXYCTL_ENABLE_CADDY_ON_INSTALL=1` — ensure `proxyctl-caddy.service` is enabled and started during install (default: `1`; set `0` to skip).
+- `PROXYCTL_PROMPT_CONFIG` — interactive setup mode (`auto` by default; set `0|false|no` to disable prompts).
+- `PROXYCTL_REVERSE_PROXY` — reverse proxy backend (`caddy` or `nginx`; default: `caddy`).
+- `PROXYCTL_PUBLIC_DOMAIN` — domain used for generated config/runtime defaults.
+- `PROXYCTL_CONTACT_EMAIL` — ACME contact email for generated Caddy global options.
+- `PROXYCTL_DECOY_TEMPLATE` — decoy site template (`random|login|pizza-club|support-desk|default`, default: `random`).
+- `PROXYCTL_DECOY_TEMPLATE_BASE_URL` — base URL for downloading decoy templates when installer runs standalone via `curl|bash`.
 - `PROXYCTL_AUTO_UPDATE_SCHEDULE` — `systemd` timer schedule (default: `daily`).
 - `PROXYCTL_AUTO_UPDATE_INSTALL_URL` — installer URL used by auto-update script.
 - `SINGBOX_BINARY_URL` — fallback URL for `sing-box` binary/archive.
@@ -30,12 +36,27 @@ Supported OS (MVP):
 - Ubuntu 22.04
 - Ubuntu 24.04
 
+Interactive behavior:
+- If installer has TTY access, it asks for reverse proxy, domain, email, and decoy template choice.
+- Default backend is `caddy`.
+- With `caddy` + non-empty domain, installer creates HTTPS-enabled Caddy site block for that domain.
+- Decoy template can be chosen explicitly or left as `random`.
+- Installer creates decoy template library at `/usr/share/proxy-orchestrator/decoy-templates`.
+- Custom templates can be uploaded into that directory as `<name>/index.html` and `<name>/assets/style.css`.
+
 ## Idempotency rules
 - Existing `/etc/proxy-orchestrator/proxyctl.yaml` is not overwritten.
-- Runtime defaults (`Caddyfile`, `nginx.conf`, decoy assets) are created only if missing.
+- Runtime defaults `Caddyfile`/`nginx.conf` are created only if missing.
+- Decoy site assets are managed files and may be updated on reinstall when decoy template selection changes.
+- Existing default `:80` Caddyfile can be upgraded to domain-based Caddyfile when `caddy` + `PROXYCTL_PUBLIC_DOMAIN` is provided.
 - Managed systemd unit files are updated in-place with timestamped backup when content changes.
 - SQLite schema init is safe for repeated runs (`CREATE TABLE IF NOT EXISTS`).
-- Installer ensures `proxyctl-caddy.service` is enabled/started by default (`PROXYCTL_ENABLE_CADDY_ON_INSTALL=1`).
+- Installer ensures selected reverse proxy unit is enabled/started by default, and disables conflicting proxy unit (`nginx.service` is also disabled when `caddy` is selected).
+
+Wizard note:
+- `proxyctl wizard` now has `settings -> set decoy site path` to update `paths.decoy_site_dir` in config and switch decoy assets to a custom directory.
+- `proxyctl wizard` now has `settings -> switch decoy template` to activate template from `/usr/share/proxy-orchestrator/decoy-templates` (including your uploaded custom templates).
+- `proxyctl wizard` now has `uninstall proxyctl` for full purge flow with confirmation.
 
 ## Update notes
 1. Re-run installer (recommended strategy: source build when release assets are missing):
@@ -83,7 +104,21 @@ sudo systemctl start proxyctl-self-update.service
 ```
 
 ## Uninstall notes
-The project does not provide destructive auto-uninstall in MVP. Use explicit manual cleanup:
+`proxyctl` installer now places a host uninstall script:
+
+```bash
+proxyctl uninstall --yes
+# equivalent direct script call:
+/usr/local/sbin/proxyctl-uninstall --yes
+```
+
+Optional removal of runtime packages:
+
+```bash
+proxyctl uninstall --yes --remove-runtime-packages
+```
+
+Manual cleanup (fallback):
 
 1. Stop and disable managed units:
 

@@ -5,9 +5,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"proxyctl/internal/config"
 	"proxyctl/internal/domain"
 	applyruntime "proxyctl/internal/runtime/apply"
 )
@@ -190,6 +193,12 @@ func TestWizardMainOptionsWithoutNodes(t *testing.T) {
 	if strings.Contains(joined, "inbounds") || strings.Contains(joined, "users") {
 		t.Fatalf("options should hide inbounds/users when no nodes, got %v", options)
 	}
+	if !strings.Contains(joined, "settings") {
+		t.Fatalf("options should include settings, got %v", options)
+	}
+	if !strings.Contains(joined, "uninstall proxyctl") {
+		t.Fatalf("options should include uninstall proxyctl, got %v", options)
+	}
 	if def != "nodes" {
 		t.Fatalf("default action = %q, want nodes", def)
 	}
@@ -203,8 +212,102 @@ func TestWizardMainOptionsWithNodes(t *testing.T) {
 	if !strings.Contains(joined, "inbounds") || !strings.Contains(joined, "users") {
 		t.Fatalf("options should include inbounds/users when nodes exist, got %v", options)
 	}
+	if !strings.Contains(joined, "settings") {
+		t.Fatalf("options should include settings, got %v", options)
+	}
+	if !strings.Contains(joined, "uninstall proxyctl") {
+		t.Fatalf("options should include uninstall proxyctl, got %v", options)
+	}
 	if def != "inbounds" {
 		t.Fatalf("default action = %q, want inbounds", def)
+	}
+}
+
+func TestSetConfigDecoySiteDirCreatesPathsSection(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "proxyctl.yaml")
+	err := os.WriteFile(cfgPath, []byte("reverse_proxy: caddy\n"), 0o640)
+	if err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if err := setConfigDecoySiteDir(cfgPath, "/srv/decoys/site-a"); err != nil {
+		t.Fatalf("setConfigDecoySiteDir() error: %v", err)
+	}
+
+	content, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	text := string(content)
+	if !strings.Contains(text, "decoy_site_dir: /srv/decoys/site-a") {
+		t.Fatalf("config missing decoy_site_dir, got:\n%s", text)
+	}
+}
+
+func TestSetConfigDecoySiteDirUpdatesExistingValue(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "proxyctl.yaml")
+	err := os.WriteFile(cfgPath, []byte("paths:\n    decoy_site_dir: /old/path\n"), 0o640)
+	if err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if err := setConfigDecoySiteDir(cfgPath, "/new/path"); err != nil {
+		t.Fatalf("setConfigDecoySiteDir() error: %v", err)
+	}
+
+	content, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	text := string(content)
+	if strings.Contains(text, "/old/path") {
+		t.Fatalf("old path still present, got:\n%s", text)
+	}
+	if !strings.Contains(text, "decoy_site_dir: /new/path") {
+		t.Fatalf("new path missing, got:\n%s", text)
+	}
+}
+
+func TestResolveDecoyTemplateLibraryPath(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultAppConfig()
+	got := resolveDecoyTemplateLibraryPath(cfg)
+	if got != "/usr/share/proxy-orchestrator/decoy-templates" {
+		t.Fatalf("resolveDecoyTemplateLibraryPath() = %q", got)
+	}
+}
+
+func TestListDecoyTemplatesFiltersInvalid(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	valid := filepath.Join(root, "valid")
+	if err := os.MkdirAll(filepath.Join(valid, "assets"), 0o755); err != nil {
+		t.Fatalf("mkdir valid: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(valid, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write valid index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(valid, "assets", "style.css"), []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write valid style: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "invalid"), 0o755); err != nil {
+		t.Fatalf("mkdir invalid: %v", err)
+	}
+
+	items, err := listDecoyTemplates(root)
+	if err != nil {
+		t.Fatalf("listDecoyTemplates() error: %v", err)
+	}
+	if len(items) != 1 || items[0] != "valid" {
+		t.Fatalf("templates = %v, want [valid]", items)
 	}
 }
 
