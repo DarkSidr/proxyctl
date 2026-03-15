@@ -2160,6 +2160,7 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 		action, err := promptChoice(in, out, fmt.Sprintf("User %s (%s)", user.Name, user.ID), []string{
 			"attach to existing inbound",
 			"show configs",
+			"generate subscription",
 			"open credential",
 			"delete specific config",
 			"delete user completely",
@@ -2182,6 +2183,10 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 			if err := runWizardShowUserConfigs(cmd, out, dbPath, user); err != nil {
 				return err
 			}
+		case "generate subscription":
+			if err := runWizardGenerateUserSubscription(cmd, out, configPath, dbPath, user); err != nil {
+				return err
+			}
 		case "open credential":
 			if err := runWizardOpenCredential(cmd, in, out, dbPath, user); err != nil {
 				return err
@@ -2202,6 +2207,35 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 			return nil
 		}
 	}
+}
+
+func runWizardGenerateUserSubscription(cmd *cobra.Command, out io.Writer, configPath, dbPath string, user domain.User) error {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	subscriptionDir, err := resolveSubscriptionDir(configPath)
+	if err != nil {
+		return err
+	}
+	svc := subscriptionservice.New(
+		store,
+		subscriptionDir,
+		singbox.New(nil),
+		xray.New(nil),
+	)
+	generated, err := svc.Generate(cmd.Context(), user.ID)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "generated subscription for user=%s (%s)\n", generated.User.Name, generated.User.ID)
+	fmt.Fprintf(out, "txt: %s\n", generated.TXTPath)
+	fmt.Fprintf(out, "base64: %s\n", generated.Base64Path)
+	fmt.Fprintf(out, "json: %s\n", generated.JSONPath)
+	return nil
 }
 
 func runWizardInboundMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, inbound domain.Inbound) error {
