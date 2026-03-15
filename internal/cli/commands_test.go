@@ -133,6 +133,27 @@ func TestBuildWizardUserMenuOptionsWithSubscription(t *testing.T) {
 	}
 }
 
+func TestParseIndexCSV(t *testing.T) {
+	t.Parallel()
+
+	got, err := parseIndexCSV("3,1,1,2", 3)
+	if err != nil {
+		t.Fatalf("parseIndexCSV() error: %v", err)
+	}
+	if strings.Join([]string{fmt.Sprint(got[0]), fmt.Sprint(got[1]), fmt.Sprint(got[2])}, ",") != "1,2,3" {
+		t.Fatalf("indexes = %v, want [1 2 3]", got)
+	}
+}
+
+func TestWizardNormalizeProfileName(t *testing.T) {
+	t.Parallel()
+
+	got := wizardNormalizeProfileName(" Super Test !!! ")
+	if got != "super-test" {
+		t.Fatalf("normalized profile = %q, want %q", got, "super-test")
+	}
+}
+
 func TestEnsureCaddyServiceHealthyStartsInactiveService(t *testing.T) {
 	origLookPath := lookPath
 	origRun := runCommandOutput

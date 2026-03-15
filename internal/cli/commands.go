@@ -2322,11 +2322,11 @@ func runWizardGenerateUserSubscription(cmd *cobra.Command, in *bufio.Reader, out
 	profile := subscriptionservice.DefaultProfileName
 	selectedInbounds := []string(nil)
 	if mode == "named profile (choose inbounds)" {
-		availableInboundIDs, listErr := wizardUserInboundIDs(cmd, dbPath, user.ID)
+		inboundChoices, listErr := wizardUserInboundChoices(cmd, dbPath, user.ID)
 		if listErr != nil {
 			return listErr
 		}
-		if len(availableInboundIDs) == 0 {
+		if len(inboundChoices) == 0 {
 			fmt.Fprintln(out, "no inbounds available for this user")
 			return nil
 		}
@@ -2336,14 +2336,36 @@ func runWizardGenerateUserSubscription(cmd *cobra.Command, in *bufio.Reader, out
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "available inbound ids: %s\n", strings.Join(availableInboundIDs, ", "))
-		inboundLine, lineErr := promptLine(in, out, "Inbound IDs (comma-separated)", strings.Join(availableInboundIDs, ","))
+		normalizedProfile := wizardNormalizeProfileName(profile)
+		if normalizedProfile == "" {
+			return fmt.Errorf("profile name is required")
+		}
+		if normalizedProfile != profile {
+			fmt.Fprintf(out, "profile normalized: %s\n", normalizedProfile)
+		}
+		profile = normalizedProfile
+
+		fmt.Fprintln(out, "available inbounds:")
+		defaultIndexes := make([]string, 0, len(inboundChoices))
+		for i, choice := range inboundChoices {
+			idx := i + 1
+			defaultIndexes = append(defaultIndexes, strconv.Itoa(idx))
+			fmt.Fprintf(out, "  %d) %s\n", idx, choice.Label)
+		}
+		inboundLine, lineErr := promptLine(in, out, "Select inbounds (comma-separated numbers)", strings.Join(defaultIndexes, ","))
 		if lineErr != nil {
 			return lineErr
 		}
-		selectedInbounds = parseCSV(inboundLine)
+		selectedIdx, parseErr := parseIndexCSV(inboundLine, len(inboundChoices))
+		if parseErr != nil {
+			return parseErr
+		}
+		selectedInbounds = make([]string, 0, len(selectedIdx))
+		for _, idx := range selectedIdx {
+			selectedInbounds = append(selectedInbounds, inboundChoices[idx-1].InboundID)
+		}
 		if len(selectedInbounds) == 0 {
-			return fmt.Errorf("at least one inbound id is required for named profile")
+			return fmt.Errorf("at least one inbound is required for named profile")
 		}
 	}
 
@@ -2365,7 +2387,12 @@ func runWizardGenerateUserSubscription(cmd *cobra.Command, in *bufio.Reader, out
 	return nil
 }
 
-func wizardUserInboundIDs(cmd *cobra.Command, dbPath, userID string) ([]string, error) {
+type wizardInboundChoice struct {
+	InboundID string
+	Label     string
+}
+
+func wizardUserInboundChoices(cmd *cobra.Command, dbPath, userID string) ([]wizardInboundChoice, error) {
 	store, err := openStoreWithInit(cmd.Context(), dbPath)
 	if err != nil {
 		return nil, err
@@ -2376,22 +2403,73 @@ func wizardUserInboundIDs(cmd *cobra.Command, dbPath, userID string) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	inboundSet := map[string]struct{}{}
+	inbounds, err := store.Inbounds().List(cmd.Context())
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := store.Nodes().List(cmd.Context())
+	if err != nil {
+		return nil, err
+	}
+
+	inboundByID := make(map[string]domain.Inbound, len(inbounds))
+	for _, inbound := range inbounds {
+		inboundByID[inbound.ID] = inbound
+	}
+	nodeByID := make(map[string]domain.Node, len(nodes))
+	for _, node := range nodes {
+		nodeByID[node.ID] = node
+	}
+
+	inboundSet := map[string]domain.Inbound{}
 	for _, credential := range credentials {
 		if credential.UserID != userID {
 			continue
 		}
-		inboundSet[credential.InboundID] = struct{}{}
+		inbound, ok := inboundByID[credential.InboundID]
+		if !ok {
+			continue
+		}
+		inboundSet[credential.InboundID] = inbound
 	}
 	if len(inboundSet) == 0 {
 		return nil, nil
 	}
-	ids := make([]string, 0, len(inboundSet))
-	for inboundID := range inboundSet {
-		ids = append(ids, inboundID)
+
+	choices := make([]wizardInboundChoice, 0, len(inboundSet))
+	for inboundID, inbound := range inboundSet {
+		host := strings.TrimSpace(inbound.Domain)
+		if host == "" {
+			if node, ok := nodeByID[inbound.NodeID]; ok && strings.TrimSpace(node.Host) != "" {
+				host = node.Host
+			}
+		}
+		if host == "" {
+			host = "<no-domain>"
+		}
+		nodeLabel := ""
+		if node, ok := nodeByID[inbound.NodeID]; ok {
+			nodeLabel = strings.TrimSpace(node.Name)
+			if nodeLabel == "" {
+				nodeLabel = strings.TrimSpace(node.Host)
+			}
+		}
+		if nodeLabel == "" {
+			nodeLabel = inbound.NodeID
+		}
+		shortID := inboundID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		choices = append(choices, wizardInboundChoice{
+			InboundID: inboundID,
+			Label:     fmt.Sprintf("%s/%s %s:%d (node: %s, id: %s)", inbound.Type, inbound.Transport, host, inbound.Port, nodeLabel, shortID),
+		})
 	}
-	sort.Strings(ids)
-	return ids, nil
+	sort.Slice(choices, func(i, j int) bool {
+		return choices[i].Label < choices[j].Label
+	})
+	return choices, nil
 }
 
 func runWizardDeleteUserSubscription(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
@@ -3271,6 +3349,54 @@ func parseCSV(raw string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func parseIndexCSV(raw string, max int) ([]int, error) {
+	values := parseCSV(raw)
+	if len(values) == 0 {
+		return nil, nil
+	}
+	seen := make(map[int]struct{}, len(values))
+	out := make([]int, 0, len(values))
+	for _, value := range values {
+		idx, err := strconv.Atoi(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid index %q", value)
+		}
+		if idx < 1 || idx > max {
+			return nil, fmt.Errorf("index %d out of range 1..%d", idx, max)
+		}
+		if _, ok := seen[idx]; ok {
+			continue
+		}
+		seen[idx] = struct{}{}
+		out = append(out, idx)
+	}
+	sort.Ints(out)
+	return out, nil
+}
+
+func wizardNormalizeProfileName(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, ch := range value {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' {
+			b.WriteRune(ch)
+			lastDash = false
+			continue
+		}
+		if ch == '-' || ch == ' ' {
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func shellQuote(s string) string {
