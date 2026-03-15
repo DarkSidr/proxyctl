@@ -113,6 +113,7 @@ sudo bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/
 ```
 
 Installer now asks interactively (when a TTY is available):
+- deployment mode (`panel+node` by default),
 - reverse proxy backend (`caddy` by default),
 - public domain,
 - ACME contact email (for Caddy automatic TLS).
@@ -122,6 +123,7 @@ For non-interactive provisioning you can pass values via env:
 
 ```bash
 sudo PROXYCTL_PROMPT_CONFIG=0 \
+  PROXYCTL_DEPLOYMENT_MODE=panel+node \
   PROXYCTL_REVERSE_PROXY=caddy \
   PROXYCTL_PUBLIC_DOMAIN=darksidr.icu \
   PROXYCTL_CONTACT_EMAIL=ops@example.com \

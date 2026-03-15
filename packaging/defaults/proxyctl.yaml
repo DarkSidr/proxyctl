@@ -1,3 +1,4 @@
+deployment_mode: panel+node
 reverse_proxy: caddy
 
 storage:

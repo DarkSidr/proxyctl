@@ -18,6 +18,9 @@ func TestLoadReturnsDefaultsWhenFileMissing(t *testing.T) {
 	if cfg.ReverseProxy != defaults.ReverseProxy {
 		t.Fatalf("reverse proxy = %q, want %q", cfg.ReverseProxy, defaults.ReverseProxy)
 	}
+	if cfg.DeploymentMode != defaults.DeploymentMode {
+		t.Fatalf("deployment mode = %q, want %q", cfg.DeploymentMode, defaults.DeploymentMode)
+	}
 }
 
 func TestLoadOverridesReverseProxyAndRuntimeDir(t *testing.T) {
@@ -26,6 +29,7 @@ func TestLoadOverridesReverseProxyAndRuntimeDir(t *testing.T) {
 	root := t.TempDir()
 	cfgPath := filepath.Join(root, "proxyctl.yaml")
 	content := []byte(`
+deployment_mode: panel
 reverse_proxy: nginx
 paths:
   runtime_dir: /tmp/runtime-proxy
@@ -43,6 +47,9 @@ public:
 	}
 	if cfg.ReverseProxy != ReverseProxyNginx {
 		t.Fatalf("reverse proxy = %q, want %q", cfg.ReverseProxy, ReverseProxyNginx)
+	}
+	if cfg.DeploymentMode != DeploymentModePanel {
+		t.Fatalf("deployment mode = %q, want %q", cfg.DeploymentMode, DeploymentModePanel)
 	}
 	if cfg.Paths.RuntimeDir != "/tmp/runtime-proxy" {
 		t.Fatalf("runtime dir = %q, want %q", cfg.Paths.RuntimeDir, "/tmp/runtime-proxy")
@@ -70,6 +77,21 @@ func TestLoadFailsOnUnsupportedReverseProxy(t *testing.T) {
 	root := t.TempDir()
 	cfgPath := filepath.Join(root, "proxyctl.yaml")
 	if err := os.WriteFile(cfgPath, []byte("reverse_proxy: apache\n"), 0o640); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+}
+
+func TestLoadFailsOnUnsupportedDeploymentMode(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "proxyctl.yaml")
+	if err := os.WriteFile(cfgPath, []byte("deployment_mode: distributed\n"), 0o640); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 

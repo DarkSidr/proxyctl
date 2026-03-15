@@ -35,6 +35,7 @@ PROXYCTL_ENABLE_AUTO_UPDATE="${PROXYCTL_ENABLE_AUTO_UPDATE:-0}"
 PROXYCTL_ENABLE_CADDY_ON_INSTALL="${PROXYCTL_ENABLE_CADDY_ON_INSTALL:-1}"
 PROXYCTL_AUTO_UPDATE_SCHEDULE="${PROXYCTL_AUTO_UPDATE_SCHEDULE:-daily}"
 PROXYCTL_AUTO_UPDATE_INSTALL_URL="${PROXYCTL_AUTO_UPDATE_INSTALL_URL:-https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh}"
+PROXYCTL_DEPLOYMENT_MODE="${PROXYCTL_DEPLOYMENT_MODE:-}"
 PROXYCTL_REVERSE_PROXY="${PROXYCTL_REVERSE_PROXY:-}"
 PROXYCTL_PUBLIC_DOMAIN="${PROXYCTL_PUBLIC_DOMAIN:-}"
 PROXYCTL_CONTACT_EMAIL="${PROXYCTL_CONTACT_EMAIL:-}"
@@ -47,6 +48,7 @@ SINGBOX_BINARY_URL="${SINGBOX_BINARY_URL:-}"
 XRAY_BINARY_URL="${XRAY_BINARY_URL:-}"
 
 APT_UPDATED=0
+SELECTED_DEPLOYMENT_MODE="panel+node"
 SELECTED_REVERSE_PROXY="caddy"
 SELECTED_PUBLIC_DOMAIN=""
 SELECTED_CONTACT_EMAIL=""
@@ -127,6 +129,26 @@ prompt_reverse_proxy_choice() {
         ;;
       *)
         warn "Unsupported reverse proxy choice: ${answer}. Use caddy or nginx."
+        ;;
+    esac
+  done
+}
+
+prompt_deployment_mode_choice() {
+  local current="$1"
+  local answer=""
+  local normalized
+  while true; do
+    read -r -p "Deployment mode (panel+node/panel/node) [${current}]: " answer || true
+    answer="${answer:-${current}}"
+    normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
+    case "${normalized}" in
+      panel+node|panel|node)
+        printf '%s\n' "${normalized}"
+        return 0
+        ;;
+      *)
+        warn "Unsupported deployment mode: ${answer}. Use panel+node, panel or node."
         ;;
     esac
   done
@@ -238,12 +260,14 @@ activate_decoy_template() {
 }
 
 configure_install_preferences() {
+  local existing_deployment_mode="panel+node"
   local existing_reverse_proxy="caddy"
   local existing_domain=""
   local existing_email=""
   local prompt_enabled="0"
 
   if [[ -f "${CONFIG_PATH}" ]]; then
+    existing_deployment_mode="$(awk -F':' '/^[[:space:]]*deployment_mode:[[:space:]]*/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}' "${CONFIG_PATH}" || true)"
     existing_reverse_proxy="$(awk -F':' '/^[[:space:]]*reverse_proxy:[[:space:]]*/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}' "${CONFIG_PATH}" || true)"
     existing_domain="$(awk -F':' '/^[[:space:]]*domain:[[:space:]]*/ {sub(/^[[:space:]]*/, "", $2); gsub(/^"|"$/, "", $2); print $2; exit}' "${CONFIG_PATH}" || true)"
     existing_email="$(awk -F':' '/^[[:space:]]*contact_email:[[:space:]]*/ {sub(/^[[:space:]]*/, "", $2); gsub(/^"|"$/, "", $2); print $2; exit}' "${CONFIG_PATH}" || true)"
@@ -252,9 +276,18 @@ configure_install_preferences() {
     existing_reverse_proxy="caddy"
   fi
 
+  SELECTED_DEPLOYMENT_MODE="${existing_deployment_mode}"
   SELECTED_REVERSE_PROXY="${existing_reverse_proxy}"
   SELECTED_PUBLIC_DOMAIN="${existing_domain}"
   SELECTED_CONTACT_EMAIL="${existing_email}"
+
+  if [[ -n "${PROXYCTL_DEPLOYMENT_MODE}" ]]; then
+    SELECTED_DEPLOYMENT_MODE="$(printf '%s' "${PROXYCTL_DEPLOYMENT_MODE}" | tr '[:upper:]' '[:lower:]')"
+  fi
+  if [[ "${SELECTED_DEPLOYMENT_MODE}" != "panel+node" && "${SELECTED_DEPLOYMENT_MODE}" != "panel" && "${SELECTED_DEPLOYMENT_MODE}" != "node" ]]; then
+    warn "Invalid deployment mode '${SELECTED_DEPLOYMENT_MODE}'; falling back to panel+node"
+    SELECTED_DEPLOYMENT_MODE="panel+node"
+  fi
 
   if [[ -n "${PROXYCTL_REVERSE_PROXY}" ]]; then
     SELECTED_REVERSE_PROXY="$(printf '%s' "${PROXYCTL_REVERSE_PROXY}" | tr '[:upper:]' '[:lower:]')"
@@ -279,7 +312,8 @@ configure_install_preferences() {
   fi
 
   if [[ "${prompt_enabled}" == "1" ]]; then
-    log "Interactive setup: reverse proxy and public endpoint settings"
+    log "Interactive setup: deployment mode, reverse proxy and public endpoint settings"
+    SELECTED_DEPLOYMENT_MODE="$(prompt_deployment_mode_choice "${SELECTED_DEPLOYMENT_MODE}")"
     SELECTED_REVERSE_PROXY="$(prompt_reverse_proxy_choice "${SELECTED_REVERSE_PROXY}")"
     if [[ "${SELECTED_REVERSE_PROXY}" == "caddy" ]]; then
       SELECTED_PUBLIC_DOMAIN="$(prompt_with_default "Public domain (required for automatic HTTPS)" "${SELECTED_PUBLIC_DOMAIN}")"
@@ -293,6 +327,7 @@ configure_install_preferences() {
   SELECTED_PUBLIC_DOMAIN="$(printf '%s' "${SELECTED_PUBLIC_DOMAIN}" | xargs || true)"
   SELECTED_CONTACT_EMAIL="$(printf '%s' "${SELECTED_CONTACT_EMAIL}" | xargs || true)"
   SELECTED_DECOY_TEMPLATE="$(resolve_decoy_template_choice "${SELECTED_DECOY_TEMPLATE}")"
+  log "Selected deployment mode: ${SELECTED_DEPLOYMENT_MODE}"
   log "Selected reverse proxy: ${SELECTED_REVERSE_PROXY}"
   if [[ -n "${SELECTED_PUBLIC_DOMAIN}" ]]; then
     log "Selected public domain: ${SELECTED_PUBLIC_DOMAIN}"
@@ -986,6 +1021,7 @@ install_default_config() {
   fi
 
   cat >"${CONFIG_PATH}" <<EOT
+deployment_mode: ${SELECTED_DEPLOYMENT_MODE}
 reverse_proxy: ${SELECTED_REVERSE_PROXY}
 
 storage:

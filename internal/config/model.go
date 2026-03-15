@@ -10,6 +10,15 @@ const (
 	ReverseProxyNginx ReverseProxyEngine = "nginx"
 )
 
+// DeploymentMode defines node role in future multi-node topology.
+type DeploymentMode string
+
+const (
+	DeploymentModePanelNode DeploymentMode = "panel+node"
+	DeploymentModePanel     DeploymentMode = "panel"
+	DeploymentModeNode      DeploymentMode = "node"
+)
+
 // Paths stores top-level filesystem paths used by the application.
 type Paths struct {
 	BaseDir      string
@@ -54,11 +63,12 @@ type StorageConfig struct {
 
 // AppConfig is the root configuration model for proxyctl.
 type AppConfig struct {
-	Paths        Paths
-	Storage      StorageConfig
-	Runtime      RuntimeConfig
-	ReverseProxy ReverseProxyEngine
-	Public       PublicEndpointConfig
+	DeploymentMode DeploymentMode
+	Paths          Paths
+	Storage        StorageConfig
+	Runtime        RuntimeConfig
+	ReverseProxy   ReverseProxyEngine
+	Public         PublicEndpointConfig
 }
 
 const (
@@ -68,6 +78,7 @@ const (
 // DefaultAppConfig returns the MVP default layout from ARCHITECTURE.md.
 func DefaultAppConfig() AppConfig {
 	return AppConfig{
+		DeploymentMode: DeploymentModePanelNode,
 		Paths: Paths{
 			BaseDir:      "/etc/proxy-orchestrator",
 			ConfigDir:    "/etc/proxy-orchestrator",
@@ -108,6 +119,9 @@ func DefaultAppConfig() AppConfig {
 func (c AppConfig) Validate() error {
 	if c.ReverseProxy != ReverseProxyCaddy && c.ReverseProxy != ReverseProxyNginx {
 		return fmt.Errorf("unsupported reverse proxy engine %q", c.ReverseProxy)
+	}
+	if c.DeploymentMode != DeploymentModePanelNode && c.DeploymentMode != DeploymentModePanel && c.DeploymentMode != DeploymentModeNode {
+		return fmt.Errorf("unsupported deployment mode %q", c.DeploymentMode)
 	}
 	if c.Storage.SQLitePath == "" {
 		return fmt.Errorf("storage.sqlite_path is required")

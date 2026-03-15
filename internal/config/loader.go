@@ -11,11 +11,12 @@ import (
 )
 
 type appConfigYAML struct {
-	Paths        *pathsYAML          `yaml:"paths"`
-	Storage      *storageYAML        `yaml:"storage"`
-	Runtime      *runtimeYAML        `yaml:"runtime"`
-	ReverseProxy string              `yaml:"reverse_proxy"`
-	Public       *publicEndpointYAML `yaml:"public"`
+	DeploymentMode string              `yaml:"deployment_mode"`
+	Paths          *pathsYAML          `yaml:"paths"`
+	Storage        *storageYAML        `yaml:"storage"`
+	Runtime        *runtimeYAML        `yaml:"runtime"`
+	ReverseProxy   string              `yaml:"reverse_proxy"`
+	Public         *publicEndpointYAML `yaml:"public"`
 }
 
 type pathsYAML struct {
@@ -87,6 +88,10 @@ func Load(path string) (AppConfig, error) {
 }
 
 func applyYAMLToConfig(cfg *AppConfig, raw appConfigYAML) {
+	if strings.TrimSpace(raw.DeploymentMode) != "" {
+		cfg.DeploymentMode = DeploymentMode(strings.ToLower(strings.TrimSpace(raw.DeploymentMode)))
+	}
+
 	if raw.Paths != nil {
 		if raw.Paths.BaseDir != nil {
 			cfg.Paths.BaseDir = *raw.Paths.BaseDir

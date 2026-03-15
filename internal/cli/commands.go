@@ -111,11 +111,17 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 			fmt.Fprintln(out, "proxyctl wizard")
 			fmt.Fprintf(out, "=== VERSION: %s ===\n", strings.TrimSpace(Version))
 			for {
+				appCfg, cfgErr := loadAppConfig(*configPath)
+				if cfgErr != nil {
+					return cfgErr
+				}
+				fmt.Fprintf(out, "deployment mode: %s\n", appCfg.DeploymentMode)
+
 				hasNodes, err := wizardHasNodes(cmd, *dbPath)
 				if err != nil {
 					return err
 				}
-				options, defaultAction := wizardMainOptions(hasNodes)
+				options, defaultAction := wizardMainOptionsByMode(hasNodes, appCfg.DeploymentMode)
 				action, err := promptChoice(in, out, "Action", options, defaultAction)
 				if err != nil {
 					if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
@@ -1386,6 +1392,35 @@ func wizardHasNodes(cmd *cobra.Command, dbPath string) (bool, error) {
 }
 
 func wizardMainOptions(hasNodes bool) ([]string, string) {
+	return wizardMainOptionsByMode(hasNodes, config.DeploymentModePanelNode)
+}
+
+func wizardMainOptionsByMode(hasNodes bool, mode config.DeploymentMode) ([]string, string) {
+	if mode == "" {
+		mode = config.DeploymentModePanelNode
+	}
+
+	switch mode {
+	case config.DeploymentModePanel:
+		return []string{
+			"nodes",
+			"users",
+			"settings",
+			"update proxyctl",
+			"uninstall proxyctl",
+			"exit",
+		}, "nodes"
+	case config.DeploymentModeNode:
+		return []string{
+			"inbounds",
+			"users",
+			"settings",
+			"update proxyctl",
+			"uninstall proxyctl",
+			"exit",
+		}, "inbounds"
+	}
+
 	if !hasNodes {
 		return []string{
 			"nodes",

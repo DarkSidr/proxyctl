@@ -223,6 +223,51 @@ func TestWizardMainOptionsWithNodes(t *testing.T) {
 	}
 }
 
+func TestWizardMainOptionsByModePanel(t *testing.T) {
+	t.Parallel()
+
+	options, def := wizardMainOptionsByMode(false, config.DeploymentModePanel)
+	joined := strings.Join(options, ",")
+	if strings.Contains(joined, "inbounds") {
+		t.Fatalf("panel mode should not include inbounds, got %v", options)
+	}
+	if !strings.Contains(joined, "nodes") || !strings.Contains(joined, "users") {
+		t.Fatalf("panel mode should include nodes/users, got %v", options)
+	}
+	if def != "nodes" {
+		t.Fatalf("default action = %q, want nodes", def)
+	}
+}
+
+func TestWizardMainOptionsByModeNode(t *testing.T) {
+	t.Parallel()
+
+	options, def := wizardMainOptionsByMode(false, config.DeploymentModeNode)
+	joined := strings.Join(options, ",")
+	if strings.Contains(joined, "nodes") {
+		t.Fatalf("node mode should not include nodes, got %v", options)
+	}
+	if !strings.Contains(joined, "inbounds") || !strings.Contains(joined, "users") {
+		t.Fatalf("node mode should include inbounds/users, got %v", options)
+	}
+	if def != "inbounds" {
+		t.Fatalf("default action = %q, want inbounds", def)
+	}
+}
+
+func TestWizardMainOptionsByModeEmptyFallsBack(t *testing.T) {
+	t.Parallel()
+
+	options, def := wizardMainOptionsByMode(false, "")
+	joined := strings.Join(options, ",")
+	if strings.Contains(joined, "inbounds") || strings.Contains(joined, "users") {
+		t.Fatalf("empty mode should fallback to panel+node/no-nodes behavior, got %v", options)
+	}
+	if def != "nodes" {
+		t.Fatalf("default action = %q, want nodes", def)
+	}
+}
+
 func TestCollectInstalledVersions(t *testing.T) {
 	origLookPath := lookPath
 	origRun := runCommandOutput

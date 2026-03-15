@@ -20,6 +20,7 @@ Optional environment variables:
 - `PROXYCTL_ENABLE_AUTO_UPDATE=1` — install and enable `proxyctl-self-update.timer`.
 - `PROXYCTL_ENABLE_CADDY_ON_INSTALL=1` — ensure `proxyctl-caddy.service` is enabled and started during install (default: `1`; set `0` to skip).
 - `PROXYCTL_PROMPT_CONFIG` — interactive setup mode (`auto` by default; set `0|false|no` to disable prompts).
+- `PROXYCTL_DEPLOYMENT_MODE` — deployment role (`panel+node` default; `panel` or `node`).
 - `PROXYCTL_REVERSE_PROXY` — reverse proxy backend (`caddy` or `nginx`; default: `caddy`).
 - `PROXYCTL_PUBLIC_DOMAIN` — domain used for generated config/runtime defaults.
 - `PROXYCTL_CONTACT_EMAIL` — ACME contact email for generated Caddy global options.
@@ -38,7 +39,7 @@ Supported OS (MVP):
 - Ubuntu 24.04
 
 Interactive behavior:
-- If installer has TTY access, it asks for reverse proxy, domain, email, and decoy template choice.
+- If installer has TTY access, it asks for deployment mode, reverse proxy, domain, email, and decoy template choice.
 - Default backend is `caddy`.
 - With `caddy` + non-empty domain, installer creates HTTPS-enabled Caddy site block for that domain.
 - Decoy template can be chosen explicitly or left as `random`.
