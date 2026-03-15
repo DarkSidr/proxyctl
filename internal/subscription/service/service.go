@@ -24,6 +24,8 @@ const (
 	FormatTXT    = "txt"
 	FormatBase64 = "base64"
 	FormatJSON   = "json"
+
+	DefaultProfileName = "default"
 )
 
 type Service struct {
@@ -37,6 +39,7 @@ type Service struct {
 
 type Generated struct {
 	User            domain.User
+	ProfileName     string
 	GeneratedAt     time.Time
 	ClientArtifacts []renderer.ClientArtifact
 	TXT             []byte
@@ -50,10 +53,23 @@ type Generated struct {
 }
 
 type ShowResult struct {
-	User    domain.User
-	Format  string
-	Path    string
-	Content []byte
+	User        domain.User
+	ProfileName string
+	Format      string
+	Path        string
+	Content     []byte
+	AccessToken string
+}
+
+type profileStore struct {
+	Profiles []profileEntry `json:"profiles"`
+}
+
+type profileEntry struct {
+	Name        string    `json:"name"`
+	InboundIDs  []string  `json:"inbound_ids"`
+	AccessToken string    `json:"access_token"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type jsonExport struct {
@@ -102,41 +118,116 @@ func New(store storage.Store, dataDir, publicDir string, singBoxRenderer rendere
 }
 
 func (s *Service) Build(ctx context.Context, userRef string) (Generated, error) {
-	return s.build(ctx, userRef)
+	return s.BuildProfile(ctx, userRef, DefaultProfileName, nil)
 }
 
 func (s *Service) Generate(ctx context.Context, userRef string) (Generated, error) {
-	input, err := s.Build(ctx, userRef)
+	return s.GenerateProfile(ctx, userRef, DefaultProfileName, nil)
+}
+
+func (s *Service) BuildProfile(ctx context.Context, userRef, profileName string, inboundIDs []string) (Generated, error) {
+	profileKey, err := normalizeProfileName(profileName)
 	if err != nil {
 		return Generated{}, err
 	}
-	token, err := s.resolveOrCreateAccessToken(ctx, input.User.ID)
+	user, err := s.resolveUser(ctx, userRef)
 	if err != nil {
 		return Generated{}, err
+	}
+	filteredInboundIDs := compactUniqueStrings(inboundIDs)
+	if profileKey == DefaultProfileName {
+		filteredInboundIDs = nil
+	}
+	if profileKey != DefaultProfileName && len(filteredInboundIDs) == 0 {
+		stored, exists, loadErr := s.loadProfile(user.ID, profileKey)
+		if loadErr != nil {
+			return Generated{}, loadErr
+		}
+		if !exists || len(stored.InboundIDs) == 0 {
+			return Generated{}, fmt.Errorf("subscription profile %q is not configured; provide inbound ids", profileKey)
+		}
+		filteredInboundIDs = stored.InboundIDs
+	}
+
+	input, err := s.build(ctx, user.ID, toSet(filteredInboundIDs))
+	if err != nil {
+		return Generated{}, err
+	}
+	input.ProfileName = profileKey
+	return input, nil
+}
+
+func (s *Service) GenerateProfile(ctx context.Context, userRef, profileName string, inboundIDs []string) (Generated, error) {
+	input, err := s.BuildProfile(ctx, userRef, profileName, inboundIDs)
+	if err != nil {
+		return Generated{}, err
+	}
+	profileKey := input.ProfileName
+
+	token := ""
+	if profileKey == DefaultProfileName {
+		token, err = s.resolveOrCreateAccessToken(ctx, input.User.ID)
+		if err != nil {
+			return Generated{}, err
+		}
+	} else {
+		entry, _, loadErr := s.loadProfile(input.User.ID, profileKey)
+		if loadErr != nil {
+			return Generated{}, loadErr
+		}
+		entry.Name = profileKey
+		if len(inboundIDs) > 0 {
+			entry.InboundIDs = compactUniqueStrings(inboundIDs)
+		}
+		if strings.TrimSpace(entry.AccessToken) == "" {
+			entry.AccessToken, err = generateAccessToken()
+			if err != nil {
+				return Generated{}, err
+			}
+		}
+		entry.UpdatedAt = input.GeneratedAt
+		if err := s.saveProfile(input.User.ID, entry); err != nil {
+			return Generated{}, err
+		}
+		token = entry.AccessToken
 	}
 
 	writer := layout.New(layout.Directories{SubscriptionsDir: s.dataDir})
-	paths, err := writer.WriteSubscriptionFiles(input.User.ID, layout.SubscriptionFiles{
-		TXT:    input.TXT,
-		Base64: input.Base64,
-		JSON:   input.JSON,
-	})
-	if err != nil {
-		return Generated{}, err
+	var paths layout.SubscriptionPaths
+	if profileKey == DefaultProfileName {
+		paths, err = writer.WriteSubscriptionFiles(input.User.ID, layout.SubscriptionFiles{
+			TXT:    input.TXT,
+			Base64: input.Base64,
+			JSON:   input.JSON,
+		})
+		if err != nil {
+			return Generated{}, err
+		}
+	} else {
+		paths, err = writer.WriteSubscriptionFilesWithSuffix(input.User.ID, layout.SubscriptionFiles{
+			TXT:    input.TXT,
+			Base64: input.Base64,
+			JSON:   input.JSON,
+		}, profileKey)
+		if err != nil {
+			return Generated{}, err
+		}
 	}
 	publicTXTPath, err := s.writePublicTXT(token, input.TXT)
 	if err != nil {
 		return Generated{}, err
 	}
 
-	if _, err := s.store.Subscriptions().Upsert(ctx, domain.Subscription{
-		UserID:      input.User.ID,
-		Format:      domain.SubscriptionFormat(FormatTXT),
-		OutputPath:  paths.TXTPath,
-		AccessToken: token,
-		UpdatedAt:   input.GeneratedAt,
-	}); err != nil {
-		return Generated{}, fmt.Errorf("persist subscription metadata: %w", err)
+	if profileKey == DefaultProfileName {
+		if _, err := s.store.Subscriptions().Upsert(ctx, domain.Subscription{
+			UserID:      input.User.ID,
+			Format:      domain.SubscriptionFormat(FormatTXT),
+			OutputPath:  paths.TXTPath,
+			AccessToken: token,
+			UpdatedAt:   input.GeneratedAt,
+		}); err != nil {
+			return Generated{}, fmt.Errorf("persist subscription metadata: %w", err)
+		}
 	}
 
 	input.TXTPath = paths.TXTPath
@@ -148,7 +239,11 @@ func (s *Service) Generate(ctx context.Context, userRef string) (Generated, erro
 }
 
 func (s *Service) Export(ctx context.Context, userRef, format string) (ShowResult, error) {
-	result, err := s.Generate(ctx, userRef)
+	return s.ExportProfile(ctx, userRef, DefaultProfileName, nil, format)
+}
+
+func (s *Service) ExportProfile(ctx context.Context, userRef, profileName string, inboundIDs []string, format string) (ShowResult, error) {
+	result, err := s.GenerateProfile(ctx, userRef, profileName, inboundIDs)
 	if err != nil {
 		return ShowResult{}, err
 	}
@@ -158,7 +253,7 @@ func (s *Service) Export(ctx context.Context, userRef, format string) (ShowResul
 		format = FormatJSON
 	}
 
-	show := ShowResult{User: result.User, Format: format}
+	show := ShowResult{User: result.User, ProfileName: result.ProfileName, Format: format, AccessToken: result.AccessToken}
 	switch format {
 	case FormatTXT:
 		show.Path = result.TXTPath
@@ -173,22 +268,54 @@ func (s *Service) Export(ctx context.Context, userRef, format string) (ShowResul
 		return ShowResult{}, fmt.Errorf("unsupported format %q", format)
 	}
 
-	if _, err := s.store.Subscriptions().Upsert(ctx, domain.Subscription{
-		UserID:      result.User.ID,
-		Format:      domain.SubscriptionFormat(show.Format),
-		OutputPath:  show.Path,
-		AccessToken: result.AccessToken,
-		UpdatedAt:   result.GeneratedAt,
-	}); err != nil {
-		return ShowResult{}, fmt.Errorf("persist subscription metadata: %w", err)
+	if result.ProfileName == DefaultProfileName {
+		if _, err := s.store.Subscriptions().Upsert(ctx, domain.Subscription{
+			UserID:      result.User.ID,
+			Format:      domain.SubscriptionFormat(show.Format),
+			OutputPath:  show.Path,
+			AccessToken: result.AccessToken,
+			UpdatedAt:   result.GeneratedAt,
+		}); err != nil {
+			return ShowResult{}, fmt.Errorf("persist subscription metadata: %w", err)
+		}
 	}
 	return show, nil
 }
 
 func (s *Service) Show(ctx context.Context, userRef string) (ShowResult, error) {
+	return s.ShowProfile(ctx, userRef, DefaultProfileName)
+}
+
+func (s *Service) ShowProfile(ctx context.Context, userRef, profileName string) (ShowResult, error) {
+	profileKey, err := normalizeProfileName(profileName)
+	if err != nil {
+		return ShowResult{}, err
+	}
 	user, err := s.resolveUser(ctx, userRef)
 	if err != nil {
 		return ShowResult{}, err
+	}
+	if profileKey != DefaultProfileName {
+		entry, exists, loadErr := s.loadProfile(user.ID, profileKey)
+		if loadErr != nil {
+			return ShowResult{}, loadErr
+		}
+		if !exists {
+			return ShowResult{}, fmt.Errorf("subscription profile %q not found for user %q", profileKey, userRef)
+		}
+		path := filepath.Join(strings.TrimSpace(s.dataDir), user.ID+"."+profileKey+".txt")
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return ShowResult{}, fmt.Errorf("read subscription file: %w", readErr)
+		}
+		return ShowResult{
+			User:        user,
+			ProfileName: profileKey,
+			Format:      FormatTXT,
+			Path:        path,
+			Content:     content,
+			AccessToken: strings.TrimSpace(entry.AccessToken),
+		}, nil
 	}
 
 	sub, err := s.store.Subscriptions().GetByUserID(ctx, user.ID)
@@ -199,7 +326,7 @@ func (s *Service) Show(ctx context.Context, userRef string) (ShowResult, error) 
 			if readErr != nil {
 				return ShowResult{}, fmt.Errorf("subscription for user %q is not generated", userRef)
 			}
-			return ShowResult{User: user, Format: FormatTXT, Path: path, Content: content}, nil
+			return ShowResult{User: user, ProfileName: DefaultProfileName, Format: FormatTXT, Path: path, Content: content}, nil
 		}
 		return ShowResult{}, err
 	}
@@ -208,10 +335,17 @@ func (s *Service) Show(ctx context.Context, userRef string) (ShowResult, error) 
 	if err != nil {
 		return ShowResult{}, fmt.Errorf("read subscription file: %w", err)
 	}
-	return ShowResult{User: user, Format: string(sub.Format), Path: sub.OutputPath, Content: content}, nil
+	return ShowResult{
+		User:        user,
+		ProfileName: DefaultProfileName,
+		Format:      string(sub.Format),
+		Path:        sub.OutputPath,
+		Content:     content,
+		AccessToken: strings.TrimSpace(sub.AccessToken),
+	}, nil
 }
 
-func (s *Service) build(ctx context.Context, userRef string) (Generated, error) {
+func (s *Service) build(ctx context.Context, userRef string, allowedInboundIDs map[string]struct{}) (Generated, error) {
 	user, err := s.resolveUser(ctx, userRef)
 	if err != nil {
 		return Generated{}, err
@@ -242,6 +376,11 @@ func (s *Service) build(ctx context.Context, userRef string) (Generated, error) 
 	userCreds := make([]domain.Credential, 0)
 	for _, cred := range credentials {
 		if cred.UserID == user.ID {
+			if len(allowedInboundIDs) > 0 {
+				if _, ok := allowedInboundIDs[cred.InboundID]; !ok {
+					continue
+				}
+			}
 			if _, ok := inboundByID[cred.InboundID]; ok {
 				userCreds = append(userCreds, cred)
 			}
@@ -455,6 +594,137 @@ func generateAccessToken() (string, error) {
 		return "", fmt.Errorf("generate access token: %w", err)
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+func normalizeProfileName(raw string) (string, error) {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	if name == "" {
+		return DefaultProfileName, nil
+	}
+	for _, ch := range name {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' {
+			continue
+		}
+		return "", fmt.Errorf("invalid profile name %q: use [a-z0-9_-]", raw)
+	}
+	return name, nil
+}
+
+func compactUniqueStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		v := strings.TrimSpace(value)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func toSet(values []string) map[string]struct{} {
+	if len(values) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		set[v] = struct{}{}
+	}
+	return set
+}
+
+func (s *Service) profilesPath(userID string) string {
+	return filepath.Join(strings.TrimSpace(s.dataDir), "profiles", strings.TrimSpace(userID)+".json")
+}
+
+func (s *Service) loadProfile(userID, profileKey string) (profileEntry, bool, error) {
+	path := s.profilesPath(userID)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return profileEntry{}, false, nil
+		}
+		return profileEntry{}, false, fmt.Errorf("read profiles file: %w", err)
+	}
+
+	var file profileStore
+	if err := json.Unmarshal(content, &file); err != nil {
+		return profileEntry{}, false, fmt.Errorf("decode profiles file: %w", err)
+	}
+	for _, item := range file.Profiles {
+		name, normalizeErr := normalizeProfileName(item.Name)
+		if normalizeErr != nil {
+			continue
+		}
+		if name == profileKey {
+			item.Name = name
+			item.InboundIDs = compactUniqueStrings(item.InboundIDs)
+			item.AccessToken = strings.TrimSpace(item.AccessToken)
+			return item, true, nil
+		}
+	}
+	return profileEntry{}, false, nil
+}
+
+func (s *Service) saveProfile(userID string, entry profileEntry) error {
+	path := s.profilesPath(userID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create profiles directory: %w", err)
+	}
+
+	file := profileStore{}
+	content, err := os.ReadFile(path)
+	if err == nil {
+		if unmarshalErr := json.Unmarshal(content, &file); unmarshalErr != nil {
+			return fmt.Errorf("decode profiles file: %w", unmarshalErr)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read profiles file: %w", err)
+	}
+
+	entry.Name = strings.TrimSpace(entry.Name)
+	entry.InboundIDs = compactUniqueStrings(entry.InboundIDs)
+	entry.AccessToken = strings.TrimSpace(entry.AccessToken)
+	replaced := false
+	for i := range file.Profiles {
+		name, normalizeErr := normalizeProfileName(file.Profiles[i].Name)
+		if normalizeErr != nil {
+			continue
+		}
+		if name == entry.Name {
+			file.Profiles[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		file.Profiles = append(file.Profiles, entry)
+	}
+	sort.Slice(file.Profiles, func(i, j int) bool {
+		return file.Profiles[i].Name < file.Profiles[j].Name
+	})
+
+	encoded, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode profiles file: %w", err)
+	}
+	if err := layout.WriteAtomicFile(path, append(encoded, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write profiles file: %w", err)
+	}
+	return nil
 }
 
 func normalizeFormat(raw string) string {

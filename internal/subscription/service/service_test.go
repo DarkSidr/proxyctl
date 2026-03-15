@@ -172,6 +172,54 @@ func TestGenerateKeepsExistingAccessToken(t *testing.T) {
 	}
 }
 
+func TestGenerateProfileFiltersInboundsAndReusesStoredProfileConfig(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	user := mustCreateUser(t, ctx, store, "eve")
+	node := mustCreateNode(t, ctx, store, domain.Node{ID: "node-1", Name: "eu-1", Host: "eu.example.com", Role: domain.NodeRolePrimary, Enabled: true})
+	inVLESS := mustCreateInbound(t, ctx, store, domain.Inbound{ID: "in-vless", Type: domain.ProtocolVLESS, Engine: domain.EngineSingBox, NodeID: node.ID, Domain: "eu.example.com", Port: 443, TLSEnabled: true, Transport: "tcp", Enabled: true})
+	inHY2 := mustCreateInbound(t, ctx, store, domain.Inbound{ID: "in-hy2", Type: domain.ProtocolHysteria2, Engine: domain.EngineSingBox, NodeID: node.ID, Domain: "hy2.example.com", Port: 8443, TLSEnabled: true, Transport: "udp", Enabled: true})
+	mustCreateCredential(t, ctx, store, domain.Credential{ID: "cred-vless", UserID: user.ID, InboundID: inVLESS.ID, Kind: domain.CredentialKindUUID, Secret: "11111111-1111-1111-1111-111111111111"})
+	mustCreateCredential(t, ctx, store, domain.Credential{ID: "cred-hy2", UserID: user.ID, InboundID: inHY2.ID, Kind: domain.CredentialKindPassword, Secret: "hy2-secret"})
+
+	dataDir := t.TempDir()
+	svc := New(store, dataDir, filepath.Join(dataDir, "public"), singbox.New(nil), xray.New(nil))
+
+	first, err := svc.GenerateProfile(ctx, user.ID, "mobile", []string{inVLESS.ID})
+	if err != nil {
+		t.Fatalf("first GenerateProfile() unexpected error: %v", err)
+	}
+	if first.ProfileName != "mobile" {
+		t.Fatalf("profile name = %q, want mobile", first.ProfileName)
+	}
+	if first.TXTPath != filepath.Join(dataDir, user.ID+".mobile.txt") {
+		t.Fatalf("TXTPath = %q, want %q", first.TXTPath, filepath.Join(dataDir, user.ID+".mobile.txt"))
+	}
+	lines := strings.Split(strings.TrimSpace(string(first.TXT)), "\n")
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "vless://") {
+		t.Fatalf("profile txt lines = %v, want one vless uri", lines)
+	}
+	if strings.TrimSpace(first.AccessToken) == "" {
+		t.Fatalf("access token must not be empty")
+	}
+
+	second, err := svc.GenerateProfile(ctx, user.ID, "mobile", nil)
+	if err != nil {
+		t.Fatalf("second GenerateProfile() unexpected error: %v", err)
+	}
+	if second.AccessToken != first.AccessToken {
+		t.Fatalf("access token changed between profile generations: %q != %q", first.AccessToken, second.AccessToken)
+	}
+	lines = strings.Split(strings.TrimSpace(string(second.TXT)), "\n")
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "vless://") {
+		t.Fatalf("profile txt lines on second run = %v, want one vless uri", lines)
+	}
+}
+
 func openTestStore(t *testing.T) *sqlite.Store {
 	t.Helper()
 

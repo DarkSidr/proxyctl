@@ -2223,7 +2223,7 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 				return err
 			}
 		case "generate subscription":
-			if err := runWizardGenerateUserSubscription(cmd, out, configPath, dbPath, user); err != nil {
+			if err := runWizardGenerateUserSubscription(cmd, in, out, configPath, dbPath, user); err != nil {
 				return err
 			}
 		case "delete subscription":
@@ -2287,7 +2287,7 @@ func userHasSubscription(cmd *cobra.Command, dbPath, userID string) (bool, error
 	return false, err
 }
 
-func runWizardGenerateUserSubscription(cmd *cobra.Command, out io.Writer, configPath, dbPath string, user domain.User) error {
+func runWizardGenerateUserSubscription(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
 	appCfg, err := loadAppConfig(configPath)
 	if err != nil {
 		return err
@@ -2306,12 +2306,53 @@ func runWizardGenerateUserSubscription(cmd *cobra.Command, out io.Writer, config
 		singbox.New(nil),
 		xray.New(nil),
 	)
-	generated, err := svc.Generate(cmd.Context(), user.ID)
+
+	mode, err := promptChoice(in, out, "Subscription mode", []string{
+		"default profile (all user configs)",
+		"named profile (choose inbounds)",
+		"back",
+	}, "default profile (all user configs)")
+	if err != nil {
+		return err
+	}
+	if mode == "back" {
+		return nil
+	}
+
+	profile := subscriptionservice.DefaultProfileName
+	selectedInbounds := []string(nil)
+	if mode == "named profile (choose inbounds)" {
+		availableInboundIDs, listErr := wizardUserInboundIDs(cmd, dbPath, user.ID)
+		if listErr != nil {
+			return listErr
+		}
+		if len(availableInboundIDs) == 0 {
+			fmt.Fprintln(out, "no inbounds available for this user")
+			return nil
+		}
+
+		defaultName := "mobile"
+		profile, err = promptLine(in, out, "Profile name", defaultName)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "available inbound ids: %s\n", strings.Join(availableInboundIDs, ", "))
+		inboundLine, lineErr := promptLine(in, out, "Inbound IDs (comma-separated)", strings.Join(availableInboundIDs, ","))
+		if lineErr != nil {
+			return lineErr
+		}
+		selectedInbounds = parseCSV(inboundLine)
+		if len(selectedInbounds) == 0 {
+			return fmt.Errorf("at least one inbound id is required for named profile")
+		}
+	}
+
+	generated, err := svc.GenerateProfile(cmd.Context(), user.ID, profile, selectedInbounds)
 	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(out, "generated subscription for user=%s (%s)\n", generated.User.Name, generated.User.ID)
+	fmt.Fprintf(out, "generated subscription for user=%s (%s) profile=%s\n", generated.User.Name, generated.User.ID, generated.ProfileName)
 	fmt.Fprintf(out, "txt: %s\n", generated.TXTPath)
 	fmt.Fprintf(out, "base64: %s\n", generated.Base64Path)
 	fmt.Fprintf(out, "json: %s\n", generated.JSONPath)
@@ -2322,6 +2363,35 @@ func runWizardGenerateUserSubscription(cmd *cobra.Command, out io.Writer, config
 		fmt.Fprintln(out, "url unavailable: set public.domain in proxyctl config")
 	}
 	return nil
+}
+
+func wizardUserInboundIDs(cmd *cobra.Command, dbPath, userID string) ([]string, error) {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+
+	credentials, err := store.Credentials().List(cmd.Context())
+	if err != nil {
+		return nil, err
+	}
+	inboundSet := map[string]struct{}{}
+	for _, credential := range credentials {
+		if credential.UserID != userID {
+			continue
+		}
+		inboundSet[credential.InboundID] = struct{}{}
+	}
+	if len(inboundSet) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(inboundSet))
+	for inboundID := range inboundSet {
+		ids = append(ids, inboundID)
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 func runWizardDeleteUserSubscription(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
@@ -3180,6 +3250,29 @@ func boolToEnv(v bool) string {
 	return "0"
 }
 
+func parseCSV(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]struct{}, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func shellQuote(s string) string {
 	// Wraps arbitrary input into a single-quoted shell literal.
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
@@ -3829,7 +3922,10 @@ func newSubscriptionCmd(configPath, dbPath *string) *cobra.Command {
 }
 
 func newSubscriptionGenerateCmd(configPath, dbPath *string) *cobra.Command {
-	return &cobra.Command{
+	profile := subscriptionservice.DefaultProfileName
+	inboundsCSV := ""
+
+	cmd := &cobra.Command{
 		Use:   "generate <user>",
 		Short: "Generate subscription payload files for a user",
 		Long:  "Collects client artifacts from sing-box and Xray renderers and stores txt/base64/json subscription files.",
@@ -3853,12 +3949,12 @@ func newSubscriptionGenerateCmd(configPath, dbPath *string) *cobra.Command {
 				xray.New(nil),
 			)
 
-			generated, err := svc.Generate(cmd.Context(), args[0])
+			generated, err := svc.GenerateProfile(cmd.Context(), args[0], profile, parseCSV(inboundsCSV))
 			if err != nil {
 				return err
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "generated subscription for user=%s (%s)\n", generated.User.Name, generated.User.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "generated subscription for user=%s (%s) profile=%s\n", generated.User.Name, generated.User.ID, generated.ProfileName)
 			fmt.Fprintf(cmd.OutOrStdout(), "txt: %s\n", generated.TXTPath)
 			fmt.Fprintf(cmd.OutOrStdout(), "base64: %s\n", generated.Base64Path)
 			fmt.Fprintf(cmd.OutOrStdout(), "json: %s\n", generated.JSONPath)
@@ -3868,10 +3964,15 @@ func newSubscriptionGenerateCmd(configPath, dbPath *string) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&profile, "profile", subscriptionservice.DefaultProfileName, "Subscription profile name")
+	cmd.Flags().StringVar(&inboundsCSV, "inbounds", "", "Comma-separated inbound IDs for named profile creation/update")
+	return cmd
 }
 
 func newSubscriptionShowCmd(configPath, dbPath *string) *cobra.Command {
-	return &cobra.Command{
+	profile := subscriptionservice.DefaultProfileName
+
+	cmd := &cobra.Command{
 		Use:   "show <user>",
 		Short: "Show last generated subscription output for a user",
 		Long:  "Reads the last generated subscription metadata and prints the stored payload.",
@@ -3894,18 +3995,17 @@ func newSubscriptionShowCmd(configPath, dbPath *string) *cobra.Command {
 				singbox.New(nil),
 				xray.New(nil),
 			)
-			result, err := svc.Show(cmd.Context(), args[0])
+			result, err := svc.ShowProfile(cmd.Context(), args[0], profile)
 			if err != nil {
 				return err
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "user=%s (%s)\n", result.User.Name, result.User.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s\n", result.ProfileName)
 			fmt.Fprintf(cmd.OutOrStdout(), "format=%s\n", result.Format)
 			fmt.Fprintf(cmd.OutOrStdout(), "path=%s\n", result.Path)
-			if sub, subErr := store.Subscriptions().GetByUserID(cmd.Context(), result.User.ID); subErr == nil {
-				if link := buildSubscriptionPublicURL(appCfg, sub.AccessToken); link != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "url=%s\n", link)
-				}
+			if link := buildSubscriptionPublicURL(appCfg, result.AccessToken); link != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "url=%s\n", link)
 			}
 			if len(result.Content) > 0 {
 				if _, err := cmd.OutOrStdout().Write(result.Content); err != nil {
@@ -3918,10 +4018,14 @@ func newSubscriptionShowCmd(configPath, dbPath *string) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&profile, "profile", subscriptionservice.DefaultProfileName, "Subscription profile name")
+	return cmd
 }
 
 func newSubscriptionExportCmd(configPath, dbPath *string) *cobra.Command {
 	format := subscriptionservice.FormatJSON
+	profile := subscriptionservice.DefaultProfileName
+	inboundsCSV := ""
 
 	cmd := &cobra.Command{
 		Use:   "export <user>",
@@ -3946,7 +4050,7 @@ func newSubscriptionExportCmd(configPath, dbPath *string) *cobra.Command {
 				singbox.New(nil),
 				xray.New(nil),
 			)
-			result, err := svc.Export(cmd.Context(), args[0], format)
+			result, err := svc.ExportProfile(cmd.Context(), args[0], profile, parseCSV(inboundsCSV), format)
 			if err != nil {
 				return err
 			}
@@ -3961,6 +4065,8 @@ func newSubscriptionExportCmd(configPath, dbPath *string) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", subscriptionservice.FormatJSON, "Export format: json|txt|base64")
+	cmd.Flags().StringVar(&profile, "profile", subscriptionservice.DefaultProfileName, "Subscription profile name")
+	cmd.Flags().StringVar(&inboundsCSV, "inbounds", "", "Comma-separated inbound IDs for named profile creation/update")
 	return cmd
 }
 
