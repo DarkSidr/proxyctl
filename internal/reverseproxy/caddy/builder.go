@@ -24,10 +24,22 @@ const caddyTemplateFallback = `{{- if .ContactEmail }}{
 {{ .Address }} {
   root * {{ .DecoyRoot }}
 
-  handle_path /sub/* {
+  @sub_named path_regexp sub_named ^/sub/([A-Za-z0-9_-]+)/([A-Za-z0-9_-]+)$
+  handle @sub_named {
     root * {{ .SubscriptionRoot }}
-    try_files {path} {path}.txt =404
+    rewrite * /{re.sub_named.1}.txt
     header Content-Type "text/plain; charset=utf-8"
+    header Profile-Title "{re.sub_named.2}"
+    header Content-Disposition "inline; filename=\"{re.sub_named.2}.txt\""
+    file_server
+  }
+
+  @sub_plain path_regexp sub_plain ^/sub/([A-Za-z0-9_-]+)$
+  handle @sub_plain {
+    root * {{ .SubscriptionRoot }}
+    rewrite * /{re.sub_plain.1}.txt
+    header Content-Type "text/plain; charset=utf-8"
+    header Content-Disposition "inline; filename=\"subscription.txt\""
     file_server
   }
 

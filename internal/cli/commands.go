@@ -2388,7 +2388,7 @@ func runWizardOpenSubscription(cmd *cobra.Command, in *bufio.Reader, out io.Writ
 			if strings.TrimSpace(selected.Token) != "" {
 				appCfg, cfgErr := loadAppConfig(configPath)
 				if cfgErr == nil {
-					if link := buildSubscriptionPublicURL(appCfg, selected.Token); link != "" {
+					if link := buildSubscriptionPublicProfileURL(appCfg, selected.Token, selected.Name); link != "" {
 						fmt.Fprintf(out, "url: %s\n", link)
 					}
 				}
@@ -2517,7 +2517,7 @@ func runWizardGenerateSubscriptionProfile(cmd *cobra.Command, _ *bufio.Reader, o
 	fmt.Fprintf(out, "txt: %s\n", generated.TXTPath)
 	fmt.Fprintf(out, "base64: %s\n", generated.Base64Path)
 	fmt.Fprintf(out, "json: %s\n", generated.JSONPath)
-	if link := buildSubscriptionPublicURL(appCfg, generated.AccessToken); link != "" {
+	if link := buildSubscriptionPublicProfileURL(appCfg, generated.AccessToken, generated.ProfileName); link != "" {
 		fmt.Fprintf(out, "url: %s\n", link)
 	}
 	return nil
@@ -2803,7 +2803,7 @@ func runWizardGenerateUserSubscription(cmd *cobra.Command, in *bufio.Reader, out
 	fmt.Fprintf(out, "txt: %s\n", generated.TXTPath)
 	fmt.Fprintf(out, "base64: %s\n", generated.Base64Path)
 	fmt.Fprintf(out, "json: %s\n", generated.JSONPath)
-	if link := buildSubscriptionPublicURL(appCfg, generated.AccessToken); link != "" {
+	if link := buildSubscriptionPublicProfileURL(appCfg, generated.AccessToken, generated.ProfileName); link != "" {
 		fmt.Fprintf(out, "url: %s\n", link)
 	} else if strings.TrimSpace(generated.AccessToken) != "" {
 		fmt.Fprintf(out, "token: %s\n", generated.AccessToken)
@@ -3698,6 +3698,10 @@ func subscriptionPublicDir(subscriptionDir string) string {
 }
 
 func buildSubscriptionPublicURL(cfg config.AppConfig, accessToken string) string {
+	return buildSubscriptionPublicProfileURL(cfg, accessToken, subscriptionservice.DefaultProfileName)
+}
+
+func buildSubscriptionPublicProfileURL(cfg config.AppConfig, accessToken, profileName string) string {
 	token := strings.TrimSpace(accessToken)
 	if token == "" {
 		return ""
@@ -3710,7 +3714,26 @@ func buildSubscriptionPublicURL(cfg config.AppConfig, accessToken string) string
 	if !cfg.Public.HTTPS {
 		scheme = "http"
 	}
-	return fmt.Sprintf("%s://%s/sub/%s", scheme, domain, token)
+	base := fmt.Sprintf("%s://%s/sub/%s", scheme, domain, token)
+	profile := normalizeSubscriptionURLProfile(profileName)
+	if profile == "" {
+		return base
+	}
+	return base + "/" + profile
+}
+
+func normalizeSubscriptionURLProfile(raw string) string {
+	profile := strings.ToLower(strings.TrimSpace(raw))
+	if profile == "" || profile == subscriptionservice.DefaultProfileName {
+		return ""
+	}
+	for _, ch := range profile {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' {
+			continue
+		}
+		return ""
+	}
+	return profile
 }
 
 func cleanupUserSubscriptionFiles(userID, subscriptionDir, storedOutputPath, accessToken string) (int, error) {
@@ -4509,7 +4532,7 @@ func newSubscriptionGenerateCmd(configPath, dbPath *string) *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "txt: %s\n", generated.TXTPath)
 			fmt.Fprintf(cmd.OutOrStdout(), "base64: %s\n", generated.Base64Path)
 			fmt.Fprintf(cmd.OutOrStdout(), "json: %s\n", generated.JSONPath)
-			if link := buildSubscriptionPublicURL(appCfg, generated.AccessToken); link != "" {
+			if link := buildSubscriptionPublicProfileURL(appCfg, generated.AccessToken, generated.ProfileName); link != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "url: %s\n", link)
 			}
 			return nil
@@ -4555,7 +4578,7 @@ func newSubscriptionShowCmd(configPath, dbPath *string) *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "profile=%s\n", result.ProfileName)
 			fmt.Fprintf(cmd.OutOrStdout(), "format=%s\n", result.Format)
 			fmt.Fprintf(cmd.OutOrStdout(), "path=%s\n", result.Path)
-			if link := buildSubscriptionPublicURL(appCfg, result.AccessToken); link != "" {
+			if link := buildSubscriptionPublicProfileURL(appCfg, result.AccessToken, result.ProfileName); link != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "url=%s\n", link)
 			}
 			if len(result.Content) > 0 {

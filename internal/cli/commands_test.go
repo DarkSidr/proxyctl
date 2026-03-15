@@ -13,6 +13,7 @@ import (
 	"proxyctl/internal/config"
 	"proxyctl/internal/domain"
 	applyruntime "proxyctl/internal/runtime/apply"
+	subscriptionservice "proxyctl/internal/subscription/service"
 )
 
 func TestPromptChoiceShowsBackOnlyAsZero(t *testing.T) {
@@ -138,6 +139,34 @@ func TestWizardNormalizeProfileName(t *testing.T) {
 	got := wizardNormalizeProfileName(" Super Test !!! ")
 	if got != "super-test" {
 		t.Fatalf("normalized profile = %q, want %q", got, "super-test")
+	}
+}
+
+func TestBuildSubscriptionPublicProfileURL(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultAppConfig()
+	cfg.Public.Domain = "example.com"
+	cfg.Public.HTTPS = true
+
+	got := buildSubscriptionPublicProfileURL(cfg, "abc123", "super-sub")
+	want := "https://example.com/sub/abc123/super-sub"
+	if got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+}
+
+func TestBuildSubscriptionPublicProfileURLDefaultProfile(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultAppConfig()
+	cfg.Public.Domain = "example.com"
+	cfg.Public.HTTPS = true
+
+	got := buildSubscriptionPublicProfileURL(cfg, "abc123", subscriptionservice.DefaultProfileName)
+	want := "https://example.com/sub/abc123"
+	if got != want {
+		t.Fatalf("url = %q, want %q", got, want)
 	}
 }
 

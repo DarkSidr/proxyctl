@@ -41,9 +41,12 @@ func TestBuildGeneratesCaddyfileAndRoutes(t *testing.T) {
 	body := string(result.Caddyfile)
 	assertContains(t, body, "public.example.com {")
 	assertContains(t, body, "root * /etc/proxy-orchestrator/runtime/decoy-site")
-	assertContains(t, body, "handle_path /sub/* {")
+	assertContains(t, body, "@sub_named path_regexp sub_named")
 	assertContains(t, body, "root * /var/lib/proxy-orchestrator/subscriptions/public")
-	assertContains(t, body, "try_files {path} {path}.txt =404")
+	assertContains(t, body, "rewrite * /{re.sub_named.1}.txt")
+	assertContains(t, body, "header Profile-Title \"{re.sub_named.2}\"")
+	assertContains(t, body, "@sub_plain path_regexp sub_plain")
+	assertContains(t, body, "rewrite * /{re.sub_plain.1}.txt")
 	assertContains(t, body, "reverse_proxy @route_1 127.0.0.1:12080")
 	assertContains(t, body, "versions h2c 2")
 	assertContains(t, body, "reverse_proxy @route_2 127.0.0.1:11080")
@@ -90,7 +93,7 @@ func TestBuildUsesFallbackTemplateWhenTemplateFilesMissing(t *testing.T) {
 
 	body := string(result.Caddyfile)
 	assertContains(t, body, "fallback.example.com {")
-	assertContains(t, body, "handle_path /sub/* {")
+	assertContains(t, body, "@sub_named path_regexp sub_named")
 	assertContains(t, body, "root * /var/lib/proxy-orchestrator/subscriptions/public")
 }
 
