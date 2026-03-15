@@ -1,0 +1,471 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"proxyctl/internal/config"
+	"proxyctl/internal/domain"
+	"proxyctl/internal/renderer"
+	"proxyctl/internal/renderer/singbox"
+	"proxyctl/internal/renderer/xray"
+	"proxyctl/internal/storage/sqlite"
+)
+
+type nodeSyncResult struct {
+	NodeID   string
+	Host     string
+	Uploaded []string
+	Restart  []string
+}
+
+func newNodeShowCmd(dbPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <node-id>",
+		Short: "Show node details",
+		Long:  "Displays detailed information for one node and attached inbounds.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := openStoreWithInit(cmd.Context(), *dbPath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+
+			node, err := findNodeByID(cmd.Context(), store, strings.TrimSpace(args[0]))
+			if err != nil {
+				return err
+			}
+
+			inbounds, err := store.Inbounds().List(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("list inbounds: %w", err)
+			}
+
+			attached := make([]domain.Inbound, 0)
+			for _, inbound := range inbounds {
+				if inbound.NodeID == node.ID {
+					attached = append(attached, inbound)
+				}
+			}
+			sort.Slice(attached, func(i, j int) bool {
+				return attached[i].ID < attached[j].ID
+			})
+
+			fmt.Fprintf(cmd.OutOrStdout(), "id: %s\n", node.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "name: %s\n", node.Name)
+			fmt.Fprintf(cmd.OutOrStdout(), "host: %s\n", node.Host)
+			fmt.Fprintf(cmd.OutOrStdout(), "role: %s\n", node.Role)
+			fmt.Fprintf(cmd.OutOrStdout(), "enabled: %t\n", node.Enabled)
+			fmt.Fprintf(cmd.OutOrStdout(), "created_at: %s\n", node.CreatedAt.Format("2006-01-02T15:04:05Z07:00"))
+			fmt.Fprintf(cmd.OutOrStdout(), "inbounds: %d\n", len(attached))
+			for _, inbound := range attached {
+				fmt.Fprintf(
+					cmd.OutOrStdout(),
+					"  - id=%s type=%s engine=%s transport=%s port=%d enabled=%t\n",
+					inbound.ID,
+					inbound.Type,
+					inbound.Engine,
+					inbound.Transport,
+					inbound.Port,
+					inbound.Enabled,
+				)
+			}
+			return nil
+		},
+	}
+}
+
+func newNodeTestCmd(dbPath *string) *cobra.Command {
+	var (
+		sshUser       string
+		sshPort       int
+		sshKeyPath    string
+		strictHostKey bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "test <node-id>",
+		Short: "Test SSH connectivity to a node",
+		Long:  "Checks whether panel host can connect to target node over SSH.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if sshPort <= 0 || sshPort > 65535 {
+				return fmt.Errorf("--ssh-port must be in range 1..65535")
+			}
+
+			store, err := openStoreWithInit(cmd.Context(), *dbPath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+
+			node, err := findNodeByID(cmd.Context(), store, strings.TrimSpace(args[0]))
+			if err != nil {
+				return err
+			}
+
+			host := strings.TrimSpace(node.Host)
+			if host == "" {
+				return fmt.Errorf("node %q has empty host", node.ID)
+			}
+			target := fmt.Sprintf("%s@%s", strings.TrimSpace(sshUser), host)
+
+			sshArgs := buildSSHArgs(sshPort, sshKeyPath, strictHostKey)
+			sshArgs = append(sshArgs, target, "echo proxyctl-node-test-ok")
+			if out, err := runExecCombined(cmd.Context(), "ssh", sshArgs...); err != nil {
+				return fmt.Errorf("ssh connectivity check failed for node %q (%s): %w\n%s", node.ID, host, err, strings.TrimSpace(string(out)))
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "ssh ok: node=%s host=%s user=%s port=%d\n", node.ID, host, sshUser, sshPort)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&sshUser, "ssh-user", "root", "SSH user")
+	cmd.Flags().IntVar(&sshPort, "ssh-port", 22, "SSH port")
+	cmd.Flags().StringVar(&sshKeyPath, "ssh-key", "", "Path to private SSH key")
+	cmd.Flags().BoolVar(&strictHostKey, "strict-host-key", false, "Use strict SSH host key checking")
+	return cmd
+}
+
+func newNodeSyncCmd(configPath, dbPath *string) *cobra.Command {
+	var (
+		nodeIDsCSV    string
+		sshUser       string
+		sshPort       int
+		sshKeyPath    string
+		runtimeDir    string
+		restart       bool
+		strictHostKey bool
+		remoteUseSudo bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Render and sync runtime configs to remote nodes",
+		Long:  "Builds node-specific sing-box/Xray configs on control-plane and pushes them to remote nodes over SSH.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if sshPort <= 0 || sshPort > 65535 {
+				return fmt.Errorf("--ssh-port must be in range 1..65535")
+			}
+			if strings.TrimSpace(sshUser) == "" {
+				return fmt.Errorf("--ssh-user is required")
+			}
+			if strings.TrimSpace(runtimeDir) == "" {
+				return fmt.Errorf("--runtime-dir is required")
+			}
+
+			appCfg, err := config.Load(*configPath)
+			if err != nil {
+				return err
+			}
+			store, err := openStoreWithInit(cmd.Context(), resolveDBPath(cmd, appCfg, *dbPath))
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+
+			selectedNodeIDs := parseCSV(nodeIDsCSV)
+			requests, err := buildRenderRequestsByNode(cmd.Context(), store, selectedNodeIDs)
+			if err != nil {
+				return err
+			}
+
+			if _, err := lookPath("ssh"); err != nil {
+				return fmt.Errorf("ssh client is required: %w", err)
+			}
+			if _, err := lookPath("scp"); err != nil {
+				return fmt.Errorf("scp client is required: %w", err)
+			}
+
+			results := make([]nodeSyncResult, 0, len(requests))
+			for _, req := range requests {
+				result, syncErr := syncSingleNode(cmd.Context(), req, nodeSyncOptions{
+					sshUser:       sshUser,
+					sshPort:       sshPort,
+					sshKeyPath:    sshKeyPath,
+					runtimeDir:    runtimeDir,
+					restart:       restart,
+					strictHostKey: strictHostKey,
+					remoteUseSudo: remoteUseSudo,
+				}, appCfg)
+				if syncErr != nil {
+					return syncErr
+				}
+				results = append(results, result)
+			}
+
+			for _, res := range results {
+				fmt.Fprintf(cmd.OutOrStdout(), "node synced: id=%s host=%s\n", res.NodeID, res.Host)
+				for _, uploaded := range res.Uploaded {
+					fmt.Fprintf(cmd.OutOrStdout(), "  uploaded: %s\n", uploaded)
+				}
+				for _, unit := range res.Restart {
+					fmt.Fprintf(cmd.OutOrStdout(), "  restarted: %s\n", unit)
+				}
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&nodeIDsCSV, "node-ids", "", "Comma-separated node IDs; default is all enabled nodes with inbounds")
+	cmd.Flags().StringVar(&sshUser, "ssh-user", "root", "SSH user")
+	cmd.Flags().IntVar(&sshPort, "ssh-port", 22, "SSH port")
+	cmd.Flags().StringVar(&sshKeyPath, "ssh-key", "", "Path to private SSH key")
+	cmd.Flags().StringVar(&runtimeDir, "runtime-dir", "/etc/proxy-orchestrator/runtime", "Remote runtime directory for sing-box/xray configs")
+	cmd.Flags().BoolVar(&restart, "restart", true, "Restart required runtime services on remote nodes")
+	cmd.Flags().BoolVar(&strictHostKey, "strict-host-key", false, "Use strict SSH host key checking")
+	cmd.Flags().BoolVar(&remoteUseSudo, "remote-sudo", true, "Use sudo for remote file install and systemctl restart")
+	return cmd
+}
+
+type nodeSyncOptions struct {
+	sshUser       string
+	sshPort       int
+	sshKeyPath    string
+	runtimeDir    string
+	restart       bool
+	strictHostKey bool
+	remoteUseSudo bool
+}
+
+func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyncOptions, appCfg config.AppConfig) (nodeSyncResult, error) {
+	host := strings.TrimSpace(req.Node.Host)
+	if host == "" {
+		return nodeSyncResult{}, fmt.Errorf("node %q has empty host", req.Node.ID)
+	}
+
+	singResult, err := singbox.New(nil).Render(ctx, req)
+	if err != nil {
+		return nodeSyncResult{}, fmt.Errorf("render sing-box for node %q: %w", req.Node.ID, err)
+	}
+	xrayResult, err := xray.New(nil).Render(ctx, req)
+	if err != nil {
+		return nodeSyncResult{}, fmt.Errorf("render xray for node %q: %w", req.Node.ID, err)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "proxyctl-node-sync-")
+	if err != nil {
+		return nodeSyncResult{}, fmt.Errorf("create temp dir for node %q: %w", req.Node.ID, err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	singLocal := filepath.Join(tmpDir, "sing-box.json")
+	xrayLocal := filepath.Join(tmpDir, "xray.json")
+	if err := os.WriteFile(singLocal, selectPreviewContent(singResult), 0o600); err != nil {
+		return nodeSyncResult{}, fmt.Errorf("write temp sing-box for node %q: %w", req.Node.ID, err)
+	}
+	if err := os.WriteFile(xrayLocal, selectPreviewContent(xrayResult), 0o600); err != nil {
+		return nodeSyncResult{}, fmt.Errorf("write temp xray for node %q: %w", req.Node.ID, err)
+	}
+
+	target := fmt.Sprintf("%s@%s", opts.sshUser, host)
+	singRemoteTmp := fmt.Sprintf("/tmp/proxyctl-%s-sing-box.json", req.Node.ID)
+	xrayRemoteTmp := fmt.Sprintf("/tmp/proxyctl-%s-xray.json", req.Node.ID)
+
+	scpBase := buildSCPArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
+	singSCP := append(append([]string{}, scpBase...), singLocal, fmt.Sprintf("%s:%s", target, singRemoteTmp))
+	if out, err := runExecCombined(ctx, "scp", singSCP...); err != nil {
+		return nodeSyncResult{}, fmt.Errorf("upload sing-box config to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
+	}
+	xraySCP := append(append([]string{}, scpBase...), xrayLocal, fmt.Sprintf("%s:%s", target, xrayRemoteTmp))
+	if out, err := runExecCombined(ctx, "scp", xraySCP...); err != nil {
+		return nodeSyncResult{}, fmt.Errorf("upload xray config to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
+	}
+
+	prefix := ""
+	if opts.remoteUseSudo {
+		prefix = "sudo "
+	}
+
+	installCmd := strings.Join([]string{
+		"set -e",
+		prefix + "mkdir -p " + shellQuote(opts.runtimeDir),
+		prefix + "install -m 640 " + shellQuote(singRemoteTmp) + " " + shellQuote(filepath.Join(opts.runtimeDir, "sing-box.json")),
+		prefix + "install -m 640 " + shellQuote(xrayRemoteTmp) + " " + shellQuote(filepath.Join(opts.runtimeDir, "xray.json")),
+		"rm -f " + shellQuote(singRemoteTmp) + " " + shellQuote(xrayRemoteTmp),
+	}, "; ")
+
+	sshArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
+	sshArgs = append(sshArgs, target, installCmd)
+	if out, err := runExecCombined(ctx, "ssh", sshArgs...); err != nil {
+		return nodeSyncResult{}, fmt.Errorf("install configs on node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
+	}
+
+	restartedUnits := make([]string, 0, 2)
+	if opts.restart {
+		units := requiredRuntimeUnits(req, appCfg)
+		for _, unit := range units {
+			restartCmd := strings.TrimSpace(prefix + "systemctl restart " + shellQuote(unit))
+			sshRestartArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
+			sshRestartArgs = append(sshRestartArgs, target, restartCmd)
+			if out, err := runExecCombined(ctx, "ssh", sshRestartArgs...); err != nil {
+				return nodeSyncResult{}, fmt.Errorf("restart unit %q on node %q (%s): %w\n%s", unit, req.Node.ID, host, err, strings.TrimSpace(string(out)))
+			}
+			restartedUnits = append(restartedUnits, unit)
+		}
+	}
+
+	return nodeSyncResult{
+		NodeID: req.Node.ID,
+		Host:   host,
+		Uploaded: []string{
+			filepath.Join(opts.runtimeDir, "sing-box.json"),
+			filepath.Join(opts.runtimeDir, "xray.json"),
+		},
+		Restart: restartedUnits,
+	}, nil
+}
+
+func requiredRuntimeUnits(req renderer.BuildRequest, appCfg config.AppConfig) []string {
+	required := map[domain.Engine]bool{}
+	for _, inbound := range req.Inbounds {
+		if !inbound.Enabled {
+			continue
+		}
+		required[inbound.Engine] = true
+	}
+
+	units := make([]string, 0, 2)
+	if required[domain.EngineSingBox] && strings.TrimSpace(appCfg.Runtime.SingBoxUnit) != "" {
+		units = append(units, appCfg.Runtime.SingBoxUnit)
+	}
+	if required[domain.EngineXray] && strings.TrimSpace(appCfg.Runtime.XrayUnit) != "" {
+		units = append(units, appCfg.Runtime.XrayUnit)
+	}
+	sort.Strings(units)
+	return units
+}
+
+func buildRenderRequestsByNode(ctx context.Context, store *sqlite.Store, nodeIDs []string) ([]renderer.BuildRequest, error) {
+	nodes, err := store.Nodes().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list nodes: %w", err)
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("no nodes found")
+	}
+
+	nodeFilter := make(map[string]struct{}, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		id := strings.TrimSpace(nodeID)
+		if id == "" {
+			continue
+		}
+		nodeFilter[id] = struct{}{}
+	}
+
+	enabledNodeByID := make(map[string]domain.Node, len(nodes))
+	for _, node := range nodes {
+		if !node.Enabled {
+			continue
+		}
+		if len(nodeFilter) > 0 {
+			if _, ok := nodeFilter[node.ID]; !ok {
+				continue
+			}
+		}
+		enabledNodeByID[node.ID] = node
+	}
+	if len(enabledNodeByID) == 0 {
+		if len(nodeFilter) > 0 {
+			return nil, fmt.Errorf("no enabled nodes found for requested IDs")
+		}
+		return nil, fmt.Errorf("no enabled nodes found")
+	}
+
+	inbounds, err := store.Inbounds().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list inbounds: %w", err)
+	}
+	credentials, err := store.Credentials().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list credentials: %w", err)
+	}
+
+	inboundsByNode := make(map[string][]domain.Inbound)
+	inboundNodeIndex := make(map[string]string)
+	for _, inbound := range inbounds {
+		if !inbound.Enabled {
+			continue
+		}
+		if _, ok := enabledNodeByID[inbound.NodeID]; !ok {
+			continue
+		}
+		inboundsByNode[inbound.NodeID] = append(inboundsByNode[inbound.NodeID], inbound)
+		inboundNodeIndex[inbound.ID] = inbound.NodeID
+	}
+
+	credsByNode := make(map[string][]domain.Credential)
+	for _, cred := range credentials {
+		nodeID, ok := inboundNodeIndex[cred.InboundID]
+		if !ok {
+			continue
+		}
+		credsByNode[nodeID] = append(credsByNode[nodeID], cred)
+	}
+
+	nodeIDsSorted := make([]string, 0, len(inboundsByNode))
+	for nodeID := range inboundsByNode {
+		nodeIDsSorted = append(nodeIDsSorted, nodeID)
+	}
+	sort.Strings(nodeIDsSorted)
+
+	requests := make([]renderer.BuildRequest, 0, len(nodeIDsSorted))
+	for _, nodeID := range nodeIDsSorted {
+		node := enabledNodeByID[nodeID]
+		nodeInbounds := inboundsByNode[nodeID]
+		sort.Slice(nodeInbounds, func(i, j int) bool { return nodeInbounds[i].ID < nodeInbounds[j].ID })
+		nodeCreds := credsByNode[nodeID]
+		sort.Slice(nodeCreds, func(i, j int) bool { return nodeCreds[i].ID < nodeCreds[j].ID })
+		requests = append(requests, renderer.BuildRequest{
+			Node:        node,
+			Inbounds:    nodeInbounds,
+			Credentials: nodeCreds,
+		})
+	}
+
+	if len(requests) == 0 {
+		if len(nodeFilter) > 0 {
+			return nil, fmt.Errorf("no enabled inbounds found for requested node IDs")
+		}
+		return nil, fmt.Errorf("no enabled inbounds found for enabled nodes")
+	}
+
+	return requests, nil
+}
+
+func buildSSHArgs(port int, keyPath string, strictHostKey bool) []string {
+	args := []string{"-p", fmt.Sprintf("%d", port)}
+	if strings.TrimSpace(keyPath) != "" {
+		args = append(args, "-i", strings.TrimSpace(keyPath))
+	}
+	if !strictHostKey {
+		args = append(args, "-o", "StrictHostKeyChecking=accept-new")
+	}
+	return args
+}
+
+func buildSCPArgs(port int, keyPath string, strictHostKey bool) []string {
+	args := []string{"-P", fmt.Sprintf("%d", port)}
+	if strings.TrimSpace(keyPath) != "" {
+		args = append(args, "-i", strings.TrimSpace(keyPath))
+	}
+	if !strictHostKey {
+		args = append(args, "-o", "StrictHostKeyChecking=accept-new")
+	}
+	return args
+}
+
+func runExecCombined(ctx context.Context, name string, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, name, args...)
+	return command.CombinedOutput()
+}

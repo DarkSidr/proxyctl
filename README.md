@@ -227,6 +227,35 @@ proxyctl render
 proxyctl apply
 ```
 
+## Multi-node from one panel (SSH sync)
+
+Use one control-plane server to manage configs on multiple VPS nodes.
+
+1. Add nodes (host must be reachable over SSH from panel host):
+
+```bash
+proxyctl node add --name eu-1 --host 203.0.113.10
+proxyctl node add --name us-1 --host 198.51.100.20
+proxyctl node list
+```
+
+2. Test SSH from panel host:
+
+```bash
+proxyctl node test <NODE_ID> --ssh-user root --ssh-key ~/.ssh/id_ed25519
+```
+
+3. Attach inbounds to required nodes (`--node-id <NODE_ID>`), then sync runtime configs:
+
+```bash
+proxyctl node sync --ssh-user root --ssh-key ~/.ssh/id_ed25519
+```
+
+Optional:
+- only selected nodes: `proxyctl node sync --node-ids <id1,id2> ...`
+- custom remote runtime dir: `--runtime-dir /etc/proxy-orchestrator/runtime`
+- skip remote restart: `--restart=false`
+
 Expected confirmation includes:
 - `decoy assets: 2 files`
 - `built artifacts: sing-box.json, xray.json`

@@ -20,7 +20,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:           "proxyctl",
 		Short:         "Self-hosted VPS proxy orchestrator",
-		Long:          "proxyctl is a CLI orchestrator for single-node VPS proxy runtimes (sing-box/Xray) with safe revision lifecycle.",
+		Long:          "proxyctl is a CLI orchestrator for VPS proxy runtimes (sing-box/Xray) with safe revision lifecycle.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       Version,
@@ -49,7 +49,7 @@ func NewRootCmd() *cobra.Command {
 		newUninstallCmd(),
 		newStatusCmd(&configPath, &dbPath),
 		newUserCmd(&dbPath),
-		newNodeCmd(&dbPath),
+		newNodeCmd(&configPath, &dbPath),
 		newInboundCmd(&dbPath),
 		newPreviewCmd(&configPath, &dbPath),
 		newRenderCmd(&configPath, &dbPath),

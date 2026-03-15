@@ -413,7 +413,7 @@ func newUserListCmd(dbPath *string) *cobra.Command {
 	}
 }
 
-func newNodeCmd(dbPath *string) *cobra.Command {
+func newNodeCmd(configPath, dbPath *string) *cobra.Command {
 	cmd := newGroupCmd(
 		"node",
 		"Manage nodes",
@@ -422,7 +422,9 @@ func newNodeCmd(dbPath *string) *cobra.Command {
 	cmd.AddCommand(
 		newNodeListCmd(dbPath),
 		newNodeAddCmd(dbPath),
-		newStubLeafCmd("show", "Show node details", "Displays detailed information for one node."),
+		newNodeShowCmd(dbPath),
+		newNodeTestCmd(dbPath),
+		newNodeSyncCmd(configPath, dbPath),
 	)
 	return cmd
 }
