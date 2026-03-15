@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -27,6 +29,7 @@ const (
 type Service struct {
 	store           storage.Store
 	dataDir         string
+	publicDir       string
 	singBoxRenderer renderer.Service
 	xrayRenderer    renderer.Service
 	now             func() time.Time
@@ -42,6 +45,8 @@ type Generated struct {
 	TXTPath         string
 	Base64Path      string
 	JSONPath        string
+	AccessToken     string
+	PublicTXTPath   string
 }
 
 type ShowResult struct {
@@ -81,10 +86,15 @@ type jsonSubscriptionItem struct {
 	URI          string          `json:"uri"`
 }
 
-func New(store storage.Store, dataDir string, singBoxRenderer renderer.Service, xrayRenderer renderer.Service) *Service {
+func New(store storage.Store, dataDir, publicDir string, singBoxRenderer renderer.Service, xrayRenderer renderer.Service) *Service {
+	publicDir = strings.TrimSpace(publicDir)
+	if publicDir == "" {
+		publicDir = filepath.Join(strings.TrimSpace(dataDir), "public")
+	}
 	return &Service{
 		store:           store,
 		dataDir:         dataDir,
+		publicDir:       publicDir,
 		singBoxRenderer: singBoxRenderer,
 		xrayRenderer:    xrayRenderer,
 		now:             func() time.Time { return time.Now().UTC() },
@@ -100,6 +110,10 @@ func (s *Service) Generate(ctx context.Context, userRef string) (Generated, erro
 	if err != nil {
 		return Generated{}, err
 	}
+	token, err := s.resolveOrCreateAccessToken(ctx, input.User.ID)
+	if err != nil {
+		return Generated{}, err
+	}
 
 	writer := layout.New(layout.Directories{SubscriptionsDir: s.dataDir})
 	paths, err := writer.WriteSubscriptionFiles(input.User.ID, layout.SubscriptionFiles{
@@ -110,12 +124,17 @@ func (s *Service) Generate(ctx context.Context, userRef string) (Generated, erro
 	if err != nil {
 		return Generated{}, err
 	}
+	publicTXTPath, err := s.writePublicTXT(token, input.TXT)
+	if err != nil {
+		return Generated{}, err
+	}
 
 	if _, err := s.store.Subscriptions().Upsert(ctx, domain.Subscription{
-		UserID:     input.User.ID,
-		Format:     domain.SubscriptionFormat(FormatTXT),
-		OutputPath: paths.TXTPath,
-		UpdatedAt:  input.GeneratedAt,
+		UserID:      input.User.ID,
+		Format:      domain.SubscriptionFormat(FormatTXT),
+		OutputPath:  paths.TXTPath,
+		AccessToken: token,
+		UpdatedAt:   input.GeneratedAt,
 	}); err != nil {
 		return Generated{}, fmt.Errorf("persist subscription metadata: %w", err)
 	}
@@ -123,6 +142,8 @@ func (s *Service) Generate(ctx context.Context, userRef string) (Generated, erro
 	input.TXTPath = paths.TXTPath
 	input.Base64Path = paths.Base64Path
 	input.JSONPath = paths.JSONPath
+	input.AccessToken = token
+	input.PublicTXTPath = publicTXTPath
 	return input, nil
 }
 
@@ -153,10 +174,11 @@ func (s *Service) Export(ctx context.Context, userRef, format string) (ShowResul
 	}
 
 	if _, err := s.store.Subscriptions().Upsert(ctx, domain.Subscription{
-		UserID:     result.User.ID,
-		Format:     domain.SubscriptionFormat(show.Format),
-		OutputPath: show.Path,
-		UpdatedAt:  result.GeneratedAt,
+		UserID:      result.User.ID,
+		Format:      domain.SubscriptionFormat(show.Format),
+		OutputPath:  show.Path,
+		AccessToken: result.AccessToken,
+		UpdatedAt:   result.GeneratedAt,
 	}); err != nil {
 		return ShowResult{}, fmt.Errorf("persist subscription metadata: %w", err)
 	}
@@ -388,6 +410,51 @@ func buildJSONExport(user domain.User, generatedAt time.Time, artifacts []render
 		return nil, fmt.Errorf("marshal json subscription export: %w", err)
 	}
 	return data, nil
+}
+
+func (s *Service) resolveOrCreateAccessToken(ctx context.Context, userID string) (string, error) {
+	sub, err := s.store.Subscriptions().GetByUserID(ctx, userID)
+	if err == nil {
+		token := strings.TrimSpace(sub.AccessToken)
+		if token != "" {
+			return token, nil
+		}
+	} else if !errorsIsNotFound(err) {
+		return "", fmt.Errorf("read existing subscription token: %w", err)
+	}
+
+	token, err := generateAccessToken()
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (s *Service) writePublicTXT(accessToken string, content []byte) (string, error) {
+	token := strings.TrimSpace(accessToken)
+	if token == "" {
+		return "", fmt.Errorf("subscription access token is required")
+	}
+	publicDir := strings.TrimSpace(s.publicDir)
+	if publicDir == "" {
+		return "", fmt.Errorf("public subscriptions directory is required")
+	}
+	if err := os.MkdirAll(publicDir, 0o755); err != nil {
+		return "", fmt.Errorf("create public subscriptions directory: %w", err)
+	}
+	publicPath := filepath.Join(publicDir, token+".txt")
+	if err := layout.WriteAtomicFile(publicPath, content, 0o644); err != nil {
+		return "", fmt.Errorf("write public subscription txt: %w", err)
+	}
+	return publicPath, nil
+}
+
+func generateAccessToken() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate access token: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 func normalizeFormat(raw string) string {

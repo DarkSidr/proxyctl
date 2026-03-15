@@ -50,6 +50,7 @@ Because of this, exact runtime versions depend on install date and host reposito
   - `gopkg.in/yaml.v3 v3.0.1`
 - Supported OS for installer:
   - Debian 12
+  - Debian 13
   - Ubuntu 22.04
   - Ubuntu 24.04
 
@@ -264,6 +265,14 @@ Then regenerate subscriptions:
 proxyctl subscription generate <user>
 proxyctl subscription export <user> --format txt
 ```
+
+`proxyctl subscription generate` now also prints a public URL in form:
+
+```text
+https://<public.domain>/sub/<token>
+```
+
+This endpoint serves plain-text URI list suitable for subscription clients (for example NekoBox).
 
 ## Hysteria2 TLS (sing-box)
 

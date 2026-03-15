@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -2161,6 +2162,7 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 			"attach to existing inbound",
 			"show configs",
 			"generate subscription",
+			"delete subscription",
 			"open credential",
 			"delete specific config",
 			"delete user completely",
@@ -2187,6 +2189,10 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 			if err := runWizardGenerateUserSubscription(cmd, out, configPath, dbPath, user); err != nil {
 				return err
 			}
+		case "delete subscription":
+			if err := runWizardDeleteUserSubscription(cmd, in, out, configPath, dbPath, user); err != nil {
+				return err
+			}
 		case "open credential":
 			if err := runWizardOpenCredential(cmd, in, out, dbPath, user); err != nil {
 				return err
@@ -2210,19 +2216,21 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 }
 
 func runWizardGenerateUserSubscription(cmd *cobra.Command, out io.Writer, configPath, dbPath string, user domain.User) error {
+	appCfg, err := loadAppConfig(configPath)
+	if err != nil {
+		return err
+	}
+
 	store, err := openStoreWithInit(cmd.Context(), dbPath)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	subscriptionDir, err := resolveSubscriptionDir(configPath)
-	if err != nil {
-		return err
-	}
 	svc := subscriptionservice.New(
 		store,
-		subscriptionDir,
+		appCfg.Paths.Subscription,
+		subscriptionPublicDir(appCfg.Paths.Subscription),
 		singbox.New(nil),
 		xray.New(nil),
 	)
@@ -2235,6 +2243,53 @@ func runWizardGenerateUserSubscription(cmd *cobra.Command, out io.Writer, config
 	fmt.Fprintf(out, "txt: %s\n", generated.TXTPath)
 	fmt.Fprintf(out, "base64: %s\n", generated.Base64Path)
 	fmt.Fprintf(out, "json: %s\n", generated.JSONPath)
+	if link := buildSubscriptionPublicURL(appCfg, generated.AccessToken); link != "" {
+		fmt.Fprintf(out, "url: %s\n", link)
+	} else if strings.TrimSpace(generated.AccessToken) != "" {
+		fmt.Fprintf(out, "token: %s\n", generated.AccessToken)
+		fmt.Fprintln(out, "url unavailable: set public.domain in proxyctl config")
+	}
+	return nil
+}
+
+func runWizardDeleteUserSubscription(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	sub, err := store.Subscriptions().GetByUserID(cmd.Context(), user.ID)
+	if err != nil {
+		if strings.Contains(err.Error(), sql.ErrNoRows.Error()) {
+			fmt.Fprintln(out, "subscription not found")
+			return nil
+		}
+		return err
+	}
+
+	confirm, err := promptBool(in, out, "Delete subscription metadata and files for this user (y/n)", false)
+	if err != nil {
+		return err
+	}
+	if !confirm {
+		fmt.Fprintln(out, "cancelled")
+		return nil
+	}
+
+	deletedSub, err := store.Subscriptions().DeleteByUserID(cmd.Context(), user.ID)
+	if err != nil {
+		return err
+	}
+	subscriptionDir, err := resolveSubscriptionDir(configPath)
+	if err != nil {
+		return err
+	}
+	removedFiles, err := cleanupUserSubscriptionFiles(user.ID, subscriptionDir, sub.OutputPath, sub.AccessToken)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "subscription deleted: metadata=%t files_removed=%d\n", deletedSub, removedFiles)
 	return nil
 }
 
@@ -2459,6 +2514,7 @@ type wizardUserConfigItem struct {
 	ClientURI          string
 	ClientURIError     string
 	SubscriptionOutput string
+	SubscriptionToken  string
 	SubscriptionExists bool
 }
 
@@ -2707,7 +2763,7 @@ func runWizardDeleteSpecificUserConfig(cmd *cobra.Command, in *bufio.Reader, out
 		if err != nil {
 			return err
 		}
-		removedFiles, err := cleanupUserSubscriptionFiles(user.ID, subscriptionDir, selected.SubscriptionOutput)
+		removedFiles, err := cleanupUserSubscriptionFiles(user.ID, subscriptionDir, selected.SubscriptionOutput, selected.SubscriptionToken)
 		if err != nil {
 			return err
 		}
@@ -2735,9 +2791,11 @@ func runWizardDeleteUserCompletely(cmd *cobra.Command, in *bufio.Reader, out io.
 	defer store.Close()
 
 	subPath := ""
+	subToken := ""
 	sub, subErr := store.Subscriptions().GetByUserID(cmd.Context(), user.ID)
 	if subErr == nil {
 		subPath = strings.TrimSpace(sub.OutputPath)
+		subToken = strings.TrimSpace(sub.AccessToken)
 	}
 
 	deletedCreds, err := store.Credentials().DeleteByUserID(cmd.Context(), user.ID)
@@ -2761,7 +2819,7 @@ func runWizardDeleteUserCompletely(cmd *cobra.Command, in *bufio.Reader, out io.
 	if err != nil {
 		return false, err
 	}
-	removedFiles, err := cleanupUserSubscriptionFiles(user.ID, subscriptionDir, subPath)
+	removedFiles, err := cleanupUserSubscriptionFiles(user.ID, subscriptionDir, subPath, subToken)
 	if err != nil {
 		return false, err
 	}
@@ -2874,6 +2932,7 @@ func listWizardUserConfigs(cmd *cobra.Command, dbPath, userID string) ([]wizardU
 		items = append(items, wizardUserConfigItem{
 			Kind:               wizardUserConfigSubscription,
 			SubscriptionOutput: outputPath,
+			SubscriptionToken:  strings.TrimSpace(sub.AccessToken),
 			SubscriptionExists: statErr == nil,
 		})
 	}
@@ -2974,18 +3033,54 @@ func promptUserChoice(in *bufio.Reader, out io.Writer, users []domain.User, labe
 }
 
 func resolveSubscriptionDir(configPath string) (string, error) {
-	cfg, err := config.Load(configPath)
+	cfg, err := loadAppConfig(configPath)
 	if err != nil {
-		return config.DefaultAppConfig().Paths.Subscription, nil
+		return config.DefaultAppConfig().Paths.Subscription, err
 	}
 	return cfg.Paths.Subscription, nil
 }
 
-func cleanupUserSubscriptionFiles(userID, subscriptionDir, storedOutputPath string) (int, error) {
+func loadAppConfig(configPath string) (config.AppConfig, error) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return config.DefaultAppConfig(), nil
+	}
+	return cfg, nil
+}
+
+func subscriptionPublicDir(subscriptionDir string) string {
+	return filepath.Join(strings.TrimSpace(subscriptionDir), "public")
+}
+
+func buildSubscriptionPublicURL(cfg config.AppConfig, accessToken string) string {
+	token := strings.TrimSpace(accessToken)
+	if token == "" {
+		return ""
+	}
+	domain := strings.TrimSpace(cfg.Public.Domain)
+	if domain == "" {
+		return ""
+	}
+	scheme := "https"
+	if !cfg.Public.HTTPS {
+		scheme = "http"
+	}
+	return fmt.Sprintf("%s://%s/sub/%s", scheme, domain, token)
+}
+
+func cleanupUserSubscriptionFiles(userID, subscriptionDir, storedOutputPath, accessToken string) (int, error) {
 	paths := []string{
 		filepath.Join(subscriptionDir, userID+".txt"),
 		filepath.Join(subscriptionDir, userID+".base64"),
 		filepath.Join(subscriptionDir, userID+".json"),
+	}
+	publicDir := subscriptionPublicDir(subscriptionDir)
+	token := strings.TrimSpace(accessToken)
+	if token != "" {
+		paths = append(paths,
+			filepath.Join(publicDir, token),
+			filepath.Join(publicDir, token+".txt"),
+		)
 	}
 	if strings.TrimSpace(storedOutputPath) != "" {
 		paths = append(paths, strings.TrimSpace(storedOutputPath))
@@ -3647,29 +3742,31 @@ func newApplyCmd(configPath, dbPath *string) *cobra.Command {
 	return cmd
 }
 
-func newSubscriptionCmd(dbPath *string) *cobra.Command {
+func newSubscriptionCmd(configPath, dbPath *string) *cobra.Command {
 	cmd := newGroupCmd(
 		"subscription",
 		"Manage subscription outputs",
 		"Builds and inspects subscription payloads for client applications.",
 	)
 	cmd.AddCommand(
-		newSubscriptionGenerateCmd(dbPath),
-		newSubscriptionShowCmd(dbPath),
-		newSubscriptionExportCmd(dbPath),
+		newSubscriptionGenerateCmd(configPath, dbPath),
+		newSubscriptionShowCmd(configPath, dbPath),
+		newSubscriptionExportCmd(configPath, dbPath),
 	)
 	return cmd
 }
 
-func newSubscriptionGenerateCmd(dbPath *string) *cobra.Command {
-	defaults := config.DefaultAppConfig()
-
+func newSubscriptionGenerateCmd(configPath, dbPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "generate <user>",
 		Short: "Generate subscription payload files for a user",
 		Long:  "Collects client artifacts from sing-box and Xray renderers and stores txt/base64/json subscription files.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			appCfg, err := loadAppConfig(*configPath)
+			if err != nil {
+				return err
+			}
 			store, err := openStoreWithInit(cmd.Context(), *dbPath)
 			if err != nil {
 				return err
@@ -3678,7 +3775,8 @@ func newSubscriptionGenerateCmd(dbPath *string) *cobra.Command {
 
 			svc := subscriptionservice.New(
 				store,
-				defaults.Paths.Subscription,
+				appCfg.Paths.Subscription,
+				subscriptionPublicDir(appCfg.Paths.Subscription),
 				singbox.New(nil),
 				xray.New(nil),
 			)
@@ -3692,20 +3790,25 @@ func newSubscriptionGenerateCmd(dbPath *string) *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "txt: %s\n", generated.TXTPath)
 			fmt.Fprintf(cmd.OutOrStdout(), "base64: %s\n", generated.Base64Path)
 			fmt.Fprintf(cmd.OutOrStdout(), "json: %s\n", generated.JSONPath)
+			if link := buildSubscriptionPublicURL(appCfg, generated.AccessToken); link != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "url: %s\n", link)
+			}
 			return nil
 		},
 	}
 }
 
-func newSubscriptionShowCmd(dbPath *string) *cobra.Command {
-	defaults := config.DefaultAppConfig()
-
+func newSubscriptionShowCmd(configPath, dbPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "show <user>",
 		Short: "Show last generated subscription output for a user",
 		Long:  "Reads the last generated subscription metadata and prints the stored payload.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			appCfg, err := loadAppConfig(*configPath)
+			if err != nil {
+				return err
+			}
 			store, err := openStoreWithInit(cmd.Context(), *dbPath)
 			if err != nil {
 				return err
@@ -3714,7 +3817,8 @@ func newSubscriptionShowCmd(dbPath *string) *cobra.Command {
 
 			svc := subscriptionservice.New(
 				store,
-				defaults.Paths.Subscription,
+				appCfg.Paths.Subscription,
+				subscriptionPublicDir(appCfg.Paths.Subscription),
 				singbox.New(nil),
 				xray.New(nil),
 			)
@@ -3726,6 +3830,11 @@ func newSubscriptionShowCmd(dbPath *string) *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "user=%s (%s)\n", result.User.Name, result.User.ID)
 			fmt.Fprintf(cmd.OutOrStdout(), "format=%s\n", result.Format)
 			fmt.Fprintf(cmd.OutOrStdout(), "path=%s\n", result.Path)
+			if sub, subErr := store.Subscriptions().GetByUserID(cmd.Context(), result.User.ID); subErr == nil {
+				if link := buildSubscriptionPublicURL(appCfg, sub.AccessToken); link != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "url=%s\n", link)
+				}
+			}
 			if len(result.Content) > 0 {
 				if _, err := cmd.OutOrStdout().Write(result.Content); err != nil {
 					return err
@@ -3739,8 +3848,7 @@ func newSubscriptionShowCmd(dbPath *string) *cobra.Command {
 	}
 }
 
-func newSubscriptionExportCmd(dbPath *string) *cobra.Command {
-	defaults := config.DefaultAppConfig()
+func newSubscriptionExportCmd(configPath, dbPath *string) *cobra.Command {
 	format := subscriptionservice.FormatJSON
 
 	cmd := &cobra.Command{
@@ -3749,6 +3857,10 @@ func newSubscriptionExportCmd(dbPath *string) *cobra.Command {
 		Long:  "Regenerates subscription files and prints one selected output format for automation workflows.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			appCfg, err := loadAppConfig(*configPath)
+			if err != nil {
+				return err
+			}
 			store, err := openStoreWithInit(cmd.Context(), *dbPath)
 			if err != nil {
 				return err
@@ -3757,7 +3869,8 @@ func newSubscriptionExportCmd(dbPath *string) *cobra.Command {
 
 			svc := subscriptionservice.New(
 				store,
-				defaults.Paths.Subscription,
+				appCfg.Paths.Subscription,
+				subscriptionPublicDir(appCfg.Paths.Subscription),
 				singbox.New(nil),
 				xray.New(nil),
 			)
@@ -3887,6 +4000,7 @@ func renderSubscriptions(ctx context.Context, store *sqlite.Store, dataDir, suff
 	svc := subscriptionservice.New(
 		store,
 		dataDir,
+		subscriptionPublicDir(dataDir),
 		singbox.New(nil),
 		xray.New(nil),
 	)

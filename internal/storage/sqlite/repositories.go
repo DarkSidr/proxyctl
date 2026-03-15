@@ -469,16 +469,18 @@ func (r *subscriptionRepository) Upsert(ctx context.Context, subscription domain
 
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO subscriptions (id, user_id, format, output_path, updated_at)
-		VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO subscriptions (id, user_id, format, output_path, access_token, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
 			format = excluded.format,
 			output_path = excluded.output_path,
+			access_token = excluded.access_token,
 			updated_at = excluded.updated_at`,
 		subscription.ID,
 		subscription.UserID,
 		subscription.Format,
 		subscription.OutputPath,
+		subscription.AccessToken,
 		subscription.UpdatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -495,13 +497,14 @@ func (r *subscriptionRepository) GetByUserID(ctx context.Context, userID string)
 
 	err := r.db.QueryRowContext(
 		ctx,
-		`SELECT id, user_id, format, output_path, updated_at FROM subscriptions WHERE user_id = ?`,
+		`SELECT id, user_id, format, output_path, COALESCE(access_token, ''), updated_at FROM subscriptions WHERE user_id = ?`,
 		userID,
 	).Scan(
 		&subscription.ID,
 		&subscription.UserID,
 		&subscription.Format,
 		&subscription.OutputPath,
+		&subscription.AccessToken,
 		&updatedAt,
 	)
 	if err != nil {

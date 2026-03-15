@@ -88,9 +88,10 @@ func (b *Builder) Build(req BuildRequest) (BuildResult, error) {
 		})
 
 		site := caddySiteData{
-			Address:   siteAddress(domainName, b.cfg.Public.HTTPS),
-			DecoyRoot: b.cfg.Paths.DecoySiteDir,
-			Routes:    make([]caddyRouteData, 0, len(routes)),
+			Address:          siteAddress(domainName, b.cfg.Public.HTTPS),
+			DecoyRoot:        b.cfg.Paths.DecoySiteDir,
+			SubscriptionRoot: filepath.Join(b.cfg.Paths.Subscription, "public"),
+			Routes:           make([]caddyRouteData, 0, len(routes)),
 		}
 		for idx, route := range routes {
 			site.Routes = append(site.Routes, caddyRouteData{
@@ -167,9 +168,10 @@ type caddyTemplateData struct {
 }
 
 type caddySiteData struct {
-	Address   string
-	DecoyRoot string
-	Routes    []caddyRouteData
+	Address          string
+	DecoyRoot        string
+	SubscriptionRoot string
+	Routes           []caddyRouteData
 }
 
 type caddyRouteData struct {

@@ -1,4 +1,10 @@
 :80 {
   root * /etc/proxy-orchestrator/runtime/decoy-site
+  handle_path /sub/* {
+    root * /var/lib/proxy-orchestrator/subscriptions/public
+    try_files {path} {path}.txt =404
+    header Content-Type "text/plain; charset=utf-8"
+    file_server
+  }
   file_server
 }

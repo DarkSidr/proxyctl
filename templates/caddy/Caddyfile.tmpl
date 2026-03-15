@@ -7,6 +7,13 @@
 {{ .Address }} {
   root * {{ .DecoyRoot }}
 
+  handle_path /sub/* {
+    root * {{ .SubscriptionRoot }}
+    try_files {path} {path}.txt =404
+    header Content-Type "text/plain; charset=utf-8"
+    file_server
+  }
+
 {{- range .Routes }}
   @{{ .MatcherName }} {
     path {{ .Path }} {{ .PrefixPath }}

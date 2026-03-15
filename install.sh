@@ -309,11 +309,11 @@ detect_os() {
   local version_id="${VERSION_ID:-}"
 
   case "${os_id}:${version_id}" in
-    debian:12|ubuntu:22.04|ubuntu:24.04)
+    debian:12|debian:13|ubuntu:22.04|ubuntu:24.04)
       log "Detected supported OS: ${PRETTY_NAME:-${os_id} ${version_id}}"
       ;;
     *)
-      fail "unsupported OS ${os_id}:${version_id}. Supported: Debian 12, Ubuntu 22.04, Ubuntu 24.04"
+      fail "unsupported OS ${os_id}:${version_id}. Supported: Debian 12, Debian 13, Ubuntu 22.04, Ubuntu 24.04"
       ;;
   esac
 }

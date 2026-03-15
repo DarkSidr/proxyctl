@@ -33,6 +33,7 @@ Optional environment variables:
 
 Supported OS (MVP):
 - Debian 12
+- Debian 13
 - Ubuntu 22.04
 - Ubuntu 24.04
 

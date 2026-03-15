@@ -87,9 +87,10 @@ func (b *Builder) Build(req BuildRequest) (BuildResult, error) {
 		})
 
 		site := nginxSiteData{
-			Domain:    domainName,
-			DecoyRoot: b.cfg.Paths.DecoySiteDir,
-			Routes:    make([]nginxRouteData, 0, len(routes)),
+			Domain:           domainName,
+			DecoyRoot:        b.cfg.Paths.DecoySiteDir,
+			SubscriptionRoot: filepath.Join(b.cfg.Paths.Subscription, "public"),
+			Routes:           make([]nginxRouteData, 0, len(routes)),
 		}
 		for _, route := range routes {
 			site.Routes = append(site.Routes, nginxRouteData{
@@ -164,9 +165,10 @@ type nginxTemplateData struct {
 }
 
 type nginxSiteData struct {
-	Domain    string
-	DecoyRoot string
-	Routes    []nginxRouteData
+	Domain           string
+	DecoyRoot        string
+	SubscriptionRoot string
+	Routes           []nginxRouteData
 }
 
 type nginxRouteData struct {

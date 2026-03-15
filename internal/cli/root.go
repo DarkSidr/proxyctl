@@ -55,7 +55,7 @@ func NewRootCmd() *cobra.Command {
 		newRenderCmd(&configPath, &dbPath),
 		newValidateCmd(&configPath, &dbPath),
 		newApplyCmd(&configPath, &dbPath),
-		newSubscriptionCmd(&dbPath),
+		newSubscriptionCmd(&configPath, &dbPath),
 		newLogsCmd(&configPath),
 		newDoctorCmd(&configPath, &dbPath),
 	)

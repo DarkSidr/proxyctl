@@ -109,11 +109,12 @@ type Credential struct {
 
 // Subscription stores user subscription output metadata.
 type Subscription struct {
-	ID         string
-	UserID     string
-	Format     SubscriptionFormat
-	OutputPath string
-	UpdatedAt  time.Time
+	ID          string
+	UserID      string
+	Format      SubscriptionFormat
+	OutputPath  string
+	AccessToken string
+	UpdatedAt   time.Time
 }
 
 // Compatibility structs for upcoming renderer/runtime stages.

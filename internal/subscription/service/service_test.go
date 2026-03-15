@@ -36,7 +36,7 @@ func TestGenerateBuildsSubscriptionFromMultipleInbounds(t *testing.T) {
 	mustCreateCredential(t, ctx, store, domain.Credential{ID: "cred-xhttp", UserID: user.ID, InboundID: inXHTTP.ID, Kind: domain.CredentialKindUUID, Secret: "22222222-2222-2222-2222-222222222222"})
 
 	dataDir := t.TempDir()
-	svc := New(store, dataDir, singbox.New(nil), xray.New(nil))
+	svc := New(store, dataDir, filepath.Join(dataDir, "public"), singbox.New(nil), xray.New(nil))
 
 	got, err := svc.Generate(ctx, user.Name)
 	if err != nil {
@@ -51,6 +51,12 @@ func TestGenerateBuildsSubscriptionFromMultipleInbounds(t *testing.T) {
 	}
 	if got.JSONPath != filepath.Join(dataDir, user.ID+".json") {
 		t.Fatalf("JSONPath = %q, want %q", got.JSONPath, filepath.Join(dataDir, user.ID+".json"))
+	}
+	if strings.TrimSpace(got.AccessToken) == "" {
+		t.Fatalf("access token must not be empty")
+	}
+	if got.PublicTXTPath != filepath.Join(dataDir, "public", got.AccessToken+".txt") {
+		t.Fatalf("PublicTXTPath = %q, want %q", got.PublicTXTPath, filepath.Join(dataDir, "public", got.AccessToken+".txt"))
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(got.TXT)), "\n")
@@ -98,6 +104,9 @@ func TestGenerateBuildsSubscriptionFromMultipleInbounds(t *testing.T) {
 	if sub.OutputPath != got.TXTPath {
 		t.Fatalf("subscription output path = %q, want %q", sub.OutputPath, got.TXTPath)
 	}
+	if sub.AccessToken != got.AccessToken {
+		t.Fatalf("subscription access token = %q, want %q", sub.AccessToken, got.AccessToken)
+	}
 }
 
 func TestExportJSONUpdatesStoredSubscriptionFormat(t *testing.T) {
@@ -113,7 +122,7 @@ func TestExportJSONUpdatesStoredSubscriptionFormat(t *testing.T) {
 	mustCreateCredential(t, ctx, store, domain.Credential{ID: "cred-vless", UserID: user.ID, InboundID: inbound.ID, Kind: domain.CredentialKindUUID, Secret: "11111111-1111-1111-1111-111111111111"})
 
 	dataDir := t.TempDir()
-	svc := New(store, dataDir, singbox.New(nil), xray.New(nil))
+	svc := New(store, dataDir, filepath.Join(dataDir, "public"), singbox.New(nil), xray.New(nil))
 
 	exported, err := svc.Export(ctx, user.ID, FormatJSON)
 	if err != nil {
@@ -132,6 +141,34 @@ func TestExportJSONUpdatesStoredSubscriptionFormat(t *testing.T) {
 	}
 	if shown.Format != FormatJSON {
 		t.Fatalf("show format = %q, want %q", shown.Format, FormatJSON)
+	}
+}
+
+func TestGenerateKeepsExistingAccessToken(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	defer store.Close()
+
+	user := mustCreateUser(t, ctx, store, "dave")
+	node := mustCreateNode(t, ctx, store, domain.Node{ID: "node-1", Name: "eu-1", Host: "eu.example.com", Role: domain.NodeRolePrimary, Enabled: true})
+	inbound := mustCreateInbound(t, ctx, store, domain.Inbound{ID: "in-vless", Type: domain.ProtocolVLESS, Engine: domain.EngineSingBox, NodeID: node.ID, Domain: "eu.example.com", Port: 443, TLSEnabled: true, Transport: "tcp", Enabled: true})
+	mustCreateCredential(t, ctx, store, domain.Credential{ID: "cred-vless", UserID: user.ID, InboundID: inbound.ID, Kind: domain.CredentialKindUUID, Secret: "11111111-1111-1111-1111-111111111111"})
+
+	dataDir := t.TempDir()
+	svc := New(store, dataDir, filepath.Join(dataDir, "public"), singbox.New(nil), xray.New(nil))
+
+	first, err := svc.Generate(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("first Generate() unexpected error: %v", err)
+	}
+	second, err := svc.Generate(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("second Generate() unexpected error: %v", err)
+	}
+	if first.AccessToken != second.AccessToken {
+		t.Fatalf("access token changed between generations: %q != %q", first.AccessToken, second.AccessToken)
 	}
 }
 

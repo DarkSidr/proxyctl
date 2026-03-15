@@ -14,6 +14,12 @@ http {
     root {{ .DecoyRoot }};
     index index.html;
 
+    location ~ ^/sub/([A-Za-z0-9_-]+)$ {
+      default_type text/plain;
+      root {{ .SubscriptionRoot }};
+      try_files /$1 /$1.txt =404;
+    }
+
 {{- range .Routes }}
 {{- if eq .Transport "grpc" }}
     location = {{ .Path }} {

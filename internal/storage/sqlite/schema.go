@@ -57,9 +57,11 @@ var schemaStatements = []string{
 		user_id TEXT NOT NULL UNIQUE,
 		format TEXT NOT NULL,
 		output_path TEXT NOT NULL,
+		access_token TEXT,
 		updated_at TEXT NOT NULL,
 		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_access_token ON subscriptions(access_token)`,
 	`CREATE INDEX IF NOT EXISTS idx_inbounds_node_id ON inbounds(node_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_credentials_user_id ON credentials(user_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_credentials_inbound_id ON credentials(inbound_id)`,
@@ -77,4 +79,6 @@ var schemaMigrations = []string{
 	`ALTER TABLE inbounds ADD COLUMN vless_flow TEXT`,
 	`ALTER TABLE inbounds ADD COLUMN tls_cert_path TEXT`,
 	`ALTER TABLE inbounds ADD COLUMN tls_key_path TEXT`,
+	`ALTER TABLE subscriptions ADD COLUMN access_token TEXT`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_access_token ON subscriptions(access_token)`,
 }
