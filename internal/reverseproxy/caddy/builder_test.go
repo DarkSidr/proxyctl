@@ -70,6 +70,30 @@ func TestBuildSupportsHTTPAddress(t *testing.T) {
 	assertContains(t, string(result.Caddyfile), "http://plain.example.com {")
 }
 
+func TestBuildUsesFallbackTemplateWhenTemplateFilesMissing(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultAppConfig()
+	cfg.Paths.TemplatesDir = filepath.Join(t.TempDir(), "missing-templates")
+	cfg.Paths.DecoySiteDir = "/etc/proxy-orchestrator/runtime/decoy-site"
+	cfg.Public.Domain = "fallback.example.com"
+	cfg.Public.HTTPS = true
+
+	builder := New(cfg)
+	result, err := builder.Build(BuildRequest{
+		Node:     domain.Node{Host: "node.internal"},
+		Inbounds: []domain.Inbound{{ID: "in-1", Enabled: true, Transport: "ws", Port: 11080, Path: "/ws"}},
+	})
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	body := string(result.Caddyfile)
+	assertContains(t, body, "fallback.example.com {")
+	assertContains(t, body, "handle_path /sub/* {")
+	assertContains(t, body, "root * /var/lib/proxy-orchestrator/subscriptions/public")
+}
+
 func TestLoadDecoyAssets(t *testing.T) {
 	t.Parallel()
 

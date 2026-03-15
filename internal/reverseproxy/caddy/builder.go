@@ -15,6 +15,39 @@ import (
 
 const caddyTemplateName = "Caddyfile.tmpl"
 
+const caddyTemplateFallback = `{{- if .ContactEmail }}{
+  email {{ .ContactEmail }}
+}
+
+{{ end -}}
+{{- range .Sites }}
+{{ .Address }} {
+  root * {{ .DecoyRoot }}
+
+  handle_path /sub/* {
+    root * {{ .SubscriptionRoot }}
+    try_files {path} {path}.txt =404
+    header Content-Type "text/plain; charset=utf-8"
+    file_server
+  }
+
+{{- range .Routes }}
+  @{{ .MatcherName }} {
+    path {{ .Path }} {{ .PrefixPath }}
+  }
+  reverse_proxy @{{ .MatcherName }} {{ .Backend }}{{ if .UseH2C }} {
+    transport http {
+      versions h2c 2
+    }
+  }{{ end }}
+
+{{- end }}
+  file_server
+}
+
+{{- end }}
+`
+
 // Asset is one static decoy-site file loaded from templates.
 type Asset struct {
 	RelativePath string
@@ -188,7 +221,7 @@ func loadTemplate(templatesDir string) (*template.Template, error) {
 		filepath.Join("templates", "caddy", caddyTemplateName),
 	)
 	if err != nil {
-		return nil, err
+		return template.New("caddy").Parse(caddyTemplateFallback)
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
