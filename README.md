@@ -25,6 +25,84 @@ Run CLI help:
 make smoke-help
 ```
 
+## Runtime stack and versions
+
+### Version policy (important)
+
+`proxyctl` installer does **not** pin runtime proxy versions (`sing-box`, `xray`) in this repository.
+
+- First it tries to install from `apt` packages (`sing-box`/`singbox`, `xray`/`xray-core`).
+- If package is unavailable, it auto-resolves and installs the **latest** Linux amd64 release asset from upstream GitHub:
+  - `SagerNet/sing-box`
+  - `XTLS/Xray-core`
+- You can force an exact build via:
+  - `SINGBOX_BINARY_URL=<url>`
+  - `XRAY_BINARY_URL=<url>`
+
+Because of this, exact runtime versions depend on install date and host repository state.
+
+### What is fixed in this repo
+
+- Go toolchain requirement: `Go 1.23+`.
+- Go module dependencies (from `go.mod`):
+  - `github.com/mattn/go-sqlite3 v1.14.28`
+  - `github.com/spf13/cobra v1.8.1`
+  - `gopkg.in/yaml.v3 v3.0.1`
+- Supported OS for installer:
+  - Debian 12
+  - Ubuntu 22.04
+  - Ubuntu 24.04
+
+### Check actual installed versions on a host
+
+```bash
+proxyctl --version
+sing-box version
+xray version
+caddy version
+nginx -v
+```
+
+### Current runtime versions
+
+- `xray`: `26.2.6`
+- `sing-box`: `1.13.2`
+- `caddy`: `2.6.2`
+- `nginx`: `1.22.1`
+
+### Components used in proxyctl
+
+- `proxyctl`:
+  - purpose: control-plane CLI (data model, render/validate/apply pipeline, service operations).
+  - version: build/release dependent (`proxyctl --version`; local repository build is often `dev`).
+- `sing-box`:
+  - purpose: runtime proxy engine (for example `vless`, `hysteria2` flows).
+  - version now used: `1.13.2`.
+- `xray`:
+  - purpose: runtime proxy engine (for example `vless reality`, `xhttp` flows).
+  - version now used: `26.2.6`.
+- `caddy`:
+  - purpose: default reverse proxy backend and TLS automation.
+  - version now used: `2.6.2`.
+- `nginx`:
+  - purpose: optional reverse proxy backend (alternative to Caddy).
+  - version now used: `1.22.1`.
+- `sqlite3`:
+  - purpose: local state database engine (`/var/lib/proxy-orchestrator/proxyctl.db`).
+  - version: OS package dependent (check via `sqlite3 --version`).
+- `systemd`:
+  - purpose: service lifecycle (`proxyctl-sing-box.service`, `proxyctl-xray.service`, `proxyctl-caddy.service`, `proxyctl-nginx.service`).
+  - version: OS dependent (check via `systemctl --version`).
+
+### Go dependencies (from go.mod)
+
+- `github.com/spf13/cobra` `v1.8.1` (CLI commands)
+- `github.com/mattn/go-sqlite3` `v1.14.28` (SQLite driver)
+- `gopkg.in/yaml.v3` `v3.0.1` (YAML config parsing)
+- indirect:
+  - `github.com/spf13/pflag` `v1.0.5`
+  - `github.com/inconshreveable/mousetrap` `v1.1.0`
+
 ## Installer
 
 One-command installer entrypoint (stage 11):
@@ -56,6 +134,7 @@ You can upload your own templates there using structure: `<name>/index.html` and
 `proxyctl wizard` now includes:
 - `settings -> set decoy site path`
 - `settings -> switch decoy template`
+- `settings -> show installed versions`
 It also includes `uninstall proxyctl` for full VPS cleanup.
 
 Reliable update/reinstall (forces source rebuild):

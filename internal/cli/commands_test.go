@@ -223,6 +223,69 @@ func TestWizardMainOptionsWithNodes(t *testing.T) {
 	}
 }
 
+func TestCollectInstalledVersions(t *testing.T) {
+	origLookPath := lookPath
+	origRun := runCommandOutput
+	origVersion := Version
+	t.Cleanup(func() {
+		lookPath = origLookPath
+		runCommandOutput = origRun
+		Version = origVersion
+	})
+
+	Version = "v0.9.0"
+	lookPath = func(file string) (string, error) {
+		switch file {
+		case "sing-box", "xray", "nginx", "systemctl":
+			return "/usr/bin/" + file, nil
+		default:
+			return "", fmt.Errorf("not found")
+		}
+	}
+	runCommandOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		switch name {
+		case "sing-box":
+			return "sing-box version 1.13.2\n", nil
+		case "xray":
+			return "Xray 26.2.6 (Xray, Penetrates Everything.)\n", nil
+		case "nginx":
+			return "nginx version: nginx/1.22.1\n", nil
+		case "systemctl":
+			return "systemd 252 (252.30-1~deb12u2)\n", nil
+		default:
+			return "", fmt.Errorf("unexpected command: %s", name)
+		}
+	}
+
+	got := collectInstalledVersions(context.Background())
+	gotMap := make(map[string]string, len(got))
+	for _, item := range got {
+		gotMap[item.Name] = item.Version
+	}
+
+	if gotMap["proxyctl"] != "v0.9.0" {
+		t.Fatalf("proxyctl version = %q, want v0.9.0", gotMap["proxyctl"])
+	}
+	if gotMap["sing-box"] != "sing-box version 1.13.2" {
+		t.Fatalf("sing-box version = %q", gotMap["sing-box"])
+	}
+	if gotMap["xray"] != "Xray 26.2.6 (Xray, Penetrates Everything.)" {
+		t.Fatalf("xray version = %q", gotMap["xray"])
+	}
+	if gotMap["caddy"] != "not installed" {
+		t.Fatalf("caddy version = %q, want not installed", gotMap["caddy"])
+	}
+	if gotMap["sqlite3"] != "not installed" {
+		t.Fatalf("sqlite3 version = %q, want not installed", gotMap["sqlite3"])
+	}
+	if gotMap["nginx"] != "nginx version: nginx/1.22.1" {
+		t.Fatalf("nginx version = %q", gotMap["nginx"])
+	}
+	if gotMap["systemd"] != "systemd 252 (252.30-1~deb12u2)" {
+		t.Fatalf("systemd version = %q", gotMap["systemd"])
+	}
+}
+
 func TestSetConfigDecoySiteDirCreatesPathsSection(t *testing.T) {
 	t.Parallel()
 

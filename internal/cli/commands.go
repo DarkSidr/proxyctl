@@ -1104,9 +1104,13 @@ func promptChoice(in *bufio.Reader, out io.Writer, label string, options []strin
 		displayOptions = append(displayOptions, opt)
 	}
 
-	fmt.Fprintf(out, "%s:\n", label)
+	fmt.Fprintf(out, "\n== %s ==\n", label)
 	for i, opt := range displayOptions {
-		fmt.Fprintf(out, "  %d) %s\n", i+1, opt)
+		suffix := ""
+		if opt == defaultValue {
+			suffix = " [default]"
+		}
+		fmt.Fprintf(out, "  %d) %s%s\n", i+1, opt, suffix)
 	}
 	if backOption != "" {
 		fmt.Fprintln(out, "  0) back")
@@ -1118,7 +1122,7 @@ func promptChoice(in *bufio.Reader, out io.Writer, label string, options []strin
 	}
 
 	for {
-		fmt.Fprintf(out, "%s [%s]: ", label, defaultValue)
+		fmt.Fprintf(out, "select %s [%s]: ", strings.ToLower(label), defaultValue)
 		line, err := in.ReadString('\n')
 		if err != nil {
 			return "", err
@@ -1146,7 +1150,7 @@ func promptChoice(in *bufio.Reader, out io.Writer, label string, options []strin
 		if backOption != "" {
 			allowed = append(allowed, "0 (back)")
 		}
-		fmt.Fprintf(out, "invalid value, choose one of: %s\n", strings.Join(allowed, ", "))
+		fmt.Fprintf(out, "invalid value; choose one of: %s\n", strings.Join(allowed, ", "))
 	}
 }
 
@@ -1426,6 +1430,7 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 	for {
 		action, err := promptChoice(in, out, "Settings", []string{
 			"show settings",
+			"show installed versions",
 			"set decoy site path",
 			"switch decoy template",
 			"back",
@@ -1447,6 +1452,8 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 			fmt.Fprintf(out, "reverse_proxy: %s\n", cfg.ReverseProxy)
 			fmt.Fprintf(out, "public.domain: %s\n", strings.TrimSpace(cfg.Public.Domain))
 			fmt.Fprintf(out, "paths.decoy_site_dir: %s\n", strings.TrimSpace(cfg.Paths.DecoySiteDir))
+		case "show installed versions":
+			printInstalledVersions(cmd.Context(), out)
 		case "set decoy site path":
 			cfg, err := config.Load(configPath)
 			if err != nil {
@@ -1507,6 +1514,68 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 			return nil
 		}
 	}
+}
+
+type componentVersion struct {
+	Name    string
+	Version string
+}
+
+func printInstalledVersions(ctx context.Context, out io.Writer) {
+	versions := collectInstalledVersions(ctx)
+	fmt.Fprintln(out, "installed versions:")
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "component\tversion")
+	for _, item := range versions {
+		fmt.Fprintf(w, "%s\t%s\n", item.Name, item.Version)
+	}
+	_ = w.Flush()
+}
+
+func collectInstalledVersions(ctx context.Context) []componentVersion {
+	versions := []componentVersion{
+		{
+			Name:    "proxyctl",
+			Version: strings.TrimSpace(Version),
+		},
+		{Name: "sing-box", Version: probeCommandVersion(ctx, "sing-box", "version")},
+		{Name: "xray", Version: probeCommandVersion(ctx, "xray", "version")},
+		{Name: "caddy", Version: probeCommandVersion(ctx, "caddy", "version")},
+		{Name: "nginx", Version: probeCommandVersion(ctx, "nginx", "-v")},
+		{Name: "sqlite3", Version: probeCommandVersion(ctx, "sqlite3", "--version")},
+		{Name: "systemd", Version: probeCommandVersion(ctx, "systemctl", "--version")},
+	}
+	for i := range versions {
+		if strings.TrimSpace(versions[i].Version) == "" {
+			versions[i].Version = "unknown"
+		}
+	}
+	return versions
+}
+
+func probeCommandVersion(ctx context.Context, name string, args ...string) string {
+	if _, err := lookPath(name); err != nil {
+		return "not installed"
+	}
+	out, err := runCommandOutput(ctx, name, args...)
+	if err != nil {
+		if strings.TrimSpace(out) == "" {
+			return "error"
+		}
+		return firstNonEmptyLine(out)
+	}
+	return firstNonEmptyLine(out)
+}
+
+func firstNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func resolveDecoyTemplateLibraryPath(cfg config.AppConfig) string {
