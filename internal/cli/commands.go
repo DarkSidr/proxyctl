@@ -2193,16 +2193,18 @@ func promptWizardSelectInbound(cmd *cobra.Command, in *bufio.Reader, out io.Writ
 
 func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
 	for {
-		action, err := promptChoice(in, out, fmt.Sprintf("User %s (%s)", user.Name, user.ID), []string{
-			"attach to existing inbound",
+		hasSubscription, err := userHasSubscription(cmd, dbPath, user.ID)
+		if err != nil {
+			return err
+		}
+
+		action, err := promptChoice(
+			in,
+			out,
+			fmt.Sprintf("User %s (%s)", user.Name, user.ID),
+			buildWizardUserMenuOptions(hasSubscription),
 			"show configs",
-			"generate subscription",
-			"delete subscription",
-			"open credential",
-			"delete specific config",
-			"delete user completely",
-			"back",
-		}, "show configs")
+		)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				fmt.Fprintln(out, "user menu cancelled")
@@ -2248,6 +2250,41 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 			return nil
 		}
 	}
+}
+
+func buildWizardUserMenuOptions(hasSubscription bool) []string {
+	options := []string{
+		"attach to existing inbound",
+		"show configs",
+		"generate subscription",
+	}
+	if hasSubscription {
+		options = append(options, "delete subscription")
+	}
+	options = append(options,
+		"open credential",
+		"delete specific config",
+		"delete user completely",
+		"back",
+	)
+	return options
+}
+
+func userHasSubscription(cmd *cobra.Command, dbPath, userID string) (bool, error) {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return false, err
+	}
+	defer store.Close()
+
+	_, err = store.Subscriptions().GetByUserID(cmd.Context(), userID)
+	if err == nil {
+		return true, nil
+	}
+	if strings.Contains(err.Error(), sql.ErrNoRows.Error()) {
+		return false, nil
+	}
+	return false, err
 }
 
 func runWizardGenerateUserSubscription(cmd *cobra.Command, out io.Writer, configPath, dbPath string, user domain.User) error {

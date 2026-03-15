@@ -110,6 +110,29 @@ func TestSuggestWizardPortSkipsHostBusyPort(t *testing.T) {
 	}
 }
 
+func TestBuildWizardUserMenuOptionsWithoutSubscription(t *testing.T) {
+	t.Parallel()
+
+	options := buildWizardUserMenuOptions(false)
+	got := strings.Join(options, "|")
+	if strings.Contains(got, "delete subscription") {
+		t.Fatalf("options unexpectedly contain delete subscription: %v", options)
+	}
+	if !strings.Contains(got, "generate subscription") {
+		t.Fatalf("options do not contain generate subscription: %v", options)
+	}
+}
+
+func TestBuildWizardUserMenuOptionsWithSubscription(t *testing.T) {
+	t.Parallel()
+
+	options := buildWizardUserMenuOptions(true)
+	got := strings.Join(options, "|")
+	if !strings.Contains(got, "delete subscription") {
+		t.Fatalf("options do not contain delete subscription: %v", options)
+	}
+}
+
 func TestEnsureCaddyServiceHealthyStartsInactiveService(t *testing.T) {
 	origLookPath := lookPath
 	origRun := runCommandOutput
