@@ -145,6 +145,8 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 					if err := runProxyctlSubcommand(cmd, "update"); err != nil {
 						return err
 					}
+					fmt.Fprintln(out, "relaunching wizard from updated binary")
+					return runProxyctlSubcommand(cmd, "wizard", "--config", *configPath, "--db", *dbPath)
 				case "uninstall proxyctl":
 					if err := runWizardUninstall(cmd, in, out); err != nil {
 						return err
