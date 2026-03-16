@@ -21,6 +21,7 @@ usage() {
 Usage: proxyctl-uninstall [--yes] [--remove-runtime-packages]
 
 Removes proxyctl-managed services, binaries, runtime/config/state directories and helper scripts.
+Also purges proxyctl-generated SSH keys and common proxyctl-related certificate/cache paths.
 
 Options:
   --yes                     Skip interactive confirmation.
@@ -110,7 +111,34 @@ remove_files() {
     /etc/proxy-orchestrator \
     /var/lib/proxy-orchestrator \
     /var/backups/proxy-orchestrator \
-    /usr/share/proxy-orchestrator
+    /usr/share/proxy-orchestrator \
+    /var/log/proxy-orchestrator
+}
+
+remove_proxyctl_ssh_keys() {
+  local ssh_dir="/root/.ssh"
+  if [[ ! -d "${ssh_dir}" ]]; then
+    return 0
+  fi
+
+  local pub key base
+  shopt -s nullglob
+  for pub in "${ssh_dir}"/*.pub; do
+    base="${pub%.pub}"
+    if grep -q "proxyctl-auto-" "${pub}" 2>/dev/null; then
+      log "Removing proxyctl-generated SSH key: ${base}"
+      rm -f "${base}" "${pub}"
+    fi
+  done
+  shopt -u nullglob
+}
+
+remove_proxyctl_certificates_and_cache() {
+  rm -rf \
+    /caddy \
+    /var/lib/caddy \
+    /var/log/caddy \
+    /etc/ssl/caddy
 }
 
 remove_runtime_packages() {
@@ -134,10 +162,11 @@ main() {
   disable_units
   remove_units
   remove_files
+  remove_proxyctl_ssh_keys
+  remove_proxyctl_certificates_and_cache
   remove_runtime_packages
 
   log "proxyctl purge completed"
 }
 
 main "$@"
-

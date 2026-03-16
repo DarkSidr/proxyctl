@@ -1035,7 +1035,19 @@ systemctl daemon-reload || true
 systemctl reset-failed || true
 
 rm -f /usr/local/bin/proxyctl /usr/local/bin/sing-box /usr/local/bin/xray /usr/local/sbin/proxyctl-self-update /usr/local/sbin/proxyctl-uninstall
-rm -rf /etc/proxy-orchestrator /var/lib/proxy-orchestrator /var/backups/proxy-orchestrator /usr/share/proxy-orchestrator
+rm -rf /etc/proxy-orchestrator /var/lib/proxy-orchestrator /var/backups/proxy-orchestrator /usr/share/proxy-orchestrator /var/log/proxy-orchestrator
+
+if [[ -d /root/.ssh ]]; then
+  shopt -s nullglob
+  for pub in /root/.ssh/*.pub; do
+    if grep -q "proxyctl-auto-" "${pub}" 2>/dev/null; then
+      rm -f "${pub%.pub}" "${pub}"
+    fi
+  done
+  shopt -u nullglob
+fi
+
+rm -rf /caddy /var/lib/caddy /var/log/caddy /etc/ssl/caddy
 
 log "proxyctl purge completed"
 EOT
