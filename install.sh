@@ -116,19 +116,31 @@ prompt_with_default() {
 
 prompt_reverse_proxy_choice() {
   local current="$1"
+  local default_choice="1"
+  case "${current}" in
+    caddy) default_choice="1" ;;
+    nginx) default_choice="2" ;;
+  esac
   local answer=""
   local normalized
   while true; do
-    read -r -p "Reverse proxy (caddy/nginx) [${current}]: " answer || true
-    answer="${answer:-${current}}"
+    printf 'Reverse proxy:\n'
+    printf '  1) caddy\n'
+    printf '  2) nginx\n'
+    read -r -p "Select reverse proxy [${default_choice}]: " answer || true
+    answer="${answer:-${default_choice}}"
     normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
     case "${normalized}" in
-      caddy|nginx)
-        printf '%s\n' "${normalized}"
+      1|caddy)
+        printf '%s\n' "caddy"
+        return 0
+        ;;
+      2|nginx)
+        printf '%s\n' "nginx"
         return 0
         ;;
       *)
-        warn "Unsupported reverse proxy choice: ${answer}. Use caddy or nginx."
+        warn "Unsupported reverse proxy choice: ${answer}. Use 1/2 or caddy/nginx."
         ;;
     esac
   done
@@ -136,19 +148,37 @@ prompt_reverse_proxy_choice() {
 
 prompt_deployment_mode_choice() {
   local current="$1"
+  local default_choice="1"
+  case "${current}" in
+    panel+node) default_choice="1" ;;
+    panel) default_choice="2" ;;
+    node) default_choice="3" ;;
+  esac
   local answer=""
   local normalized
   while true; do
-    read -r -p "Deployment mode (panel+node/panel/node) [${current}]: " answer || true
-    answer="${answer:-${current}}"
+    printf 'Deployment mode:\n'
+    printf '  1) panel+node\n'
+    printf '  2) panel\n'
+    printf '  3) node\n'
+    read -r -p "Select deployment mode [${default_choice}]: " answer || true
+    answer="${answer:-${default_choice}}"
     normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
     case "${normalized}" in
-      panel+node|panel|node)
-        printf '%s\n' "${normalized}"
+      1|panel+node)
+        printf '%s\n' "panel+node"
+        return 0
+        ;;
+      2|panel)
+        printf '%s\n' "panel"
+        return 0
+        ;;
+      3|node)
+        printf '%s\n' "node"
         return 0
         ;;
       *)
-        warn "Unsupported deployment mode: ${answer}. Use panel+node, panel or node."
+        warn "Unsupported deployment mode: ${answer}. Use 1/2/3 or panel+node/panel/node."
         ;;
     esac
   done
@@ -156,19 +186,49 @@ prompt_deployment_mode_choice() {
 
 prompt_decoy_template_choice() {
   local current="$1"
+  local default_choice="1"
+  case "${current}" in
+    random) default_choice="1" ;;
+    login) default_choice="2" ;;
+    pizza-club) default_choice="3" ;;
+    support-desk) default_choice="4" ;;
+    default) default_choice="5" ;;
+  esac
   local answer=""
   local normalized
   while true; do
-    read -r -p "Decoy site template (random/login/pizza-club/support-desk/default) [${current}]: " answer || true
-    answer="${answer:-${current}}"
+    printf 'Decoy site template:\n'
+    printf '  1) random\n'
+    printf '  2) login\n'
+    printf '  3) pizza-club\n'
+    printf '  4) support-desk\n'
+    printf '  5) default\n'
+    read -r -p "Select decoy template [${default_choice}]: " answer || true
+    answer="${answer:-${default_choice}}"
     normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
     case "${normalized}" in
-      random|login|pizza-club|support-desk|default)
-        printf '%s\n' "${normalized}"
+      1|random)
+        printf '%s\n' "random"
+        return 0
+        ;;
+      2|login)
+        printf '%s\n' "login"
+        return 0
+        ;;
+      3|pizza-club)
+        printf '%s\n' "pizza-club"
+        return 0
+        ;;
+      4|support-desk)
+        printf '%s\n' "support-desk"
+        return 0
+        ;;
+      5|default)
+        printf '%s\n' "default"
         return 0
         ;;
       *)
-        warn "Unsupported decoy template: ${answer}. Use random/login/pizza-club/support-desk/default."
+        warn "Unsupported decoy template: ${answer}. Use 1..5 or random/login/pizza-club/support-desk/default."
         ;;
     esac
   done
