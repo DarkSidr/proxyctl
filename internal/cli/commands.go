@@ -133,7 +133,7 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 
 				switch action {
 				case "nodes":
-					if err := runWizardNodesMenu(cmd, *dbPath); err != nil {
+					if err := runWizardNodesMenu(cmd, *configPath, *dbPath); err != nil {
 						return err
 					}
 				case "inbounds":
@@ -448,8 +448,14 @@ func newNodeAddCmd(dbPath *string) *cobra.Command {
 			if host == "" {
 				return fmt.Errorf("--host is required")
 			}
+			role = strings.TrimSpace(role)
 			if role == "" {
 				role = string(domain.NodeRolePrimary)
+			}
+			switch domain.NodeRole(role) {
+			case domain.NodeRolePrimary, domain.NodeRoleNode:
+			default:
+				return fmt.Errorf("--role must be one of: %s, %s", domain.NodeRolePrimary, domain.NodeRoleNode)
 			}
 
 			store, err := openStoreWithInit(cmd.Context(), *dbPath)
@@ -475,7 +481,7 @@ func newNodeAddCmd(dbPath *string) *cobra.Command {
 
 	cmd.Flags().StringVar(&name, "name", "", "Node name")
 	cmd.Flags().StringVar(&host, "host", "", "Node host or IP")
-	cmd.Flags().StringVar(&role, "role", string(domain.NodeRolePrimary), "Node role")
+	cmd.Flags().StringVar(&role, "role", string(domain.NodeRolePrimary), "Node role (primary|node)")
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "Whether node is enabled")
 	return cmd
 }
@@ -1744,13 +1750,14 @@ func setConfigDecoySiteDir(configPath, decoyPath string) error {
 	return nil
 }
 
-func runWizardNodesMenu(cmd *cobra.Command, dbPath string) error {
+func runWizardNodesMenu(cmd *cobra.Command, configPath, dbPath string) error {
 	in := bufio.NewReader(cmd.InOrStdin())
 	out := cmd.OutOrStdout()
 
 	for {
 		action, err := promptChoice(in, out, "Nodes", []string{
 			"list nodes",
+			"sync nodes",
 			"create node",
 			"open node",
 			"back",
@@ -1766,6 +1773,10 @@ func runWizardNodesMenu(cmd *cobra.Command, dbPath string) error {
 		switch action {
 		case "list nodes":
 			if err := runWizardNodesList(cmd, dbPath); err != nil {
+				return err
+			}
+		case "sync nodes":
+			if err := runWizardNodeSync(cmd, in, out, configPath, dbPath); err != nil {
 				return err
 			}
 		case "create node":
@@ -1787,6 +1798,247 @@ func runWizardNodesMenu(cmd *cobra.Command, dbPath string) error {
 			return nil
 		}
 	}
+}
+
+func runWizardNodeSync(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string) error {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	nodes, err := store.Nodes().List(cmd.Context())
+	if err != nil {
+		return err
+	}
+	enabledNodes := make([]domain.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if !node.Enabled {
+			continue
+		}
+		enabledNodes = append(enabledNodes, node)
+	}
+	if len(enabledNodes) == 0 {
+		fmt.Fprintln(out, "no enabled nodes found")
+		return nil
+	}
+
+	scope, err := promptChoice(in, out, "Sync scope", []string{"all enabled nodes with inbounds", "select nodes", "back"}, "all enabled nodes with inbounds")
+	if err != nil {
+		return err
+	}
+	if isBackOptionLabel(scope) {
+		return nil
+	}
+
+	selectedNodeIDs := []string(nil)
+	selectedNodes := make([]domain.Node, 0, len(enabledNodes))
+	if scope == "select nodes" {
+		fmt.Fprintln(out, "available enabled nodes:")
+		defaultIndexes := make([]string, 0, len(enabledNodes))
+		for i, node := range enabledNodes {
+			idx := i + 1
+			defaultIndexes = append(defaultIndexes, strconv.Itoa(idx))
+			fmt.Fprintf(out, "  %d) %s (%s, %s)\n", idx, node.ID, node.Name, node.Host)
+		}
+		selection, err := promptLine(in, out, "Select nodes (comma-separated numbers)", strings.Join(defaultIndexes, ","))
+		if err != nil {
+			return err
+		}
+		selectedIdx, err := parseIndexCSV(selection, len(enabledNodes))
+		if err != nil {
+			return err
+		}
+		if len(selectedIdx) == 0 {
+			fmt.Fprintln(out, "cancelled: no nodes selected")
+			return nil
+		}
+		selectedNodeIDs = make([]string, 0, len(selectedIdx))
+		for _, idx := range selectedIdx {
+			node := enabledNodes[idx-1]
+			selectedNodeIDs = append(selectedNodeIDs, node.ID)
+			selectedNodes = append(selectedNodes, node)
+		}
+	} else {
+		selectedNodes = append(selectedNodes, enabledNodes...)
+	}
+
+	sshUser, err := promptLine(in, out, "SSH user", "root")
+	if err != nil {
+		return err
+	}
+	sshUser = strings.TrimSpace(sshUser)
+	if sshUser == "" {
+		return fmt.Errorf("ssh user is required")
+	}
+	sshPort, err := promptInt(in, out, "SSH port", 22)
+	if err != nil {
+		return err
+	}
+	if sshPort < 1 || sshPort > 65535 {
+		return fmt.Errorf("ssh port must be in range 1..65535")
+	}
+	sshKey, err := promptLine(in, out, "SSH private key path (optional)", "~/.ssh/id_ed25519")
+	if err != nil {
+		return err
+	}
+	sshKey, generated, err := ensureWizardSSHKey(cmd.Context(), strings.TrimSpace(sshKey))
+	if err != nil {
+		return err
+	}
+	if generated {
+		fmt.Fprintf(out, "generated ssh key: %s\n", sshKey)
+	}
+	pubKeyPath := sshKey + ".pub"
+	if pubKey, readErr := os.ReadFile(pubKeyPath); readErr == nil {
+		fmt.Fprintf(out, "public key: %s\n", strings.TrimSpace(string(pubKey)))
+	}
+
+	runtimeDir, err := promptLine(in, out, "Remote runtime directory", "/etc/proxy-orchestrator/runtime")
+	if err != nil {
+		return err
+	}
+	runtimeDir = strings.TrimSpace(runtimeDir)
+	if runtimeDir == "" {
+		return fmt.Errorf("runtime directory is required")
+	}
+	restart, err := promptBool(in, out, "Restart required services on remote nodes (y/n)", true)
+	if err != nil {
+		return err
+	}
+	strictHostKey, err := promptBool(in, out, "Enable strict SSH host key checking (y/n)", false)
+	if err != nil {
+		return err
+	}
+	useSudoDefault := sshUser != "root"
+	remoteUseSudo, err := promptBool(in, out, "Use sudo on remote node for install/restart (y/n)", useSudoDefault)
+	if err != nil {
+		return err
+	}
+	if len(selectedNodes) > 0 {
+		copyNow, err := promptBool(in, out, "Install SSH public key to selected nodes now via ssh-copy-id (y/n)", generated)
+		if err != nil {
+			return err
+		}
+		if copyNow {
+			if err := runWizardSSHCopyID(cmd, out, selectedNodes, sshUser, sshPort, sshKey, strictHostKey); err != nil {
+				return err
+			}
+		}
+	}
+
+	args := []string{
+		"node",
+		"sync",
+		"--config", configPath,
+		"--db", dbPath,
+		"--ssh-user", sshUser,
+		"--ssh-port", strconv.Itoa(sshPort),
+		"--runtime-dir", runtimeDir,
+		fmt.Sprintf("--restart=%t", restart),
+		fmt.Sprintf("--strict-host-key=%t", strictHostKey),
+		fmt.Sprintf("--remote-sudo=%t", remoteUseSudo),
+	}
+	if strings.TrimSpace(sshKey) != "" {
+		args = append(args, "--ssh-key", strings.TrimSpace(sshKey))
+	}
+	if len(selectedNodeIDs) > 0 {
+		args = append(args, "--node-ids", strings.Join(selectedNodeIDs, ","))
+	}
+
+	return runProxyctlSubcommand(cmd, args...)
+}
+
+func ensureWizardSSHKey(ctx context.Context, keyPath string) (string, bool, error) {
+	resolved, err := expandHomePath(strings.TrimSpace(keyPath))
+	if err != nil {
+		return "", false, err
+	}
+	if strings.TrimSpace(resolved) == "" {
+		return "", false, fmt.Errorf("ssh key path is required")
+	}
+
+	if _, statErr := os.Stat(resolved); statErr == nil {
+		if _, pubErr := os.Stat(resolved + ".pub"); pubErr == nil {
+			return resolved, false, nil
+		}
+		pubOut, genPubErr := runCommandOutput(ctx, "ssh-keygen", "-y", "-f", resolved)
+		if genPubErr != nil {
+			return "", false, fmt.Errorf("read public key from %s: %w", resolved, genPubErr)
+		}
+		if err := os.WriteFile(resolved+".pub", []byte(strings.TrimSpace(pubOut)+"\n"), 0o644); err != nil {
+			return "", false, fmt.Errorf("write ssh public key %s.pub: %w", resolved, err)
+		}
+		return resolved, false, nil
+	} else if !os.IsNotExist(statErr) {
+		return "", false, fmt.Errorf("stat ssh key %s: %w", resolved, statErr)
+	}
+
+	if _, err := lookPath("ssh-keygen"); err != nil {
+		return "", false, fmt.Errorf("ssh-keygen is required to generate key %s: %w", resolved, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(resolved), 0o700); err != nil {
+		return "", false, fmt.Errorf("create ssh key directory: %w", err)
+	}
+
+	comment := fmt.Sprintf("proxyctl-auto-%d", time.Now().UTC().Unix())
+	genCmd := exec.CommandContext(ctx, "ssh-keygen", "-t", "ed25519", "-N", "", "-f", resolved, "-C", comment)
+	if out, err := genCmd.CombinedOutput(); err != nil {
+		return "", false, fmt.Errorf("generate ssh key %s: %w\n%s", resolved, err, strings.TrimSpace(string(out)))
+	}
+	return resolved, true, nil
+}
+
+func expandHomePath(path string) (string, error) {
+	value := strings.TrimSpace(path)
+	if value == "" {
+		return "", nil
+	}
+	if value == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home dir: %w", err)
+		}
+		return home, nil
+	}
+	if strings.HasPrefix(value, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home dir: %w", err)
+		}
+		return filepath.Join(home, value[2:]), nil
+	}
+	return value, nil
+}
+
+func runWizardSSHCopyID(cmd *cobra.Command, out io.Writer, nodes []domain.Node, sshUser string, sshPort int, sshKeyPath string, strictHostKey bool) error {
+	if _, err := lookPath("ssh-copy-id"); err != nil {
+		fmt.Fprintln(out, "ssh-copy-id not found; skipping automatic key install")
+		fmt.Fprintf(out, "manual fallback: ssh-copy-id -i %s.pub -p %d %s@<node-host>\n", sshKeyPath, sshPort, sshUser)
+		return nil
+	}
+
+	pubPath := strings.TrimSpace(sshKeyPath) + ".pub"
+	for _, node := range nodes {
+		host := strings.TrimSpace(node.Host)
+		if host == "" {
+			continue
+		}
+		args := []string{"-i", pubPath, "-p", strconv.Itoa(sshPort)}
+		if !strictHostKey {
+			args = append(args, "-o", "StrictHostKeyChecking=accept-new")
+		}
+		args = append(args, fmt.Sprintf("%s@%s", sshUser, host))
+		fmt.Fprintf(out, "installing ssh key: node=%s host=%s\n", node.ID, host)
+		copyCmd := exec.CommandContext(cmd.Context(), "ssh-copy-id", args...)
+		copyCmd.Stdin = cmd.InOrStdin()
+		copyCmd.Stdout = cmd.OutOrStdout()
+		copyCmd.Stderr = cmd.ErrOrStderr()
+		if err := copyCmd.Run(); err != nil {
+			return fmt.Errorf("ssh-copy-id failed for node %s (%s): %w", node.ID, host, err)
+		}
+	}
+	return nil
 }
 
 func runWizardNodesList(cmd *cobra.Command, dbPath string) error {
@@ -1825,7 +2077,8 @@ func runWizardNodeAdd(cmd *cobra.Command, dbPath string) error {
 	if err != nil {
 		return err
 	}
-	role, err := promptLine(in, out, "Node role", "primary")
+	roleOptions, defaultRole := wizardNodeRoleOptions(string(domain.NodeRolePrimary))
+	role, err := promptChoice(in, out, "Node role", roleOptions, defaultRole)
 	if err != nil {
 		return err
 	}
@@ -1996,7 +2249,8 @@ func runWizardEditNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPa
 	if err != nil {
 		return domain.Node{}, err
 	}
-	role, err := promptLine(in, out, "Node role", string(node.Role))
+	roleOptions, defaultRole := wizardNodeRoleOptions(string(node.Role))
+	role, err := promptChoice(in, out, "Node role", roleOptions, defaultRole)
 	if err != nil {
 		return domain.Node{}, err
 	}
@@ -2019,6 +2273,24 @@ func runWizardEditNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPa
 	}
 	fmt.Fprintf(out, "node updated: id=%s name=%s host=%s role=%s enabled=%t\n", updated.ID, updated.Name, updated.Host, updated.Role, updated.Enabled)
 	return updated, nil
+}
+
+func wizardNodeRoleOptions(current string) ([]string, string) {
+	options := []string{
+		string(domain.NodeRolePrimary),
+		string(domain.NodeRoleNode),
+	}
+	defaultRole := strings.TrimSpace(current)
+	if defaultRole == "" {
+		defaultRole = string(domain.NodeRolePrimary)
+	}
+	for _, option := range options {
+		if option == defaultRole {
+			return options, defaultRole
+		}
+	}
+	options = append(options, defaultRole)
+	return options, defaultRole
 }
 
 func runWizardSetNodeEnabled(cmd *cobra.Command, out io.Writer, dbPath string, node domain.Node, enabled bool) (domain.Node, error) {
@@ -2082,14 +2354,22 @@ func runWizardDeleteNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer, db
 func runWizardInboundsMenu(cmd *cobra.Command, configPath, dbPath string) error {
 	in := bufio.NewReader(cmd.InOrStdin())
 	out := cmd.OutOrStdout()
+	appCfg, err := loadAppConfig(configPath)
+	if err != nil {
+		return err
+	}
+	nodeMode := appCfg.DeploymentMode == config.DeploymentModeNode
 
 	for {
-		action, err := promptChoice(in, out, "Inbounds", []string{
+		options := []string{
 			"list inbounds",
-			"create inbound",
-			"open inbound",
-			"back",
-		}, "list inbounds")
+		}
+		if nodeMode {
+			options = append(options, "list panel-synced inbounds")
+		}
+		options = append(options, "create inbound", "open inbound", "back")
+
+		action, err := promptChoice(in, out, "Inbounds", options, "list inbounds")
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				fmt.Fprintln(out, "inbounds menu cancelled")
@@ -2101,6 +2381,10 @@ func runWizardInboundsMenu(cmd *cobra.Command, configPath, dbPath string) error 
 		switch action {
 		case "list inbounds":
 			if err := runProxyctlSubcommand(cmd, "inbound", "list", "--db", dbPath); err != nil {
+				return err
+			}
+		case "list panel-synced inbounds":
+			if err := printWizardSyncedInbounds(out, appCfg.Paths.RuntimeDir); err != nil {
 				return err
 			}
 		case "create inbound":

@@ -6,6 +6,7 @@ type NodeRole string
 
 const (
 	NodeRolePrimary NodeRole = "primary"
+	NodeRoleNode    NodeRole = "node"
 )
 
 type Protocol string

@@ -260,16 +260,25 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 
 	singLocal := filepath.Join(tmpDir, "sing-box.json")
 	xrayLocal := filepath.Join(tmpDir, "xray.json")
+	syncedInboundsLocal := filepath.Join(tmpDir, syncedInboundsFileName)
 	if err := os.WriteFile(singLocal, selectPreviewContent(singResult), 0o600); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("write temp sing-box for node %q: %w", req.Node.ID, err)
 	}
 	if err := os.WriteFile(xrayLocal, selectPreviewContent(xrayResult), 0o600); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("write temp xray for node %q: %w", req.Node.ID, err)
 	}
+	syncedPayload, err := buildSyncedInboundsSnapshot(req)
+	if err != nil {
+		return nodeSyncResult{}, fmt.Errorf("build synced inbounds snapshot for node %q: %w", req.Node.ID, err)
+	}
+	if err := os.WriteFile(syncedInboundsLocal, syncedPayload, 0o600); err != nil {
+		return nodeSyncResult{}, fmt.Errorf("write temp synced inbounds snapshot for node %q: %w", req.Node.ID, err)
+	}
 
 	target := fmt.Sprintf("%s@%s", opts.sshUser, host)
 	singRemoteTmp := fmt.Sprintf("/tmp/proxyctl-%s-sing-box.json", req.Node.ID)
 	xrayRemoteTmp := fmt.Sprintf("/tmp/proxyctl-%s-xray.json", req.Node.ID)
+	syncedInboundsRemoteTmp := fmt.Sprintf("/tmp/proxyctl-%s-%s", req.Node.ID, syncedInboundsFileName)
 
 	scpBase := buildSCPArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
 	singSCP := append(append([]string{}, scpBase...), singLocal, fmt.Sprintf("%s:%s", target, singRemoteTmp))
@@ -279,6 +288,10 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 	xraySCP := append(append([]string{}, scpBase...), xrayLocal, fmt.Sprintf("%s:%s", target, xrayRemoteTmp))
 	if out, err := runExecCombined(ctx, "scp", xraySCP...); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("upload xray config to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
+	}
+	syncedSCP := append(append([]string{}, scpBase...), syncedInboundsLocal, fmt.Sprintf("%s:%s", target, syncedInboundsRemoteTmp))
+	if out, err := runExecCombined(ctx, "scp", syncedSCP...); err != nil {
+		return nodeSyncResult{}, fmt.Errorf("upload synced inbounds snapshot to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 
 	prefix := ""
@@ -291,7 +304,8 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 		prefix + "mkdir -p " + shellQuote(opts.runtimeDir),
 		prefix + "install -m 640 " + shellQuote(singRemoteTmp) + " " + shellQuote(filepath.Join(opts.runtimeDir, "sing-box.json")),
 		prefix + "install -m 640 " + shellQuote(xrayRemoteTmp) + " " + shellQuote(filepath.Join(opts.runtimeDir, "xray.json")),
-		"rm -f " + shellQuote(singRemoteTmp) + " " + shellQuote(xrayRemoteTmp),
+		prefix + "install -m 640 " + shellQuote(syncedInboundsRemoteTmp) + " " + shellQuote(filepath.Join(opts.runtimeDir, syncedInboundsFileName)),
+		"rm -f " + shellQuote(singRemoteTmp) + " " + shellQuote(xrayRemoteTmp) + " " + shellQuote(syncedInboundsRemoteTmp),
 	}, "; ")
 
 	sshArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
@@ -320,6 +334,7 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 		Uploaded: []string{
 			filepath.Join(opts.runtimeDir, "sing-box.json"),
 			filepath.Join(opts.runtimeDir, "xray.json"),
+			filepath.Join(opts.runtimeDir, syncedInboundsFileName),
 		},
 		Restart: restartedUnits,
 	}, nil

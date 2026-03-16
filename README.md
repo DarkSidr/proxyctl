@@ -106,10 +106,12 @@ nginx -v
 
 ## Installer
 
+Examples below are shown for running as `root` (no `sudo`).
+
 One-command installer entrypoint (stage 11):
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh)
 ```
 
 Installer now asks interactively (when a TTY is available):
@@ -122,7 +124,7 @@ Installer now asks interactively (when a TTY is available):
 For non-interactive provisioning you can pass values via env:
 
 ```bash
-sudo PROXYCTL_PROMPT_CONFIG=0 \
+PROXYCTL_PROMPT_CONFIG=0 \
   PROXYCTL_DEPLOYMENT_MODE=panel+node \
   PROXYCTL_REVERSE_PROXY=caddy \
   PROXYCTL_PUBLIC_DOMAIN=darksidr.icu \
@@ -143,27 +145,27 @@ It also includes `uninstall proxyctl` for full VPS cleanup.
 Reliable update/reinstall (forces source rebuild):
 
 ```bash
-sudo PROXYCTL_REINSTALL_BINARY=1 PROXYCTL_INSTALL_CHANNEL=source \
+PROXYCTL_REINSTALL_BINARY=1 PROXYCTL_INSTALL_CHANNEL=source \
   bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh)
 ```
 
 Enable periodic self-update timer:
 
 ```bash
-sudo PROXYCTL_ENABLE_AUTO_UPDATE=1 \
+PROXYCTL_ENABLE_AUTO_UPDATE=1 \
   bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh)
 ```
 
 For local/offline setup from this repository:
 
 ```bash
-sudo bash install.sh
+bash install.sh
 ```
 
 Quick self-update from CLI:
 
 ```bash
-sudo proxyctl update
+proxyctl update
 ```
 
 `proxyctl update` first checks latest GitHub release version and skips reinstall when current version is already up to date.
@@ -213,10 +215,10 @@ reverse_proxy: caddy
 If you want to update decoy web assets from the upstream repository before rendering:
 
 ```bash
-sudo mkdir -p /usr/share/proxy-orchestrator/templates/decoy-site/assets
-sudo curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/templates/decoy-site/index.html \
+mkdir -p /usr/share/proxy-orchestrator/templates/decoy-site/assets
+curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/templates/decoy-site/index.html \
   -o /usr/share/proxy-orchestrator/templates/decoy-site/index.html
-sudo curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/templates/decoy-site/assets/style.css \
+curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/templates/decoy-site/assets/style.css \
   -o /usr/share/proxy-orchestrator/templates/decoy-site/assets/style.css
 ```
 
