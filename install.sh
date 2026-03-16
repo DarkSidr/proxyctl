@@ -116,6 +116,10 @@ prompt_with_default() {
 
 prompt_reverse_proxy_choice() {
   local current="$1"
+  local prompt_target="/dev/stderr"
+  if [[ -w /dev/tty ]]; then
+    prompt_target="/dev/tty"
+  fi
   local default_choice="1"
   case "${current}" in
     caddy) default_choice="1" ;;
@@ -124,10 +128,15 @@ prompt_reverse_proxy_choice() {
   local answer=""
   local normalized
   while true; do
-    printf 'Reverse proxy:\n' >&2
-    printf '  1) caddy\n' >&2
-    printf '  2) nginx\n' >&2
-    read -r -p "Select reverse proxy [${default_choice}]: " answer || true
+    printf 'Reverse proxy:\n' >"${prompt_target}"
+    printf '  1) caddy\n' >"${prompt_target}"
+    printf '  2) nginx\n' >"${prompt_target}"
+    printf 'Select reverse proxy [%s]: ' "${default_choice}" >"${prompt_target}"
+    if [[ -r /dev/tty ]]; then
+      IFS= read -r answer < /dev/tty || true
+    else
+      IFS= read -r answer || true
+    fi
     answer="${answer:-${default_choice}}"
     normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
     case "${normalized}" in
@@ -148,6 +157,10 @@ prompt_reverse_proxy_choice() {
 
 prompt_deployment_mode_choice() {
   local current="$1"
+  local prompt_target="/dev/stderr"
+  if [[ -w /dev/tty ]]; then
+    prompt_target="/dev/tty"
+  fi
   local default_choice="1"
   case "${current}" in
     panel+node) default_choice="1" ;;
@@ -157,11 +170,16 @@ prompt_deployment_mode_choice() {
   local answer=""
   local normalized
   while true; do
-    printf 'Deployment mode:\n' >&2
-    printf '  1) panel+node\n' >&2
-    printf '  2) panel\n' >&2
-    printf '  3) node\n' >&2
-    read -r -p "Select deployment mode [${default_choice}]: " answer || true
+    printf 'Deployment mode:\n' >"${prompt_target}"
+    printf '  1) panel+node\n' >"${prompt_target}"
+    printf '  2) panel\n' >"${prompt_target}"
+    printf '  3) node\n' >"${prompt_target}"
+    printf 'Select deployment mode [%s]: ' "${default_choice}" >"${prompt_target}"
+    if [[ -r /dev/tty ]]; then
+      IFS= read -r answer < /dev/tty || true
+    else
+      IFS= read -r answer || true
+    fi
     answer="${answer:-${default_choice}}"
     normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
     case "${normalized}" in
@@ -186,6 +204,10 @@ prompt_deployment_mode_choice() {
 
 prompt_decoy_template_choice() {
   local current="$1"
+  local prompt_target="/dev/stderr"
+  if [[ -w /dev/tty ]]; then
+    prompt_target="/dev/tty"
+  fi
   local default_choice="1"
   case "${current}" in
     random) default_choice="1" ;;
@@ -197,13 +219,18 @@ prompt_decoy_template_choice() {
   local answer=""
   local normalized
   while true; do
-    printf 'Decoy site template:\n' >&2
-    printf '  1) random\n' >&2
-    printf '  2) login\n' >&2
-    printf '  3) pizza-club\n' >&2
-    printf '  4) support-desk\n' >&2
-    printf '  5) default\n' >&2
-    read -r -p "Select decoy template [${default_choice}]: " answer || true
+    printf 'Decoy site template:\n' >"${prompt_target}"
+    printf '  1) random\n' >"${prompt_target}"
+    printf '  2) login\n' >"${prompt_target}"
+    printf '  3) pizza-club\n' >"${prompt_target}"
+    printf '  4) support-desk\n' >"${prompt_target}"
+    printf '  5) default\n' >"${prompt_target}"
+    printf 'Select decoy template [%s]: ' "${default_choice}" >"${prompt_target}"
+    if [[ -r /dev/tty ]]; then
+      IFS= read -r answer < /dev/tty || true
+    else
+      IFS= read -r answer || true
+    fi
     answer="${answer:-${default_choice}}"
     normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
     case "${normalized}" in
