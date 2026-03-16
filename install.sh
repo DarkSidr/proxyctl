@@ -1001,6 +1001,7 @@ IFS=$'\n\t'
 
 TAG="proxyctl-uninstall"
 YES=0
+REMOVE_RUNTIME_PACKAGES=0
 
 log() {
   printf '[%s] %s\n' "${TAG}" "$*"
@@ -1014,6 +1015,7 @@ fail() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --yes) YES=1 ;;
+    --remove-runtime-packages) REMOVE_RUNTIME_PACKAGES=1 ;;
     *) fail "unknown argument: $1" ;;
   esac
   shift
@@ -1048,6 +1050,13 @@ if [[ -d /root/.ssh ]]; then
 fi
 
 rm -rf /caddy /var/lib/caddy /var/log/caddy /etc/ssl/caddy
+
+if [[ "${REMOVE_RUNTIME_PACKAGES}" -eq 1 ]]; then
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y caddy nginx || true
+    DEBIAN_FRONTEND=noninteractive apt-get autoremove -y || true
+  fi
+fi
 
 log "proxyctl purge completed"
 EOT
@@ -1287,29 +1296,29 @@ Installation finished.
 
 Next steps:
 1. Review configuration:
-   sudo editor /etc/proxy-orchestrator/proxyctl.yaml
+   editor /etc/proxy-orchestrator/proxyctl.yaml
 2. Bootstrap data model:
-   sudo proxyctl node add --name primary --host <server-domain-or-ip>
-   sudo proxyctl user add --name <username>
+   proxyctl node add --name primary --host <server-domain-or-ip>
+   proxyctl user add --name <username>
 3. Add inbounds and render runtime files:
-   sudo proxyctl inbound add --type vless --transport ws --node-id <node-id> --port 8443 --path /ws
-   sudo proxyctl render --config /etc/proxy-orchestrator/proxyctl.yaml
+   proxyctl inbound add --type vless --transport ws --node-id <node-id> --port 8443 --path /ws
+   proxyctl render --config /etc/proxy-orchestrator/proxyctl.yaml
 4. Start only required services:
-   sudo systemctl enable --now proxyctl-sing-box.service
+   systemctl enable --now proxyctl-sing-box.service
    # proxyctl-caddy.service is auto-enabled on install by default
-   sudo systemctl status proxyctl-caddy.service --no-pager
+   systemctl status proxyctl-caddy.service --no-pager
 5. Apply validated runtime update flow:
-   sudo proxyctl validate --config /etc/proxy-orchestrator/proxyctl.yaml
-   sudo proxyctl apply --config /etc/proxy-orchestrator/proxyctl.yaml
+   proxyctl validate --config /etc/proxy-orchestrator/proxyctl.yaml
+   proxyctl apply --config /etc/proxy-orchestrator/proxyctl.yaml
 6. Optional auto-update timer:
-   sudo PROXYCTL_ENABLE_AUTO_UPDATE=1 bash install.sh
-   sudo systemctl list-timers proxyctl-self-update.timer
+   PROXYCTL_ENABLE_AUTO_UPDATE=1 bash install.sh
+   systemctl list-timers proxyctl-self-update.timer
 7. Decoy template library and switching:
    # Upload your own templates here: <name>/index.html + <name>/assets/style.css
    ls -la /usr/share/proxy-orchestrator/decoy-templates
-   sudo proxyctl wizard   # Settings -> switch decoy template
+   proxyctl wizard   # Settings -> switch decoy template
 8. Full uninstall (purge):
-   sudo proxyctl uninstall --yes
+   proxyctl uninstall --yes
 EOF_STEPS
 }
 
