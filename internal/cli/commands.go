@@ -4186,7 +4186,7 @@ func buildSubscriptionPublicURL(cfg config.AppConfig, accessToken string) string
 	if !cfg.Public.HTTPS {
 		scheme = "http"
 	}
-	return fmt.Sprintf("%s://%s/sub/%s.txt", scheme, domain, token)
+	return fmt.Sprintf("%s://%s/sub/%s", scheme, domain, token)
 }
 
 func cleanupUserSubscriptionFiles(userID, subscriptionDir, storedOutputPath, accessToken string) (int, error) {

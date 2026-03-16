@@ -587,6 +587,10 @@ func (s *Service) writePublicTXT(accessToken string, content []byte) (string, er
 	if err := layout.WriteAtomicFile(publicPath, content, 0o644); err != nil {
 		return "", fmt.Errorf("write public subscription txt: %w", err)
 	}
+	publicPathNoExt := filepath.Join(publicDir, token)
+	if err := layout.WriteAtomicFile(publicPathNoExt, content, 0o644); err != nil {
+		return "", fmt.Errorf("write public subscription token file: %w", err)
+	}
 	mirrorDir := strings.TrimSpace(s.publicMirrorDir)
 	if mirrorDir != "" {
 		if err := os.MkdirAll(mirrorDir, 0o755); err != nil {
@@ -595,6 +599,10 @@ func (s *Service) writePublicTXT(accessToken string, content []byte) (string, er
 		mirrorPath := filepath.Join(mirrorDir, token+".txt")
 		if err := layout.WriteAtomicFile(mirrorPath, content, 0o644); err != nil {
 			return "", fmt.Errorf("write mirror public subscription txt: %w", err)
+		}
+		mirrorPathNoExt := filepath.Join(mirrorDir, token)
+		if err := layout.WriteAtomicFile(mirrorPathNoExt, content, 0o644); err != nil {
+			return "", fmt.Errorf("write mirror public subscription token file: %w", err)
 		}
 	}
 	return publicPath, nil
