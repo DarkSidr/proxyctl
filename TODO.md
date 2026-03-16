@@ -69,6 +69,10 @@
   - if `Reality = yes` and `engine=sing-box`, block immediately in wizard with clear message before final command run;
   - offer actionable fallback in prompt (`switch engine to xray` or `disable Reality`);
   - avoid late failure (`--reality requires --engine xray`) after full interactive input.
+- Fix inconsistent `0) back` behavior in wizard selection submenus:
+  - in some selectors (for example `Select inbound`) `0` is shown but rejected as invalid value;
+  - unify back/cancel behavior across all `promptChoice`-based menus so `0` always exits to parent menu;
+  - add regression tests for nested menus (`users -> open user -> attach to existing inbound`, and similar flows).
 
 ### 5) Storage and migrations
 - Add DB fields to `users` table:
