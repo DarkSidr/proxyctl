@@ -1949,6 +1949,71 @@ func runWizardNodeSync(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 	return runProxyctlSubcommand(cmd, args...)
 }
 
+func runWizardAutoSyncNodeWorkers(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, appCfg config.AppConfig) error {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	nodes, err := store.Nodes().List(cmd.Context())
+	if err != nil {
+		return err
+	}
+
+	workerNodeIDs := make([]string, 0, len(nodes))
+	workerNodes := make([]domain.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if !node.Enabled || node.Role != domain.NodeRoleNode {
+			continue
+		}
+		workerNodeIDs = append(workerNodeIDs, node.ID)
+		workerNodes = append(workerNodes, node)
+	}
+	if len(workerNodeIDs) == 0 {
+		fmt.Fprintln(out, "no enabled worker nodes (role=node) found; skipping remote sync")
+		return nil
+	}
+
+	sshKey, generated, err := ensureWizardSSHKey(cmd.Context(), "~/.ssh/id_ed25519")
+	if err != nil {
+		return err
+	}
+	if generated {
+		fmt.Fprintf(out, "generated ssh key: %s\n", sshKey)
+		installKeyNow, promptErr := promptBool(in, out, "Install generated SSH key on worker nodes now via ssh-copy-id (y/n)", true)
+		if promptErr != nil {
+			return promptErr
+		}
+		if installKeyNow {
+			if err := runWizardSSHCopyID(cmd, out, workerNodes, "root", 22, sshKey, false); err != nil {
+				return err
+			}
+		}
+	}
+
+	runtimeDir := strings.TrimSpace(appCfg.Paths.RuntimeDir)
+	if runtimeDir == "" {
+		runtimeDir = "/etc/proxy-orchestrator/runtime"
+	}
+
+	args := []string{
+		"node",
+		"sync",
+		"--config", configPath,
+		"--db", dbPath,
+		"--node-ids", strings.Join(workerNodeIDs, ","),
+		"--ssh-user", "root",
+		"--ssh-port", "22",
+		"--ssh-key", sshKey,
+		"--runtime-dir", runtimeDir,
+		"--restart=true",
+		"--strict-host-key=false",
+		"--remote-sudo=false",
+	}
+	return runProxyctlSubcommand(cmd, args...)
+}
+
 func ensureWizardSSHKey(ctx context.Context, keyPath string) (string, bool, error) {
 	resolved, err := expandHomePath(strings.TrimSpace(keyPath))
 	if err != nil {
@@ -2104,6 +2169,16 @@ func runWizardNodeAdd(cmd *cobra.Command, dbPath string) error {
 	}
 
 	fmt.Fprintf(out, "added node: id=%s name=%s host=%s role=%s enabled=%t created_at=%s\n", created.ID, created.Name, created.Host, created.Role, created.Enabled, created.CreatedAt.Format(time.RFC3339))
+	setupDefault := created.Role == domain.NodeRoleNode
+	setupNow, err := promptBool(in, out, "Setup SSH key access now (y/n)", setupDefault)
+	if err != nil {
+		return err
+	}
+	if setupNow {
+		if err := runWizardSetupNodeSSH(cmd, in, out, created); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2151,6 +2226,7 @@ func runWizardNodeMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPa
 		action, err := promptChoice(in, out, fmt.Sprintf("Node %s (%s)", node.Name, node.ID), []string{
 			"show details",
 			"edit node",
+			"setup ssh access",
 			enabledAction,
 			"delete node",
 			"back",
@@ -2174,6 +2250,10 @@ func runWizardNodeMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPa
 				return err
 			}
 			node = updated
+		case "setup ssh access":
+			if err := runWizardSetupNodeSSH(cmd, in, out, node); err != nil {
+				return err
+			}
 		case "enable node", "disable node":
 			updated, err := runWizardSetNodeEnabled(cmd, out, dbPath, node, action == "enable node")
 			if err != nil {
@@ -2192,6 +2272,48 @@ func runWizardNodeMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPa
 			return nil
 		}
 	}
+}
+
+func runWizardSetupNodeSSH(cmd *cobra.Command, in *bufio.Reader, out io.Writer, node domain.Node) error {
+	sshUser, err := promptLine(in, out, "SSH user", "root")
+	if err != nil {
+		return err
+	}
+	sshUser = strings.TrimSpace(sshUser)
+	if sshUser == "" {
+		return fmt.Errorf("ssh user is required")
+	}
+
+	sshPort, err := promptInt(in, out, "SSH port", 22)
+	if err != nil {
+		return err
+	}
+	if sshPort < 1 || sshPort > 65535 {
+		return fmt.Errorf("ssh port must be in range 1..65535")
+	}
+
+	sshKey, err := promptLine(in, out, "SSH private key path (optional)", "~/.ssh/id_ed25519")
+	if err != nil {
+		return err
+	}
+	sshKey, generated, err := ensureWizardSSHKey(cmd.Context(), strings.TrimSpace(sshKey))
+	if err != nil {
+		return err
+	}
+	if generated {
+		fmt.Fprintf(out, "generated ssh key: %s\n", sshKey)
+	}
+	pubKeyPath := sshKey + ".pub"
+	if pubKey, readErr := os.ReadFile(pubKeyPath); readErr == nil {
+		fmt.Fprintf(out, "public key: %s\n", strings.TrimSpace(string(pubKey)))
+	}
+
+	strictHostKey, err := promptBool(in, out, "Enable strict SSH host key checking (y/n)", false)
+	if err != nil {
+		return err
+	}
+
+	return runWizardSSHCopyID(cmd, out, []domain.Node{node}, sshUser, sshPort, sshKey, strictHostKey)
 }
 
 func runWizardShowNodeDetails(cmd *cobra.Command, out io.Writer, dbPath, nodeID string) error {
@@ -2398,6 +2520,17 @@ func runWizardInboundsMenu(cmd *cobra.Command, configPath, dbPath string) error 
 			if applyNow {
 				if err := runProxyctlSubcommand(cmd, "apply", "--config", configPath, "--db", dbPath); err != nil {
 					return err
+				}
+				if appCfg.DeploymentMode != config.DeploymentModeNode {
+					syncNow, syncPromptErr := promptBool(in, out, "Sync remote node configs now (y/n)", true)
+					if syncPromptErr != nil {
+						return syncPromptErr
+					}
+					if syncNow {
+						if syncErr := runWizardAutoSyncNodeWorkers(cmd, in, out, configPath, dbPath, appCfg); syncErr != nil {
+							return syncErr
+						}
+					}
 				}
 			} else {
 				fmt.Fprintln(out, "inbound saved; run `proxyctl apply --config /etc/proxy-orchestrator/proxyctl.yaml` to activate it")
