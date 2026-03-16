@@ -124,9 +124,9 @@ prompt_reverse_proxy_choice() {
   local answer=""
   local normalized
   while true; do
-    printf 'Reverse proxy:\n'
-    printf '  1) caddy\n'
-    printf '  2) nginx\n'
+    printf 'Reverse proxy:\n' >&2
+    printf '  1) caddy\n' >&2
+    printf '  2) nginx\n' >&2
     read -r -p "Select reverse proxy [${default_choice}]: " answer || true
     answer="${answer:-${default_choice}}"
     normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
@@ -157,10 +157,10 @@ prompt_deployment_mode_choice() {
   local answer=""
   local normalized
   while true; do
-    printf 'Deployment mode:\n'
-    printf '  1) panel+node\n'
-    printf '  2) panel\n'
-    printf '  3) node\n'
+    printf 'Deployment mode:\n' >&2
+    printf '  1) panel+node\n' >&2
+    printf '  2) panel\n' >&2
+    printf '  3) node\n' >&2
     read -r -p "Select deployment mode [${default_choice}]: " answer || true
     answer="${answer:-${default_choice}}"
     normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
@@ -197,12 +197,12 @@ prompt_decoy_template_choice() {
   local answer=""
   local normalized
   while true; do
-    printf 'Decoy site template:\n'
-    printf '  1) random\n'
-    printf '  2) login\n'
-    printf '  3) pizza-club\n'
-    printf '  4) support-desk\n'
-    printf '  5) default\n'
+    printf 'Decoy site template:\n' >&2
+    printf '  1) random\n' >&2
+    printf '  2) login\n' >&2
+    printf '  3) pizza-club\n' >&2
+    printf '  4) support-desk\n' >&2
+    printf '  5) default\n' >&2
     read -r -p "Select decoy template [${default_choice}]: " answer || true
     answer="${answer:-${default_choice}}"
     normalized="$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')"
