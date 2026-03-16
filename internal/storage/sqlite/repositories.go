@@ -322,6 +322,18 @@ func (r *inboundRepository) List(ctx context.Context) ([]domain.Inbound, error) 
 	return inbounds, nil
 }
 
+func (r *inboundRepository) Delete(ctx context.Context, inboundID string) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM inbounds WHERE id = ?`, strings.TrimSpace(inboundID))
+	if err != nil {
+		return false, fmt.Errorf("delete inbound: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("delete inbound rows affected: %w", err)
+	}
+	return affected > 0, nil
+}
+
 func (r *credentialRepository) Create(ctx context.Context, credential domain.Credential) (domain.Credential, error) {
 	if credential.ID == "" {
 		credential.ID = newID()

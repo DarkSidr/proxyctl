@@ -2945,6 +2945,7 @@ func runWizardInboundMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, c
 		action, err := promptChoice(in, out, fmt.Sprintf("Inbound %s (%s/%s %s:%d)", inbound.ID, inbound.Type, inbound.Transport, inbound.Domain, inbound.Port), []string{
 			"show users",
 			"attach user",
+			"delete inbound",
 			"back",
 		}, "show users")
 		if err != nil {
@@ -2964,10 +2965,56 @@ func runWizardInboundMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, c
 			if err := runWizardAttachUserToSpecificInbound(cmd, in, out, configPath, dbPath, inbound); err != nil {
 				return err
 			}
+		case "delete inbound":
+			deleted, err := runWizardDeleteInbound(cmd, in, out, dbPath, inbound)
+			if err != nil {
+				return err
+			}
+			if deleted {
+				return nil
+			}
 		default:
 			return nil
 		}
 	}
+}
+
+func runWizardDeleteInbound(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string, inbound domain.Inbound) (bool, error) {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return false, err
+	}
+	defer store.Close()
+
+	credentials, err := store.Credentials().List(cmd.Context())
+	if err != nil {
+		return false, err
+	}
+	attachedCreds := 0
+	for _, cred := range credentials {
+		if cred.InboundID == inbound.ID {
+			attachedCreds++
+		}
+	}
+	if attachedCreds > 0 {
+		fmt.Fprintf(out, "warning: inbound has %d attached credential(s); deleting inbound will remove them too\n", attachedCreds)
+	}
+
+	confirm, err := promptBool(in, out, "Delete inbound (y/n)", false)
+	if err != nil {
+		return false, err
+	}
+	if !confirm {
+		fmt.Fprintln(out, "cancelled")
+		return false, nil
+	}
+
+	deleted, err := store.Inbounds().Delete(cmd.Context(), inbound.ID)
+	if err != nil {
+		return false, err
+	}
+	fmt.Fprintf(out, "inbound deleted: id=%s deleted=%t\n", inbound.ID, deleted)
+	return deleted, nil
 }
 
 func runWizardAttachUserToInbound(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
