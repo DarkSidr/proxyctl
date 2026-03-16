@@ -307,6 +307,19 @@ https://<public.domain>/sub/<token>
 
 This endpoint serves plain-text URI list suitable for subscription clients (for example NekoBox).
 
+Manual and auto subscription refresh:
+
+```bash
+# One-shot refresh for one user
+proxyctl subscription refresh <user>
+
+# One-shot refresh for all users
+proxyctl subscription refresh --all
+
+# Auto refresh loop for all users (until Ctrl+C)
+proxyctl subscription refresh --all --interval 10m
+```
+
 ## Hysteria2 TLS (sing-box)
 
 `hysteria2` terminates TLS in `sing-box`, so certificate paths must be present in runtime config.

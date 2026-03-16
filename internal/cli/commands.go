@@ -2924,6 +2924,7 @@ func runWizardGenerateSubscriptionProfile(cmd *cobra.Command, _ *bufio.Reader, o
 		store,
 		appCfg.Paths.Subscription,
 		subscriptionPublicDir(appCfg.Paths.Subscription),
+		subscriptionDecoyDir(appCfg.Paths.DecoySiteDir),
 		singbox.New(nil),
 		xray.New(nil),
 	)
@@ -3147,6 +3148,7 @@ func runWizardGenerateUserSubscription(cmd *cobra.Command, in *bufio.Reader, out
 		store,
 		appCfg.Paths.Subscription,
 		subscriptionPublicDir(appCfg.Paths.Subscription),
+		subscriptionDecoyDir(appCfg.Paths.DecoySiteDir),
 		singbox.New(nil),
 		xray.New(nil),
 	)
@@ -4163,6 +4165,14 @@ func subscriptionPublicDir(subscriptionDir string) string {
 	return filepath.Join(strings.TrimSpace(subscriptionDir), "public")
 }
 
+func subscriptionDecoyDir(decoySiteDir string) string {
+	decoy := strings.TrimSpace(decoySiteDir)
+	if decoy == "" {
+		return ""
+	}
+	return filepath.Join(decoy, "sub")
+}
+
 func buildSubscriptionPublicURL(cfg config.AppConfig, accessToken string) string {
 	token := strings.TrimSpace(accessToken)
 	if token == "" {
@@ -4176,7 +4186,7 @@ func buildSubscriptionPublicURL(cfg config.AppConfig, accessToken string) string
 	if !cfg.Public.HTTPS {
 		scheme = "http"
 	}
-	return fmt.Sprintf("%s://%s/sub/%s", scheme, domain, token)
+	return fmt.Sprintf("%s://%s/sub/%s.txt", scheme, domain, token)
 }
 
 func cleanupUserSubscriptionFiles(userID, subscriptionDir, storedOutputPath, accessToken string) (int, error) {
@@ -4760,7 +4770,7 @@ func newRenderCmd(configPath, dbPath *string) *cobra.Command {
 				return err
 			}
 
-			subscriptions, err := renderSubscriptions(cmd.Context(), store, appCfg.Paths.Subscription, "")
+			subscriptions, err := renderSubscriptions(cmd.Context(), store, appCfg.Paths.Subscription, appCfg.Paths.DecoySiteDir, "")
 			if err != nil {
 				return err
 			}
@@ -4845,7 +4855,7 @@ func newPreviewCmd(configPath, dbPath *string) *cobra.Command {
 				return err
 			}
 
-			subscriptions, err := renderSubscriptions(cmd.Context(), store, appCfg.Paths.Subscription, "preview")
+			subscriptions, err := renderSubscriptions(cmd.Context(), store, appCfg.Paths.Subscription, appCfg.Paths.DecoySiteDir, "preview")
 			if err != nil {
 				return err
 			}
@@ -4934,6 +4944,7 @@ func newSubscriptionCmd(configPath, dbPath *string) *cobra.Command {
 		newSubscriptionGenerateCmd(configPath, dbPath),
 		newSubscriptionShowCmd(configPath, dbPath),
 		newSubscriptionExportCmd(configPath, dbPath),
+		newSubscriptionRefreshCmd(configPath, dbPath),
 	)
 	return cmd
 }
@@ -4962,6 +4973,7 @@ func newSubscriptionGenerateCmd(configPath, dbPath *string) *cobra.Command {
 				store,
 				appCfg.Paths.Subscription,
 				subscriptionPublicDir(appCfg.Paths.Subscription),
+				subscriptionDecoyDir(appCfg.Paths.DecoySiteDir),
 				singbox.New(nil),
 				xray.New(nil),
 			)
@@ -5009,6 +5021,7 @@ func newSubscriptionShowCmd(configPath, dbPath *string) *cobra.Command {
 				store,
 				appCfg.Paths.Subscription,
 				subscriptionPublicDir(appCfg.Paths.Subscription),
+				subscriptionDecoyDir(appCfg.Paths.DecoySiteDir),
 				singbox.New(nil),
 				xray.New(nil),
 			)
@@ -5064,6 +5077,7 @@ func newSubscriptionExportCmd(configPath, dbPath *string) *cobra.Command {
 				store,
 				appCfg.Paths.Subscription,
 				subscriptionPublicDir(appCfg.Paths.Subscription),
+				subscriptionDecoyDir(appCfg.Paths.DecoySiteDir),
 				singbox.New(nil),
 				xray.New(nil),
 			)
@@ -5085,6 +5099,189 @@ func newSubscriptionExportCmd(configPath, dbPath *string) *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", subscriptionservice.DefaultProfileName, "Subscription profile name")
 	cmd.Flags().StringVar(&inboundsCSV, "inbounds", "", "Comma-separated inbound IDs for named profile creation/update")
 	return cmd
+}
+
+func newSubscriptionRefreshCmd(configPath, dbPath *string) *cobra.Command {
+	allUsers := false
+	interval := ""
+
+	cmd := &cobra.Command{
+		Use:   "refresh [user]",
+		Short: "Refresh subscription files manually or on interval",
+		Long:  "Regenerates subscription files for one user or all users. With --interval, keeps refreshing automatically.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if allUsers {
+				if len(args) > 0 {
+					return fmt.Errorf("user argument cannot be used with --all")
+				}
+				return nil
+			}
+			if len(args) != 1 {
+				return fmt.Errorf("accepts exactly one user argument unless --all is set")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appCfg, err := loadAppConfig(*configPath)
+			if err != nil {
+				return err
+			}
+
+			runOnce := func() error {
+				store, err := openStoreWithInit(cmd.Context(), *dbPath)
+				if err != nil {
+					return err
+				}
+				defer store.Close()
+
+				users, err := store.Users().List(cmd.Context())
+				if err != nil {
+					return err
+				}
+				credentials, err := store.Credentials().List(cmd.Context())
+				if err != nil {
+					return err
+				}
+				userHasCredential := make(map[string]bool, len(credentials))
+				for _, cred := range credentials {
+					userHasCredential[cred.UserID] = true
+				}
+
+				targets := make([]domain.User, 0)
+				if allUsers {
+					targets = users
+				} else {
+					user, resolveErr := findUserByRef(users, strings.TrimSpace(args[0]))
+					if resolveErr != nil {
+						return resolveErr
+					}
+					targets = append(targets, user)
+				}
+
+				svc := subscriptionservice.New(
+					store,
+					appCfg.Paths.Subscription,
+					subscriptionPublicDir(appCfg.Paths.Subscription),
+					subscriptionDecoyDir(appCfg.Paths.DecoySiteDir),
+					singbox.New(nil),
+					xray.New(nil),
+				)
+
+				refreshedUsers := 0
+				refreshedProfiles := 0
+				for _, user := range targets {
+					if !userHasCredential[user.ID] {
+						fmt.Fprintf(cmd.OutOrStdout(), "skip user=%s (%s): no credentials\n", user.Name, user.ID)
+						continue
+					}
+					profiles, profErr := subscriptionProfilesForUser(appCfg.Paths.Subscription, user.ID)
+					if profErr != nil {
+						return profErr
+					}
+					for _, profile := range profiles {
+						generated, genErr := svc.GenerateProfile(cmd.Context(), user.ID, profile, nil)
+						if genErr != nil {
+							return genErr
+						}
+						refreshedProfiles++
+						fmt.Fprintf(cmd.OutOrStdout(), "refreshed user=%s (%s) profile=%s path=%s\n", generated.User.Name, generated.User.ID, generated.ProfileName, generated.TXTPath)
+					}
+					refreshedUsers++
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "refresh done: users=%d profiles=%d\n", refreshedUsers, refreshedProfiles)
+				return nil
+			}
+
+			if err := runOnce(); err != nil {
+				return err
+			}
+			if strings.TrimSpace(interval) == "" {
+				return nil
+			}
+
+			d, err := time.ParseDuration(strings.TrimSpace(interval))
+			if err != nil {
+				return fmt.Errorf("parse --interval: %w", err)
+			}
+			if d < time.Second {
+				return fmt.Errorf("--interval must be at least 1s")
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "auto refresh enabled: interval=%s\n", d)
+
+			ticker := time.NewTicker(d)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-cmd.Context().Done():
+					return nil
+				case <-ticker.C:
+					if err := runOnce(); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "refresh error: %v\n", err)
+					}
+				}
+			}
+		},
+	}
+	cmd.Flags().BoolVar(&allUsers, "all", false, "Refresh subscriptions for all users")
+	cmd.Flags().StringVar(&interval, "interval", "", "Auto-refresh interval, e.g. 5m or 1h")
+	return cmd
+}
+
+func findUserByRef(users []domain.User, ref string) (domain.User, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return domain.User{}, fmt.Errorf("user reference is required")
+	}
+	for _, user := range users {
+		if user.ID == ref {
+			return user, nil
+		}
+	}
+	matches := make([]domain.User, 0, 1)
+	for _, user := range users {
+		if user.Name == ref {
+			matches = append(matches, user)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return domain.User{}, fmt.Errorf("multiple users found with name %q; use user id", ref)
+	}
+	return domain.User{}, fmt.Errorf("user not found: %s", ref)
+}
+
+func subscriptionProfilesForUser(subscriptionDir, userID string) ([]string, error) {
+	profiles := []string{subscriptionservice.DefaultProfileName}
+	profilesPath := filepath.Join(strings.TrimSpace(subscriptionDir), "profiles", strings.TrimSpace(userID)+".json")
+	content, err := os.ReadFile(profilesPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return profiles, nil
+		}
+		return nil, fmt.Errorf("read profiles file: %w", err)
+	}
+
+	var file wizardSubscriptionProfilesFile
+	if err := json.Unmarshal(content, &file); err != nil {
+		return nil, fmt.Errorf("decode profiles file: %w", err)
+	}
+
+	seen := map[string]struct{}{subscriptionservice.DefaultProfileName: {}}
+	for _, entry := range file.Profiles {
+		name := wizardNormalizeProfileName(entry.Name)
+		if name == "" || name == subscriptionservice.DefaultProfileName {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		profiles = append(profiles, name)
+	}
+	sort.Strings(profiles[1:])
+	return profiles, nil
 }
 
 func buildRenderRequest(ctx context.Context, store *sqlite.Store) (renderer.BuildRequest, error) {
@@ -5177,7 +5374,7 @@ func selectPreviewContent(result renderer.RenderResult) []byte {
 	return []byte("{}\n")
 }
 
-func renderSubscriptions(ctx context.Context, store *sqlite.Store, dataDir, suffix string) ([]string, error) {
+func renderSubscriptions(ctx context.Context, store *sqlite.Store, dataDir, decoyDir, suffix string) ([]string, error) {
 	users, err := store.Users().List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
@@ -5196,6 +5393,7 @@ func renderSubscriptions(ctx context.Context, store *sqlite.Store, dataDir, suff
 		store,
 		dataDir,
 		subscriptionPublicDir(dataDir),
+		subscriptionDecoyDir(decoyDir),
 		singbox.New(nil),
 		xray.New(nil),
 	)

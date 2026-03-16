@@ -32,6 +32,7 @@ type Service struct {
 	store           storage.Store
 	dataDir         string
 	publicDir       string
+	publicMirrorDir string
 	singBoxRenderer renderer.Service
 	xrayRenderer    renderer.Service
 	now             func() time.Time
@@ -102,7 +103,7 @@ type jsonSubscriptionItem struct {
 	URI          string          `json:"uri"`
 }
 
-func New(store storage.Store, dataDir, publicDir string, singBoxRenderer renderer.Service, xrayRenderer renderer.Service) *Service {
+func New(store storage.Store, dataDir, publicDir, publicMirrorDir string, singBoxRenderer renderer.Service, xrayRenderer renderer.Service) *Service {
 	publicDir = strings.TrimSpace(publicDir)
 	if publicDir == "" {
 		publicDir = filepath.Join(strings.TrimSpace(dataDir), "public")
@@ -111,6 +112,7 @@ func New(store storage.Store, dataDir, publicDir string, singBoxRenderer rendere
 		store:           store,
 		dataDir:         dataDir,
 		publicDir:       publicDir,
+		publicMirrorDir: strings.TrimSpace(publicMirrorDir),
 		singBoxRenderer: singBoxRenderer,
 		xrayRenderer:    xrayRenderer,
 		now:             func() time.Time { return time.Now().UTC() },
@@ -584,6 +586,16 @@ func (s *Service) writePublicTXT(accessToken string, content []byte) (string, er
 	publicPath := filepath.Join(publicDir, token+".txt")
 	if err := layout.WriteAtomicFile(publicPath, content, 0o644); err != nil {
 		return "", fmt.Errorf("write public subscription txt: %w", err)
+	}
+	mirrorDir := strings.TrimSpace(s.publicMirrorDir)
+	if mirrorDir != "" {
+		if err := os.MkdirAll(mirrorDir, 0o755); err != nil {
+			return "", fmt.Errorf("create mirror public subscriptions directory: %w", err)
+		}
+		mirrorPath := filepath.Join(mirrorDir, token+".txt")
+		if err := layout.WriteAtomicFile(mirrorPath, content, 0o644); err != nil {
+			return "", fmt.Errorf("write mirror public subscription txt: %w", err)
+		}
 	}
 	return publicPath, nil
 }

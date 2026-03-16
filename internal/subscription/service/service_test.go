@@ -36,7 +36,7 @@ func TestGenerateBuildsSubscriptionFromMultipleInbounds(t *testing.T) {
 	mustCreateCredential(t, ctx, store, domain.Credential{ID: "cred-xhttp", UserID: user.ID, InboundID: inXHTTP.ID, Kind: domain.CredentialKindUUID, Secret: "22222222-2222-2222-2222-222222222222"})
 
 	dataDir := t.TempDir()
-	svc := New(store, dataDir, filepath.Join(dataDir, "public"), singbox.New(nil), xray.New(nil))
+	svc := New(store, dataDir, filepath.Join(dataDir, "public"), "", singbox.New(nil), xray.New(nil))
 
 	got, err := svc.Generate(ctx, user.Name)
 	if err != nil {
@@ -122,7 +122,7 @@ func TestExportJSONUpdatesStoredSubscriptionFormat(t *testing.T) {
 	mustCreateCredential(t, ctx, store, domain.Credential{ID: "cred-vless", UserID: user.ID, InboundID: inbound.ID, Kind: domain.CredentialKindUUID, Secret: "11111111-1111-1111-1111-111111111111"})
 
 	dataDir := t.TempDir()
-	svc := New(store, dataDir, filepath.Join(dataDir, "public"), singbox.New(nil), xray.New(nil))
+	svc := New(store, dataDir, filepath.Join(dataDir, "public"), "", singbox.New(nil), xray.New(nil))
 
 	exported, err := svc.Export(ctx, user.ID, FormatJSON)
 	if err != nil {
@@ -157,7 +157,7 @@ func TestGenerateKeepsExistingAccessToken(t *testing.T) {
 	mustCreateCredential(t, ctx, store, domain.Credential{ID: "cred-vless", UserID: user.ID, InboundID: inbound.ID, Kind: domain.CredentialKindUUID, Secret: "11111111-1111-1111-1111-111111111111"})
 
 	dataDir := t.TempDir()
-	svc := New(store, dataDir, filepath.Join(dataDir, "public"), singbox.New(nil), xray.New(nil))
+	svc := New(store, dataDir, filepath.Join(dataDir, "public"), "", singbox.New(nil), xray.New(nil))
 
 	first, err := svc.Generate(ctx, user.ID)
 	if err != nil {
@@ -187,7 +187,7 @@ func TestGenerateProfileFiltersInboundsAndReusesStoredProfileConfig(t *testing.T
 	mustCreateCredential(t, ctx, store, domain.Credential{ID: "cred-hy2", UserID: user.ID, InboundID: inHY2.ID, Kind: domain.CredentialKindPassword, Secret: "hy2-secret"})
 
 	dataDir := t.TempDir()
-	svc := New(store, dataDir, filepath.Join(dataDir, "public"), singbox.New(nil), xray.New(nil))
+	svc := New(store, dataDir, filepath.Join(dataDir, "public"), "", singbox.New(nil), xray.New(nil))
 
 	first, err := svc.GenerateProfile(ctx, user.ID, "mobile", []string{inVLESS.ID})
 	if err != nil {
