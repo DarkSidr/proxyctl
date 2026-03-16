@@ -1946,10 +1946,11 @@ func runWizardNodeSync(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 		args = append(args, "--node-ids", strings.Join(selectedNodeIDs, ","))
 	}
 
+	fmt.Fprintln(out, "starting node sync...")
 	return runProxyctlSubcommand(cmd, args...)
 }
 
-func runWizardAutoSyncNodeWorkers(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, appCfg config.AppConfig) error {
+func runWizardAutoSyncNodeWorkers(cmd *cobra.Command, out io.Writer, configPath, dbPath string, appCfg config.AppConfig) error {
 	store, err := openStoreWithInit(cmd.Context(), dbPath)
 	if err != nil {
 		return err
@@ -1962,13 +1963,11 @@ func runWizardAutoSyncNodeWorkers(cmd *cobra.Command, in *bufio.Reader, out io.W
 	}
 
 	workerNodeIDs := make([]string, 0, len(nodes))
-	workerNodes := make([]domain.Node, 0, len(nodes))
 	for _, node := range nodes {
 		if !node.Enabled || node.Role != domain.NodeRoleNode {
 			continue
 		}
 		workerNodeIDs = append(workerNodeIDs, node.ID)
-		workerNodes = append(workerNodes, node)
 	}
 	if len(workerNodeIDs) == 0 {
 		fmt.Fprintln(out, "no enabled worker nodes (role=node) found; skipping remote sync")
@@ -1980,16 +1979,7 @@ func runWizardAutoSyncNodeWorkers(cmd *cobra.Command, in *bufio.Reader, out io.W
 		return err
 	}
 	if generated {
-		fmt.Fprintf(out, "generated ssh key: %s\n", sshKey)
-		installKeyNow, promptErr := promptBool(in, out, "Install generated SSH key on worker nodes now via ssh-copy-id (y/n)", true)
-		if promptErr != nil {
-			return promptErr
-		}
-		if installKeyNow {
-			if err := runWizardSSHCopyID(cmd, out, workerNodes, "root", 22, sshKey, false); err != nil {
-				return err
-			}
-		}
+		return fmt.Errorf("ssh key %s was generated but not installed on worker nodes; run `nodes -> open node -> setup ssh access`", sshKey)
 	}
 
 	runtimeDir := strings.TrimSpace(appCfg.Paths.RuntimeDir)
@@ -2011,6 +2001,7 @@ func runWizardAutoSyncNodeWorkers(cmd *cobra.Command, in *bufio.Reader, out io.W
 		"--strict-host-key=false",
 		"--remote-sudo=false",
 	}
+	fmt.Fprintln(out, "starting node sync...")
 	return runProxyctlSubcommand(cmd, args...)
 }
 
@@ -2095,6 +2086,7 @@ func runWizardSSHCopyID(cmd *cobra.Command, out io.Writer, nodes []domain.Node, 
 		}
 		args = append(args, fmt.Sprintf("%s@%s", sshUser, host))
 		fmt.Fprintf(out, "installing ssh key: node=%s host=%s\n", node.ID, host)
+		fmt.Fprintln(out, "waiting for ssh password prompt (if key is not installed yet)...")
 		copyCmd := exec.CommandContext(cmd.Context(), "ssh-copy-id", args...)
 		copyCmd.Stdin = cmd.InOrStdin()
 		copyCmd.Stdout = cmd.OutOrStdout()
@@ -2102,6 +2094,7 @@ func runWizardSSHCopyID(cmd *cobra.Command, out io.Writer, nodes []domain.Node, 
 		if err := copyCmd.Run(); err != nil {
 			return fmt.Errorf("ssh-copy-id failed for node %s (%s): %w", node.ID, host, err)
 		}
+		fmt.Fprintf(out, "ssh key install completed: node=%s host=%s\n", node.ID, host)
 	}
 	return nil
 }
@@ -2522,14 +2515,9 @@ func runWizardInboundsMenu(cmd *cobra.Command, configPath, dbPath string) error 
 					return err
 				}
 				if appCfg.DeploymentMode != config.DeploymentModeNode {
-					syncNow, syncPromptErr := promptBool(in, out, "Sync remote node configs now (y/n)", true)
-					if syncPromptErr != nil {
-						return syncPromptErr
-					}
-					if syncNow {
-						if syncErr := runWizardAutoSyncNodeWorkers(cmd, in, out, configPath, dbPath, appCfg); syncErr != nil {
-							return syncErr
-						}
+					fmt.Fprintln(out, "auto-syncing remote worker nodes (role=node)...")
+					if syncErr := runWizardAutoSyncNodeWorkers(cmd, out, configPath, dbPath, appCfg); syncErr != nil {
+						fmt.Fprintf(out, "warning: auto-sync skipped: %v\n", syncErr)
 					}
 				}
 			} else {
@@ -5343,25 +5331,31 @@ func selectPrimaryNode(nodes []domain.Node) (domain.Node, error) {
 	}
 
 	enabled := make([]domain.Node, 0, len(nodes))
+	enabledPrimary := make([]domain.Node, 0, len(nodes))
 	for _, node := range nodes {
-		if node.Enabled {
-			enabled = append(enabled, node)
+		if !node.Enabled {
+			continue
+		}
+		enabled = append(enabled, node)
+		if node.Role == domain.NodeRolePrimary {
+			enabledPrimary = append(enabledPrimary, node)
 		}
 	}
 	if len(enabled) == 0 {
 		return domain.Node{}, fmt.Errorf("no enabled nodes found")
 	}
 
-	sort.Slice(enabled, func(i, j int) bool {
-		if enabled[i].Role != enabled[j].Role {
-			return enabled[i].Role < enabled[j].Role
+	candidates := enabled
+	if len(enabledPrimary) > 0 {
+		candidates = enabledPrimary
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].CreatedAt != candidates[j].CreatedAt {
+			return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
 		}
-		if enabled[i].CreatedAt != enabled[j].CreatedAt {
-			return enabled[i].CreatedAt.Before(enabled[j].CreatedAt)
-		}
-		return enabled[i].ID < enabled[j].ID
+		return candidates[i].ID < candidates[j].ID
 	})
-	return enabled[0], nil
+	return candidates[0], nil
 }
 
 func selectPreviewContent(result renderer.RenderResult) []byte {

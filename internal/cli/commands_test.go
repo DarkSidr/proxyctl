@@ -9,11 +9,66 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"proxyctl/internal/config"
 	"proxyctl/internal/domain"
 	applyruntime "proxyctl/internal/runtime/apply"
 )
+
+func TestSelectPrimaryNodePrefersPrimaryRole(t *testing.T) {
+	t.Parallel()
+
+	nodes := []domain.Node{
+		{
+			ID:        "node-worker",
+			Role:      domain.NodeRoleNode,
+			Enabled:   true,
+			CreatedAt: time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:        "node-primary",
+			Role:      domain.NodeRolePrimary,
+			Enabled:   true,
+			CreatedAt: time.Date(2026, 3, 16, 10, 1, 0, 0, time.UTC),
+		},
+	}
+
+	got, err := selectPrimaryNode(nodes)
+	if err != nil {
+		t.Fatalf("selectPrimaryNode() error: %v", err)
+	}
+	if got.ID != "node-primary" {
+		t.Fatalf("selected node id = %s, want node-primary", got.ID)
+	}
+}
+
+func TestSelectPrimaryNodeFallsBackWhenNoPrimary(t *testing.T) {
+	t.Parallel()
+
+	nodes := []domain.Node{
+		{
+			ID:        "node-b",
+			Role:      domain.NodeRoleNode,
+			Enabled:   true,
+			CreatedAt: time.Date(2026, 3, 16, 10, 2, 0, 0, time.UTC),
+		},
+		{
+			ID:        "node-a",
+			Role:      domain.NodeRoleNode,
+			Enabled:   true,
+			CreatedAt: time.Date(2026, 3, 16, 10, 1, 0, 0, time.UTC),
+		},
+	}
+
+	got, err := selectPrimaryNode(nodes)
+	if err != nil {
+		t.Fatalf("selectPrimaryNode() error: %v", err)
+	}
+	if got.ID != "node-a" {
+		t.Fatalf("selected node id = %s, want node-a", got.ID)
+	}
+}
 
 func TestPromptChoiceShowsBackOnlyAsZero(t *testing.T) {
 	t.Parallel()
