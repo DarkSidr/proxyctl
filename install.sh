@@ -1049,7 +1049,7 @@ ensure_directories() {
 }
 
 install_systemd_units() {
-  local singbox_content xray_content caddy_content nginx_content
+  local singbox_content xray_content caddy_content nginx_content panel_content
 
   singbox_content="$(read_packaged_file_or_default "${SCRIPT_DIR}/packaging/systemd/proxyctl-sing-box.service" "$(cat <<'EOT'
 [Unit]
@@ -1127,10 +1127,28 @@ WantedBy=multi-user.target
 EOT
 )")"
 
+  panel_content="$(read_packaged_file_or_default "${SCRIPT_DIR}/packaging/systemd/proxyctl-panel.service" "$(cat <<'EOT'
+[Unit]
+Description=proxyctl web panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/proxyctl panel serve --config /etc/proxy-orchestrator/proxyctl.yaml
+Restart=always
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
+EOT
+)")"
+
   write_managed_file "${SYSTEMD_DIR}/proxyctl-sing-box.service" 0644 "${singbox_content}"
   write_managed_file "${SYSTEMD_DIR}/proxyctl-xray.service" 0644 "${xray_content}"
   write_managed_file "${SYSTEMD_DIR}/proxyctl-caddy.service" 0644 "${caddy_content}"
   write_managed_file "${SYSTEMD_DIR}/proxyctl-nginx.service" 0644 "${nginx_content}"
+  write_managed_file "${SYSTEMD_DIR}/proxyctl-panel.service" 0644 "${panel_content}"
 
   systemctl daemon-reload
   log "Installed systemd units and reloaded daemon"
@@ -1181,6 +1199,7 @@ for unit in \
   proxyctl-xray.service \
   proxyctl-caddy.service \
   proxyctl-nginx.service \
+  proxyctl-panel.service \
   proxyctl-self-update.service \
   proxyctl-self-update.timer \
   caddy.service \
@@ -1437,6 +1456,28 @@ disable_stock_reverse_proxy_services() {
   done
 }
 
+ensure_panel_service() {
+  local panel_unit="proxyctl-panel.service"
+
+  if ! systemctl list-unit-files "${panel_unit}" >/dev/null 2>&1; then
+    warn "${panel_unit} is not installed; skipping panel service management"
+    return 0
+  fi
+
+  if [[ "${SELECTED_DEPLOYMENT_MODE}" == "node" ]]; then
+    log "Deployment mode is node; disabling ${panel_unit}"
+    systemctl disable --now "${panel_unit}" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  log "Ensuring ${panel_unit} is enabled and running"
+  if systemctl enable --now "${panel_unit}" >/dev/null 2>&1; then
+    log "${panel_unit} is enabled and active"
+  else
+    warn "Failed to enable/start ${panel_unit}. Check: systemctl status ${panel_unit}"
+  fi
+}
+
 init_sqlite() {
   [[ -x "${BIN_DIR}/proxyctl" ]] || fail "proxyctl binary is not installed"
 
@@ -1472,7 +1513,9 @@ Next steps:
 4. Start only required services:
    systemctl enable --now proxyctl-sing-box.service
    # proxyctl-caddy.service is auto-enabled on install by default
+   # proxyctl-panel.service is auto-enabled in panel/panel+node modes
    systemctl status proxyctl-caddy.service --no-pager
+   systemctl status proxyctl-panel.service --no-pager
 5. Apply validated runtime update flow:
    proxyctl validate --config /etc/proxy-orchestrator/proxyctl.yaml
    proxyctl apply --config /etc/proxy-orchestrator/proxyctl.yaml
@@ -1535,6 +1578,7 @@ main() {
   install_default_runtime_files
   write_panel_credentials
   ensure_selected_reverse_proxy_service
+  ensure_panel_service
   init_sqlite
 
   log "Installed ${APP_NAME} ${PROXYCTL_VERSION} layout on host"

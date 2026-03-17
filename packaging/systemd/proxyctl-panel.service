@@ -1,0 +1,13 @@
+[Unit]
+Description=proxyctl web panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/proxyctl panel serve --config /etc/proxy-orchestrator/proxyctl.yaml
+Restart=always
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

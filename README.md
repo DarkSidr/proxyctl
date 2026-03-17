@@ -418,6 +418,8 @@ Read-only panel is available via:
 proxyctl panel serve --config /etc/proxy-orchestrator/proxyctl.yaml
 ```
 
+On installer-based hosts (`panel` / `panel+node` deployment modes), `proxyctl-panel.service` is installed and enabled automatically.
+
 Defaults:
 - bind: `127.0.0.1:<PANEL_PORT>` from `/etc/proxy-orchestrator/panel-admin.env`
 - base path: `PANEL_PATH` from the same file
