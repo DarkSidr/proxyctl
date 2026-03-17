@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -49,6 +51,7 @@ type panelPageData struct {
 	Title         string
 	ActiveTab     string
 	BasePath      string
+	LogoutPath    string
 	ListenAddr    string
 	GeneratedAt   string
 	Counts        panelCounts
@@ -112,11 +115,29 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
       display: flex;
       justify-content: space-between;
       gap: 12px;
-      align-items: end;
+      align-items: center;
       margin-bottom: 18px;
+    }
+    .top-right {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }
     .title { margin: 0; font-size: 1.45rem; letter-spacing: 0.02em; }
     .meta { color: var(--muted); font-size: 0.9rem; }
+    .logout {
+      appearance: none;
+      border: 1px solid #0ea5e9;
+      color: #e0f2fe;
+      background: linear-gradient(180deg, #075985, #0c4a6e);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 0.82rem;
+      cursor: pointer;
+    }
+    .logout:hover { filter: brightness(1.08); }
     .nav {
       display: flex;
       flex-wrap: wrap;
@@ -179,7 +200,14 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
   <div class="wrap">
     <div class="top">
       <h1 class="title">proxyctl visual panel (phase 0)</h1>
-      <div class="meta">{{.GeneratedAt}} | listen {{.ListenAddr}}</div>
+      <div class="top-right">
+        <div class="meta">{{.GeneratedAt}} | listen {{.ListenAddr}}</div>
+        {{if .LogoutPath}}
+        <form method="post" action="{{.LogoutPath}}">
+          <button type="submit" class="logout">logout</button>
+        </form>
+        {{end}}
+      </div>
     </div>
 
     <nav class="nav">
@@ -278,6 +306,97 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
 </body>
 </html>`))
 
+var panelLoginTmpl = template.Must(template.New("panel-login").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>proxyctl panel login</title>
+  <style>
+    :root {
+      --bg-a: #0f172a;
+      --bg-b: #111827;
+      --card: rgba(17, 24, 39, 0.85);
+      --line: rgba(148, 163, 184, 0.26);
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --brand: #22d3ee;
+      --err: #fb7185;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 5% 0%, #0ea5e930 0%, transparent 40%),
+        radial-gradient(circle at 100% 10%, #22c55e22 0%, transparent 35%),
+        linear-gradient(160deg, var(--bg-a), var(--bg-b));
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+    .card {
+      width: 100%;
+      max-width: 380px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--card);
+      backdrop-filter: blur(8px);
+      padding: 18px;
+    }
+    h1 { margin: 0 0 6px; font-size: 1.25rem; letter-spacing: 0.01em; }
+    .sub { color: var(--muted); margin-bottom: 14px; font-size: 0.92rem; }
+    label { display: block; margin: 10px 0 6px; color: var(--muted); font-size: 0.85rem; }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: rgba(15, 23, 42, 0.62);
+      border-radius: 10px;
+      color: var(--text);
+      padding: 10px 11px;
+      outline: none;
+    }
+    input:focus { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
+    .btn {
+      width: 100%;
+      margin-top: 14px;
+      border: 1px solid #0891b2;
+      color: #e0f2fe;
+      background: linear-gradient(180deg, #0891b2, #155e75);
+      border-radius: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .err {
+      margin-top: 10px;
+      color: var(--err);
+      border: 1px solid #be123c66;
+      background: #88133733;
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 0.88rem;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>proxyctl panel</h1>
+    <div class="sub">sign in to continue</div>
+    <form method="post" action="{{.LoginPath}}">
+      <label for="login">username</label>
+      <input id="login" name="login" type="text" autocomplete="username" required>
+      <label for="password">password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button class="btn" type="submit">Sign In</button>
+      {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+    </form>
+  </main>
+</body>
+</html>`))
+
 func newPanelCmd(configPath, dbPath *string) *cobra.Command {
 	cmd := newGroupCmd(
 		"panel",
@@ -332,6 +451,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			usersPath := panelJoin(basePath, "users")
 			inboundsPath := panelJoin(basePath, "inbounds")
 			subsPath := panelJoin(basePath, "subscriptions")
+			logoutPath := panelJoin(basePath, "logout")
 
 			handlePage := func(tab string) http.HandlerFunc {
 				return func(w http.ResponseWriter, r *http.Request) {
@@ -348,6 +468,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						Title:         "proxyctl panel",
 						ActiveTab:     tab,
 						BasePath:      basePath,
+						LogoutPath:    logoutPath,
 						ListenAddr:    listenAddr,
 						GeneratedAt:   time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
 						Counts:        snapshot.counts,
@@ -385,7 +506,10 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 
 			var handler http.Handler = panelMux
 			if requireAuth {
-				handler = basicAuthMiddleware(panelInfo.Login, panelInfo.Password, handler)
+				auth := newPanelCookieAuth(panelInfo.Login, panelInfo.Password, basePath, dashboardPath, logoutPath)
+				panelMux.HandleFunc(auth.loginPath, auth.handleLogin)
+				panelMux.HandleFunc(logoutPath, auth.handleLogout)
+				handler = auth.middleware(panelMux)
 			}
 
 			httpServer := &http.Server{
@@ -397,7 +521,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "panel listen: %s\n", listenAddr)
 			fmt.Fprintf(cmd.OutOrStdout(), "panel path: %s\n", basePath)
 			if requireAuth {
-				fmt.Fprintln(cmd.OutOrStdout(), "panel auth: enabled (basic auth)")
+				fmt.Fprintln(cmd.OutOrStdout(), "panel auth: enabled (login page)")
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "terminate with Ctrl+C")
 			return httpServer.ListenAndServe()
@@ -613,21 +737,128 @@ func isValidPanelPortString(raw string) bool {
 	return n >= 1 && n <= 65535
 }
 
-func basicAuthMiddleware(login, password string, next http.Handler) http.Handler {
-	expectedUser := []byte(strings.TrimSpace(login))
-	expectedPass := []byte(strings.TrimSpace(password))
+type panelCookieAuth struct {
+	expectedUser  []byte
+	expectedPass  []byte
+	cookieName    string
+	sessionValue  []byte
+	basePath      string
+	dashboardPath string
+	loginPath     string
+	logoutPath    string
+}
+
+type panelLoginData struct {
+	LoginPath string
+	Error     string
+}
+
+func newPanelCookieAuth(login, password, basePath, dashboardPath, logoutPath string) panelCookieAuth {
+	return panelCookieAuth{
+		expectedUser:  []byte(strings.TrimSpace(login)),
+		expectedPass:  []byte(strings.TrimSpace(password)),
+		cookieName:    "proxyctl_panel_session",
+		sessionValue:  []byte(newPanelSessionToken()),
+		basePath:      normalizePanelBasePath(basePath),
+		dashboardPath: dashboardPath,
+		loginPath:     panelJoin(basePath, "login"),
+		logoutPath:    logoutPath,
+	}
+}
+
+func newPanelSessionToken() string {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
+
+func (a panelCookieAuth) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		if !ok {
-			w.Header().Set("WWW-Authenticate", `Basic realm="proxyctl-panel"`)
-			http.Error(w, "authentication required", http.StatusUnauthorized)
+		if r.URL.Path == a.loginPath || r.URL.Path == a.logoutPath {
+			next.ServeHTTP(w, r)
 			return
 		}
-		if subtle.ConstantTimeCompare([]byte(user), expectedUser) != 1 || subtle.ConstantTimeCompare([]byte(pass), expectedPass) != 1 {
-			w.Header().Set("WWW-Authenticate", `Basic realm="proxyctl-panel"`)
-			http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		if a.isAuthenticated(r) {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		http.Redirect(w, r, a.loginPath, http.StatusFound)
 	})
+}
+
+func (a panelCookieAuth) isAuthenticated(r *http.Request) bool {
+	cookie, err := r.Cookie(a.cookieName)
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(cookie.Value), a.sessionValue) == 1
+}
+
+func (a panelCookieAuth) setSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     a.cookieName,
+		Value:    string(a.sessionValue),
+		Path:     a.basePath,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   86400,
+	})
+}
+
+func (a panelCookieAuth) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     a.cookieName,
+		Value:    "",
+		Path:     a.basePath,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+func (a panelCookieAuth) renderLogin(w http.ResponseWriter, status int, errMsg string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_ = panelLoginTmpl.Execute(w, panelLoginData{
+		LoginPath: a.loginPath,
+		Error:     strings.TrimSpace(errMsg),
+	})
+}
+
+func (a panelCookieAuth) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		if a.isAuthenticated(r) {
+			http.Redirect(w, r, a.dashboardPath, http.StatusFound)
+			return
+		}
+		a.renderLogin(w, http.StatusOK, "")
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		a.renderLogin(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	login := strings.TrimSpace(r.FormValue("login"))
+	password := strings.TrimSpace(r.FormValue("password"))
+	if subtle.ConstantTimeCompare([]byte(login), a.expectedUser) != 1 || subtle.ConstantTimeCompare([]byte(password), a.expectedPass) != 1 {
+		a.renderLogin(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	a.setSessionCookie(w)
+	http.Redirect(w, r, a.dashboardPath, http.StatusFound)
+}
+
+func (a panelCookieAuth) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	a.clearSessionCookie(w)
+	http.Redirect(w, r, a.loginPath, http.StatusFound)
 }
