@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -71,6 +73,20 @@ type panelCredentialView struct {
 	Version     string
 }
 
+type panelNodeView struct {
+	ID      string
+	Name    string
+	Host    string
+	Role    string
+	Enabled bool
+	Version string
+}
+
+type panelSubscriptionState struct {
+	Exists  bool
+	Enabled bool
+}
+
 type panelCounts struct {
 	UsersTotal     int
 	UsersEnabled   int
@@ -88,15 +104,17 @@ type panelPageData struct {
 	Counts              panelCounts
 	Units               []panelUnitState
 	Users               []panelUserView
-	Nodes               []domain.Node
+	Nodes               []panelNodeView
 	Inbounds            []panelInboundView
 	Credentials         []panelCredentialView
 	Subscriptions       []string
+	SubscriptionState   map[string]panelSubscriptionState
 	OperationStatus     string
 	OperationMessage    string
 	OperationAt         string
 	DashboardActionPath string
 	UsersActionPath     string
+	NodesActionPath     string
 	InboundsActionPath  string
 	SubsActionPath      string
 	AppPath             string
@@ -794,6 +812,7 @@ type panelAppData struct {
 	SnapshotPath        string
 	DashboardActionPath string
 	UsersActionPath     string
+	NodesActionPath     string
 	InboundsActionPath  string
 	SubsActionPath      string
 }
@@ -888,6 +907,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     <div id="counts" class="grid"></div>
     <div class="tabs">
       <button type="button" class="tab active" data-tab="runtime">runtime</button>
+      <button type="button" class="tab" data-tab="nodes">nodes</button>
       <button type="button" class="tab" data-tab="inbounds">inbounds</button>
       <button type="button" class="tab" data-tab="users">users</button>
       <button type="button" class="tab" data-tab="credentials">credentials</button>
@@ -900,6 +920,25 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         <button class="btn" data-runtime="render">render</button>
         <button class="btn warn" data-runtime="validate">validate</button>
         <button class="btn err" data-runtime="apply">apply</button>
+      </div>
+    </section>
+
+    <section class="sec" data-tab-section="nodes">
+      <h2>nodes</h2>
+      <div class="pad row">
+        <input id="nodeName" type="text" placeholder="node name">
+        <input id="nodeHost" type="text" placeholder="node host/ip">
+        <select id="nodeRole">
+          <option value="node">node</option>
+          <option value="primary">primary</option>
+        </select>
+        <button id="createNodeBtn" class="btn">create node</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>name</th><th>host</th><th>role</th><th>enabled</th><th>actions</th></tr></thead>
+          <tbody id="nodesBody"></tbody>
+        </table>
       </div>
     </section>
 
@@ -973,8 +1012,13 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       <div class="pad row">
         <select id="subUser"></select>
         <button id="genSubBtn" class="btn">generate for user</button>
+        <input id="subProfile" type="text" placeholder="profile for selected (default: panel)">
+        <button id="genSelectedSubBtn" class="btn secondary">generate selected</button>
         <button id="refreshSubBtn" class="btn warn">refresh all</button>
+        <button id="subEnableBtn" class="btn">enable</button>
+        <button id="subDisableBtn" class="btn err">disable</button>
       </div>
+      <div class="pad" id="subInboundPick"></div>
       <div class="pad" id="subsList"></div>
     </section>
   </div>
@@ -985,6 +1029,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       snapshotPath: {{printf "%q" .SnapshotPath}},
       dashboardActionPath: {{printf "%q" .DashboardActionPath}},
       usersActionPath: {{printf "%q" .UsersActionPath}},
+      nodesActionPath: {{printf "%q" .NodesActionPath}},
       inboundsActionPath: {{printf "%q" .InboundsActionPath}},
       subsActionPath: {{printf "%q" .SubsActionPath}},
     };
@@ -1010,6 +1055,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         snapshotPath: joinPath(basePath, "api/snapshot"),
         dashboardActionPath: joinPath(basePath, "actions"),
         usersActionPath: joinPath(basePath, "users/action"),
+        nodesActionPath: joinPath(basePath, "nodes/action"),
         inboundsActionPath: joinPath(basePath, "inbounds/action"),
         subsActionPath: joinPath(basePath, "subscriptions/action"),
       };
@@ -1068,6 +1114,22 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       showOp(out.status, out.message);
       await getSnapshot();
     }
+    function updateSubButtons() {
+      if (!snapshot) return;
+      const subUserSel = document.getElementById("subUser");
+      if (!subUserSel) return;
+      const subStates = snapshot.SubscriptionState || {};
+      const selectedSubUser = (subUserSel.value || "").trim();
+      const state = selectedSubUser ? subStates[selectedSubUser] : null;
+      const enableBtn = document.getElementById("subEnableBtn");
+      const disableBtn = document.getElementById("subDisableBtn");
+      if (enableBtn) {
+        enableBtn.disabled = !!(state && state.Enabled);
+      }
+      if (disableBtn) {
+        disableBtn.disabled = !!(!state || !state.Exists || !state.Enabled);
+      }
+    }
     function render() {
       if (!snapshot) return;
       showOp(snapshot.OperationStatus, snapshot.OperationMessage);
@@ -1106,9 +1168,54 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         });
       });
 
+      document.getElementById("nodesBody").innerHTML = nodes.map((n) => (
+        '<tr>' +
+          '<td>'+esc(n.Name)+'</td>' +
+          '<td>'+esc(n.Host)+'</td>' +
+          '<td>'+esc(n.Role)+'</td>' +
+          '<td>'+ (n.Enabled ? "yes" : "no") +'</td>' +
+          '<td class="row">' +
+            '<button class="btn '+(n.Enabled ? 'warn' : '')+'" data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
+            '<button class="btn err" data-node-id="'+esc(n.ID)+'" data-node-version="'+esc(n.Version)+'">delete</button>' +
+          '</td>' +
+        '</tr>'
+      )).join("");
+      document.querySelectorAll("[data-node-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await postForm(cfg.nodesActionPath, {
+              op: "delete",
+              node_id: btn.getAttribute("data-node-id"),
+              version: btn.getAttribute("data-node-version"),
+            });
+          } catch (e) {
+            showOp("error", String(e));
+          }
+        });
+      });
+      document.querySelectorAll("[data-node-toggle-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            const enabledNow = btn.getAttribute("data-node-enabled") === "1";
+            await postForm(cfg.nodesActionPath, {
+              op: "set_enabled",
+              node_id: btn.getAttribute("data-node-toggle-id"),
+              version: btn.getAttribute("data-node-toggle-version"),
+              enabled: enabledNow ? "0" : "1",
+            });
+          } catch (e) {
+            showOp("error", String(e));
+          }
+        });
+      });
+
       const nodeSel = document.getElementById("inNode");
       if (nodeSel) {
+        const prev = nodeSel.value || "";
         nodeSel.innerHTML = nodes.map((n) => '<option value="'+esc(n.ID)+'">'+esc(n.Name)+' ('+esc(n.Host)+')</option>').join("");
+        if (prev && Array.from(nodeSel.options).some((o) => o.value === prev)) {
+          nodeSel.value = prev;
+        }
       }
       document.getElementById("inboundsBody").innerHTML = inbounds.map((i) => (
         '<tr>' +
@@ -1117,9 +1224,27 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           '<td>'+esc(i.NodeName)+'</td>' +
           '<td>'+esc(i.Domain)+'</td>' +
           '<td>'+esc(i.Port)+'</td>' +
-          '<td><button class="btn err" data-inbound-id="'+esc(i.ID)+'" data-inbound-version="'+esc(i.Version)+'">delete</button></td>' +
+          '<td class="row">' +
+            '<button class="btn '+(i.Enabled ? 'warn' : '')+'" data-inbound-toggle-id="'+esc(i.ID)+'" data-inbound-toggle-version="'+esc(i.Version)+'" data-inbound-enabled="'+(i.Enabled ? '1' : '0')+'">'+(i.Enabled ? 'disable' : 'enable')+'</button>' +
+            '<button class="btn err" data-inbound-id="'+esc(i.ID)+'" data-inbound-version="'+esc(i.Version)+'">delete</button>' +
+          '</td>' +
         '</tr>'
       )).join("");
+      document.querySelectorAll("[data-inbound-toggle-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            const enabledNow = btn.getAttribute("data-inbound-enabled") === "1";
+            await postForm(cfg.inboundsActionPath, {
+              op: "set_enabled",
+              inbound_id: btn.getAttribute("data-inbound-toggle-id"),
+              version: btn.getAttribute("data-inbound-toggle-version"),
+              enabled: enabledNow ? "0" : "1",
+            });
+          } catch (e) {
+            showOp("error", String(e));
+          }
+        });
+      });
       document.querySelectorAll("[data-inbound-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           try {
@@ -1137,14 +1262,26 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const subUserSel = document.getElementById("subUser");
       const credUserSel = document.getElementById("credUser");
       if (subUserSel) {
+        const prev = subUserSel.value || "";
         subUserSel.innerHTML = users.map((u) => '<option value="'+esc(u.ID)+'">'+esc(u.Name)+' ('+esc(u.ID)+')</option>').join("");
+        if (prev && Array.from(subUserSel.options).some((o) => o.value === prev)) {
+          subUserSel.value = prev;
+        }
       }
       if (credUserSel) {
+        const prev = credUserSel.value || "";
         credUserSel.innerHTML = users.map((u) => '<option value="'+esc(u.ID)+'">'+esc(u.Name)+' ('+esc(u.ID)+')</option>').join("");
+        if (prev && Array.from(credUserSel.options).some((o) => o.value === prev)) {
+          credUserSel.value = prev;
+        }
       }
       const credInboundSel = document.getElementById("credInbound");
       if (credInboundSel) {
+        const prev = credInboundSel.value || "";
         credInboundSel.innerHTML = inbounds.map((i) => '<option value="'+esc(i.ID)+'">'+esc(i.ID)+' '+esc(i.Type)+' '+esc(i.Domain)+':'+esc(i.Port)+'</option>').join("");
+        if (prev && Array.from(credInboundSel.options).some((o) => o.value === prev)) {
+          credInboundSel.value = prev;
+        }
       }
       document.getElementById("credsBody").innerHTML = creds.map((c) => (
         '<tr>' +
@@ -1179,6 +1316,22 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           '<button class="btn secondary" data-copy="'+esc(s)+'">copy</button>' +
         '</div>'
       )).join("");
+      updateSubButtons();
+
+      const pick = document.getElementById("subInboundPick");
+      if (pick) {
+        pick.innerHTML = [
+          '<div class="label" style="margin-bottom:8px">selected profile inbounds</div>',
+          '<div class="row">',
+          inbounds.map((i) => (
+            '<label class="row" style="gap:6px;margin-right:10px">' +
+              '<input type="checkbox" data-sub-inbound-id="'+esc(i.ID)+'">' +
+              '<span>'+esc(i.Type)+' '+esc(i.Domain)+':'+esc(i.Port)+'</span>' +
+            '</label>'
+          )).join(""),
+          '</div>',
+        ].join("");
+      }
 
       document.querySelectorAll("[data-copy]").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -1204,6 +1357,19 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       try {
         await postForm(cfg.usersActionPath, { op: "create", name, enabled: "1" });
         field.value = "";
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("createNodeBtn").addEventListener("click", async () => {
+      const name = (document.getElementById("nodeName").value || "").trim();
+      const host = (document.getElementById("nodeHost").value || "").trim();
+      const role = (document.getElementById("nodeRole").value || "").trim();
+      if (!name || !host) return;
+      try {
+        await postForm(cfg.nodesActionPath, { op: "create", name, host, role });
+        document.getElementById("nodeName").value = "";
+        document.getElementById("nodeHost").value = "";
       } catch (e) {
         showOp("error", String(e));
       }
@@ -1260,6 +1426,28 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         showOp("error", String(e));
       }
     });
+    document.getElementById("genSelectedSubBtn").addEventListener("click", async () => {
+      const userID = (document.getElementById("subUser").value || "").trim();
+      const profile = (document.getElementById("subProfile").value || "").trim();
+      if (!userID) return;
+      const ids = Array.from(document.querySelectorAll("[data-sub-inbound-id]:checked"))
+        .map((el) => (el.getAttribute("data-sub-inbound-id") || "").trim())
+        .filter(Boolean);
+      if (ids.length === 0) {
+        showOp("error", "select at least one inbound");
+        return;
+      }
+      try {
+        await postForm(cfg.subsActionPath, {
+          op: "generate_user_selected",
+          user_id: userID,
+          profile,
+          inbounds: ids.join(","),
+        });
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
     document.getElementById("refreshSubBtn").addEventListener("click", async () => {
       try {
         await postForm(cfg.subsActionPath, { op: "refresh_all" });
@@ -1267,6 +1455,25 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         showOp("error", String(e));
       }
     });
+    document.getElementById("subEnableBtn").addEventListener("click", async () => {
+      const userID = (document.getElementById("subUser").value || "").trim();
+      if (!userID) return;
+      try {
+        await postForm(cfg.subsActionPath, { op: "set_enabled", user_id: userID, enabled: "1" });
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("subDisableBtn").addEventListener("click", async () => {
+      const userID = (document.getElementById("subUser").value || "").trim();
+      if (!userID) return;
+      try {
+        await postForm(cfg.subsActionPath, { op: "set_enabled", user_id: userID, enabled: "0" });
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("subUser").addEventListener("change", () => updateSubButtons());
     document.querySelectorAll("[data-tab]").forEach((btn) => {
       btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab") || "runtime"));
     });
@@ -1337,6 +1544,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			apiSnapshotPath := panelJoin(basePath, "api/snapshot")
 			dashboardActionPath := panelJoin(basePath, "actions")
 			usersActionPath := panelJoin(basePath, "users/action")
+			nodesActionPath := panelJoin(basePath, "nodes/action")
 			inboundsActionPath := panelJoin(basePath, "inbounds/action")
 			subsActionPath := panelJoin(basePath, "subscriptions/action")
 			logoutPath := panelJoin(basePath, "logout")
@@ -1369,9 +1577,11 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						Subscriptions:       snapshot.subscriptionLinks,
 						DashboardActionPath: dashboardActionPath,
 						UsersActionPath:     usersActionPath,
+						NodesActionPath:     nodesActionPath,
 						InboundsActionPath:  inboundsActionPath,
 						SubsActionPath:      subsActionPath,
 						AppPath:             appPath,
+						SubscriptionState:   snapshot.subscriptionState,
 					}
 					data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 					w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1403,6 +1613,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					SnapshotPath:        apiSnapshotPath,
 					DashboardActionPath: dashboardActionPath,
 					UsersActionPath:     usersActionPath,
+					NodesActionPath:     nodesActionPath,
 					InboundsActionPath:  inboundsActionPath,
 					SubsActionPath:      subsActionPath,
 				})
@@ -1433,9 +1644,11 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					Subscriptions:       snapshot.subscriptionLinks,
 					DashboardActionPath: dashboardActionPath,
 					UsersActionPath:     usersActionPath,
+					NodesActionPath:     nodesActionPath,
 					InboundsActionPath:  inboundsActionPath,
 					SubsActionPath:      subsActionPath,
 					AppPath:             appPath,
+					SubscriptionState:   snapshot.subscriptionState,
 				}
 				data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 				panelWriteJSON(w, http.StatusOK, data)
@@ -1488,6 +1701,16 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				}
 				panelRespondAction(w, r, usersPath, ops)
 			})
+			panelMux.HandleFunc(nodesActionPath, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				if err := panelHandleNodeAction(r.Context(), resolvedDB, r, ops); err != nil {
+					ops.set("error", err.Error())
+				}
+				panelRespondAction(w, r, dashboardPath, ops)
+			})
 			panelMux.HandleFunc(inboundsActionPath, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1520,6 +1743,92 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						ops.set("error", "subscription generate failed: "+panelErrWithOutput(runErr, out))
 					} else {
 						ops.set("ok", "subscription generated: "+panelSummarizeOutput(out))
+					}
+				case "generate_user_selected":
+					userID := strings.TrimSpace(r.FormValue("user_id"))
+					inboundsCSV := strings.TrimSpace(r.FormValue("inbounds"))
+					profile := strings.TrimSpace(r.FormValue("profile"))
+					if userID == "" {
+						ops.set("error", "user id is required")
+						break
+					}
+					if inboundsCSV == "" {
+						ops.set("error", "select at least one inbound")
+						break
+					}
+					if profile == "" {
+						profile = "panel"
+					}
+					out, runErr := panelExecuteCommandWithSetup(r.Context(), newSubscriptionGenerateCmd(&configPathValue, &dbPathValue), []string{userID}, func(cmd *cobra.Command) error {
+						if err := cmd.Flags().Set("profile", profile); err != nil {
+							return err
+						}
+						return cmd.Flags().Set("inbounds", inboundsCSV)
+					})
+					if runErr != nil {
+						ops.set("error", "subscription generate failed: "+panelErrWithOutput(runErr, out))
+					} else {
+						ops.set("ok", "subscription generated: "+panelSummarizeOutput(out))
+					}
+				case "set_enabled":
+					userID := strings.TrimSpace(r.FormValue("user_id"))
+					if userID == "" {
+						ops.set("error", "user id is required")
+						break
+					}
+					enabled := panelFormBool(r.FormValue("enabled"))
+					store, storeErr := openStoreWithInit(r.Context(), resolvedDB)
+					if storeErr != nil {
+						ops.set("error", storeErr.Error())
+						break
+					}
+					sub, subErr := store.Subscriptions().GetByUserID(r.Context(), userID)
+					if subErr != nil {
+						if errors.Is(subErr, sql.ErrNoRows) {
+							if enabled {
+								out, runErr := panelExecuteCommand(r.Context(), newSubscriptionGenerateCmd(&configPathValue, &dbPathValue), []string{userID})
+								if runErr != nil {
+									ops.set("error", "subscription enable failed: "+panelErrWithOutput(runErr, out))
+								} else {
+									ops.set("ok", "subscription enabled: "+panelSummarizeOutput(out))
+								}
+							} else {
+								ops.set("ok", fmt.Sprintf("subscription already disabled for user %s", userID))
+							}
+							_ = store.Close()
+							break
+						}
+						_ = store.Close()
+						ops.set("error", fmt.Sprintf("read subscription: %v", subErr))
+						break
+					}
+					sub.Enabled = enabled
+					sub.UpdatedAt = time.Now().UTC()
+					if _, upsertErr := store.Subscriptions().Upsert(r.Context(), sub); upsertErr != nil {
+						_ = store.Close()
+						ops.set("error", fmt.Sprintf("update subscription: %v", upsertErr))
+						break
+					}
+					_ = store.Close()
+					if enabled {
+						out, runErr := panelExecuteCommand(r.Context(), newSubscriptionGenerateCmd(&configPathValue, &dbPathValue), []string{userID})
+						if runErr != nil {
+							ops.set("error", "subscription enabled, but generate failed: "+panelErrWithOutput(runErr, out))
+						} else {
+							ops.set("ok", "subscription enabled: "+panelSummarizeOutput(out))
+						}
+					} else {
+						subscriptionDir, dirErr := resolveSubscriptionDir(configPathValue)
+						if dirErr != nil {
+							ops.set("error", fmt.Sprintf("subscription disabled, but cleanup failed: %v", dirErr))
+							break
+						}
+						removed, rmErr := cleanupUserSubscriptionFiles(userID, subscriptionDir, strings.TrimSpace(sub.OutputPath), strings.TrimSpace(sub.AccessToken))
+						if rmErr != nil {
+							ops.set("error", fmt.Sprintf("subscription disabled, but cleanup failed: %v", rmErr))
+						} else {
+							ops.set("ok", fmt.Sprintf("subscription disabled for user %s (removed files: %d)", userID, removed))
+						}
 					}
 				case "refresh_all":
 					out, runErr := panelExecuteCommandWithSetup(r.Context(), newSubscriptionRefreshCmd(&configPathValue, &dbPathValue), nil, func(cmd *cobra.Command) error {
@@ -1583,10 +1892,11 @@ type panelSnapshot struct {
 	counts            panelCounts
 	units             []panelUnitState
 	users             []panelUserView
-	nodes             []domain.Node
+	nodes             []panelNodeView
 	inbounds          []panelInboundView
 	credentials       []panelCredentialView
 	subscriptionLinks []string
+	subscriptionState map[string]panelSubscriptionState
 }
 
 func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig) (panelSnapshot, error) {
@@ -1612,13 +1922,24 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	if err != nil {
 		return panelSnapshot{}, fmt.Errorf("list credentials: %w", err)
 	}
+	subscriptions := make(map[string]panelSubscriptionState, len(users))
 
 	nodeNameByID := make(map[string]string, len(nodes))
 	nodeByID := make(map[string]domain.Node, len(nodes))
+	nodeRows := make([]panelNodeView, 0, len(nodes))
 	for _, node := range nodes {
 		nodeNameByID[node.ID] = strings.TrimSpace(node.Name)
 		nodeByID[node.ID] = node
+		nodeRows = append(nodeRows, panelNodeView{
+			ID:      node.ID,
+			Name:    node.Name,
+			Host:    node.Host,
+			Role:    string(node.Role),
+			Enabled: node.Enabled,
+			Version: panelNodeVersion(node),
+		})
 	}
+	sort.Slice(nodeRows, func(i, j int) bool { return nodeRows[i].ID < nodeRows[j].ID })
 
 	inboundRows := make([]panelInboundView, 0, len(inbounds))
 	inboundByID := make(map[string]domain.Inbound, len(inbounds))
@@ -1664,6 +1985,13 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		})
 		if user.Enabled {
 			enabledUsers++
+		}
+		if sub, subErr := store.Subscriptions().GetByUserID(ctx, user.ID); subErr == nil {
+			subscriptions[user.ID] = panelSubscriptionState{Exists: true, Enabled: sub.Enabled}
+		} else if errors.Is(subErr, sql.ErrNoRows) {
+			subscriptions[user.ID] = panelSubscriptionState{Exists: false, Enabled: false}
+		} else {
+			subscriptions[user.ID] = panelSubscriptionState{Exists: false, Enabled: false}
 		}
 	}
 
@@ -1715,10 +2043,11 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		},
 		units:             runtimeUnitStates(ctx, cfg),
 		users:             userRows,
-		nodes:             nodes,
+		nodes:             nodeRows,
 		inbounds:          inboundRows,
 		credentials:       credentialRows,
 		subscriptionLinks: subLinks,
+		subscriptionState: subscriptions,
 	}, nil
 }
 
@@ -1904,6 +2233,42 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 		}
 		ops.set("ok", fmt.Sprintf("inbound created: %s (%s:%d)", created.ID, created.Domain, created.Port))
 		return nil
+	case "set_enabled":
+		inboundID := strings.TrimSpace(r.FormValue("inbound_id"))
+		version := strings.TrimSpace(r.FormValue("version"))
+		if inboundID == "" {
+			return fmt.Errorf("inbound id is required")
+		}
+		inbounds, err := store.Inbounds().List(ctx)
+		if err != nil {
+			return fmt.Errorf("list inbounds: %w", err)
+		}
+		var current domain.Inbound
+		found := false
+		for _, item := range inbounds {
+			if item.ID == inboundID {
+				current = item
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("inbound %q not found", inboundID)
+		}
+		if version != panelInboundVersion(current) {
+			return fmt.Errorf("inbound %q changed since page load; refresh and retry", inboundID)
+		}
+		current.Enabled = panelFormBool(r.FormValue("enabled"))
+		stored, err := store.Inbounds().Update(ctx, current)
+		if err != nil {
+			return fmt.Errorf("set inbound enabled: %w", err)
+		}
+		state := "disabled"
+		if stored.Enabled {
+			state = "enabled"
+		}
+		ops.set("ok", fmt.Sprintf("inbound %s: %s", state, stored.ID))
+		return nil
 	case "update", "delete":
 		inboundID := strings.TrimSpace(r.FormValue("inbound_id"))
 		version := strings.TrimSpace(r.FormValue("version"))
@@ -1972,6 +2337,101 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 		return nil
 	default:
 		return fmt.Errorf("unknown inbound action")
+	}
+}
+
+func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, ops *panelOperationFeed) error {
+	if err := r.ParseForm(); err != nil {
+		return fmt.Errorf("invalid node action request")
+	}
+	action := strings.TrimSpace(r.FormValue("op"))
+	if action == "" {
+		return fmt.Errorf("node action is required")
+	}
+
+	store, err := openStoreWithInit(ctx, dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	switch action {
+	case "create":
+		name := strings.TrimSpace(r.FormValue("name"))
+		host := strings.TrimSpace(r.FormValue("host"))
+		roleRaw := strings.ToLower(strings.TrimSpace(r.FormValue("role")))
+		if name == "" {
+			return fmt.Errorf("node name is required")
+		}
+		if host == "" {
+			return fmt.Errorf("node host is required")
+		}
+		role := domain.NodeRoleNode
+		if roleRaw == "" || roleRaw == string(domain.NodeRolePrimary) {
+			role = domain.NodeRolePrimary
+		}
+		created, err := store.Nodes().Create(ctx, domain.Node{
+			Name:    name,
+			Host:    host,
+			Role:    role,
+			Enabled: true,
+		})
+		if err != nil {
+			return fmt.Errorf("create node: %w", err)
+		}
+		ops.set("ok", fmt.Sprintf("node created: %s (%s)", created.Name, created.Host))
+		return nil
+	case "set_enabled", "delete":
+		nodeID := strings.TrimSpace(r.FormValue("node_id"))
+		version := strings.TrimSpace(r.FormValue("version"))
+		if nodeID == "" {
+			return fmt.Errorf("node id is required")
+		}
+		nodes, err := store.Nodes().List(ctx)
+		if err != nil {
+			return fmt.Errorf("list nodes: %w", err)
+		}
+		var current domain.Node
+		found := false
+		for _, node := range nodes {
+			if node.ID == nodeID {
+				current = node
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("node %q not found", nodeID)
+		}
+		if version != panelNodeVersion(current) {
+			return fmt.Errorf("node %q changed since page load; refresh and retry", nodeID)
+		}
+
+		if action == "delete" {
+			deleted, err := store.Nodes().Delete(ctx, nodeID)
+			if err != nil {
+				return fmt.Errorf("delete node: %w", err)
+			}
+			if !deleted {
+				return fmt.Errorf("node %q not found", nodeID)
+			}
+			ops.set("ok", fmt.Sprintf("node deleted: %s", nodeID))
+			return nil
+		}
+
+		current.Enabled = panelFormBool(r.FormValue("enabled"))
+		updated, err := store.Nodes().Update(ctx, current)
+		if err != nil {
+			return fmt.Errorf("set node enabled: %w", err)
+		}
+		state := "disabled"
+		if updated.Enabled {
+			state = "enabled"
+		}
+		ops.set("ok", fmt.Sprintf("node %s: %s", state, updated.Name))
+		return nil
+	default:
+		return fmt.Errorf("unknown node action")
 	}
 }
 
@@ -2201,6 +2661,19 @@ func panelUserVersion(user domain.User) string {
 		strings.TrimSpace(user.Name),
 		strconv.FormatBool(user.Enabled),
 		user.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}, "|")
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:8])
+}
+
+func panelNodeVersion(node domain.Node) string {
+	s := strings.Join([]string{
+		strings.TrimSpace(node.ID),
+		strings.TrimSpace(node.Name),
+		strings.TrimSpace(node.Host),
+		strings.TrimSpace(string(node.Role)),
+		strconv.FormatBool(node.Enabled),
+		node.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}, "|")
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:8])
