@@ -804,14 +804,115 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>proxyctl app</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    :root {
+      --bg-a: #020617;
+      --bg-b: #0f172a;
+      --card: rgba(15, 23, 42, 0.7);
+      --line: rgba(148, 163, 184, 0.25);
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --ok: #34d399;
+      --err: #fb7185;
+      --brand: #22d3ee;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 3% 0%, #06b6d420 0%, transparent 35%),
+        radial-gradient(circle at 100% 0%, #22c55e16 0%, transparent 28%),
+        linear-gradient(160deg, var(--bg-a), var(--bg-b));
+      min-height: 100vh;
+    }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 18px; }
+    .top { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; }
+    .title { margin: 0; font-size: 1.2rem; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn {
+      border: 1px solid #0891b2;
+      color: #e0f2fe;
+      background: linear-gradient(180deg, #0891b2, #155e75);
+      border-radius: 10px;
+      padding: 7px 10px;
+      cursor: pointer;
+      font-size: 0.82rem;
+    }
+    .btn.warn { border-color: #d97706; background: linear-gradient(180deg, #b45309, #78350f); }
+    .btn.err { border-color: #be123c; background: linear-gradient(180deg, #be123c, #881337); }
+    .btn.secondary { border-color: var(--line); background: rgba(15, 23, 42, 0.55); color: var(--text); }
+    .grid { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+    .card, .sec { border: 1px solid var(--line); background: var(--card); border-radius: 12px; }
+    .card { padding: 10px 12px; }
+    .label { color: var(--muted); font-size: 0.78rem; }
+    .value { font-size: 1.2rem; font-weight: 600; }
+    .sec { margin-top: 10px; overflow: hidden; }
+    .sec h2 { margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 0.95rem; }
+    .pad { padding: 10px 12px; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    input, select {
+      border: 1px solid var(--line);
+      background: rgba(15, 23, 42, 0.62);
+      border-radius: 8px;
+      color: var(--text);
+      padding: 6px 8px;
+      font-size: 0.82rem;
+    }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(148, 163, 184, 0.15); font-size: 0.82rem; }
+    th { color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
+    .op { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: rgba(15, 23, 42, 0.45); }
+    .op.ok { border-color: #065f46; }
+    .op.error { border-color: #9f1239; }
+    .muted { color: var(--muted); }
+    a { color: #67e8f9; }
+  </style>
 </head>
-<body class="min-h-screen bg-slate-950 text-slate-100">
-  <div id="app-root"></div>
-  <script type="text/babel">
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h1 class="title">proxyctl app</h1>
+      <div class="actions">
+        <a class="btn secondary" href="{{.BasePath}}">legacy panel</a>
+        <form method="post" action="{{.LogoutPath}}"><button class="btn" type="submit">logout</button></form>
+      </div>
+    </div>
+    <div id="op" class="op" style="display:none"></div>
+    <div id="counts" class="grid"></div>
+
+    <section class="sec">
+      <h2>runtime actions</h2>
+      <div class="pad row">
+        <button class="btn" data-runtime="render">render</button>
+        <button class="btn warn" data-runtime="validate">validate</button>
+        <button class="btn err" data-runtime="apply">apply</button>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2>users</h2>
+      <div class="pad row">
+        <input id="newUserName" type="text" placeholder="user name">
+        <button id="createUserBtn" class="btn">create</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>name</th><th>id</th><th>actions</th></tr></thead>
+          <tbody id="usersBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2>subscriptions</h2>
+      <div class="pad" id="subsList"></div>
+    </section>
+  </div>
+  <script>
     const cfg = {
       basePath: {{printf "%q" .BasePath}},
       logoutPath: {{printf "%q" .LogoutPath}},
@@ -822,133 +923,114 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       subsActionPath: {{printf "%q" .SubsActionPath}},
     };
 
-    function App() {
-      const [snap, setSnap] = React.useState(null);
-      const [loading, setLoading] = React.useState(true);
-      const [err, setErr] = React.useState("");
-      const [userName, setUserName] = React.useState("");
+    let snapshot = null;
 
-      const fetchSnapshot = React.useCallback(async () => {
-        try {
-          setLoading(true);
-          setErr("");
-          const res = await fetch(cfg.snapshotPath, { headers: { "Accept": "application/json" } });
-          if (!res.ok) throw new Error("snapshot request failed");
-          const data = await res.json();
-          setSnap(data);
-        } catch (e) {
-          setErr(String(e));
-        } finally {
-          setLoading(false);
-        }
-      }, []);
+    function esc(v) {
+      return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+    function showOp(status, message) {
+      const op = document.getElementById("op");
+      if (!op) return;
+      if (!message) {
+        op.style.display = "none";
+        op.textContent = "";
+        op.className = "op";
+        return;
+      }
+      op.style.display = "block";
+      op.textContent = message;
+      op.className = "op " + (status === "ok" ? "ok" : "error");
+    }
+    async function getSnapshot() {
+      const res = await fetch(cfg.snapshotPath, { headers: { "Accept": "application/json" } });
+      if (!res.ok) throw new Error("snapshot request failed");
+      snapshot = await res.json();
+      render();
+    }
+    async function postForm(path, form) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Accept": "application/json" },
+        body: new URLSearchParams(form),
+      });
+      if (!res.ok) throw new Error("action request failed");
+      const out = await res.json();
+      showOp(out.status, out.message);
+      await getSnapshot();
+    }
+    function render() {
+      if (!snapshot) return;
+      showOp(snapshot.OperationStatus, snapshot.OperationMessage);
 
-      React.useEffect(() => { fetchSnapshot(); }, [fetchSnapshot]);
+      const c = snapshot.Counts || {};
+      document.getElementById("counts").innerHTML = [
+        ["users", c.UsersTotal],
+        ["enabled users", c.UsersEnabled],
+        ["inbounds", c.InboundsTotal],
+        ["active inbounds", c.InboundsActive],
+      ].map(([k, v]) => '<div class="card"><div class="label">'+esc(k)+'</div><div class="value">'+esc(v)+'</div></div>').join("");
 
-      async function postForm(path, form) {
-        const res = await fetch(path, {
-          method: "POST",
-          headers: { "Accept": "application/json" },
-          body: new URLSearchParams(form),
+      const users = Array.isArray(snapshot.Users) ? snapshot.Users : [];
+      document.getElementById("usersBody").innerHTML = users.map((u) => (
+        '<tr>' +
+          '<td>'+esc(u.Name)+'</td>' +
+          '<td class="mono muted">'+esc(u.ID)+'</td>' +
+          '<td><button class="btn err" data-user-id="'+esc(u.ID)+'" data-user-version="'+esc(u.Version)+'">delete</button></td>' +
+        '</tr>'
+      )).join("");
+
+      document.querySelectorAll("[data-user-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await postForm(cfg.usersActionPath, {
+              op: "delete",
+              user_id: btn.getAttribute("data-user-id"),
+              version: btn.getAttribute("data-user-version"),
+            });
+          } catch (e) {
+            showOp("error", String(e));
+          }
         });
-        if (!res.ok) throw new Error("action failed");
-        await res.json();
-        await fetchSnapshot();
-      }
+      });
 
-      async function createUser(e) {
-        e.preventDefault();
-        if (!userName.trim()) return;
-        await postForm(cfg.usersActionPath, { op: "create", name: userName.trim(), enabled: "1" });
-        setUserName("");
-      }
+      const subs = Array.isArray(snapshot.Subscriptions) ? snapshot.Subscriptions : [];
+      document.getElementById("subsList").innerHTML = subs.length === 0 ? '<div class="muted">no subscriptions</div>' : subs.map((s) => (
+        '<div class="row" style="margin-bottom:8px">' +
+          '<a href="'+esc(s)+'" target="_blank" rel="noopener noreferrer">'+esc(s)+'</a>' +
+          '<button class="btn secondary" data-copy="'+esc(s)+'">copy</button>' +
+        '</div>'
+      )).join("");
 
-      async function deleteUser(user) {
-        await postForm(cfg.usersActionPath, { op: "delete", user_id: user.ID, version: user.Version });
-      }
-
-      async function doRuntime(action) {
-        await postForm(cfg.dashboardActionPath, { action });
-      }
-
-      if (loading && !snap) return <div className="p-6">Loading...</div>;
-      if (!snap) return <div className="p-6 text-rose-400">{err || "No data"}</div>;
-
-      return (
-        <main className="max-w-7xl mx-auto p-4 md:p-6 space-y-4">
-          <header className="flex flex-wrap items-center justify-between gap-3">
-            <h1 className="text-xl font-semibold">proxyctl app (react beta)</h1>
-            <div className="flex gap-2">
-              <a className="px-3 py-1 rounded bg-slate-800 hover:bg-slate-700" href={cfg.basePath}>legacy panel</a>
-              <form method="post" action={cfg.logoutPath}><button className="px-3 py-1 rounded bg-cyan-700 hover:bg-cyan-600" type="submit">logout</button></form>
-            </div>
-          </header>
-
-          {snap.OperationMessage ? (
-            <div className={"rounded p-3 border " + (snap.OperationStatus === "ok" ? "border-emerald-700 bg-emerald-950/40" : "border-rose-700 bg-rose-950/30")}>
-              {snap.OperationMessage}
-            </div>
-          ) : null}
-          {err ? <div className="rounded p-3 border border-rose-700 bg-rose-950/30">{err}</div> : null}
-
-          <section className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            <Card label="users" value={snap.Counts.UsersTotal} />
-            <Card label="enabled users" value={snap.Counts.UsersEnabled} />
-            <Card label="inbounds" value={snap.Counts.InboundsTotal} />
-            <Card label="active inbounds" value={snap.Counts.InboundsActive} />
-          </section>
-
-          <section className="rounded border border-slate-800 p-3 bg-slate-900/50">
-            <h2 className="font-medium mb-2">runtime actions</h2>
-            <div className="flex flex-wrap gap-2">
-              <button onClick={() => doRuntime("render")} className="px-3 py-1 rounded bg-cyan-700 hover:bg-cyan-600">render</button>
-              <button onClick={() => doRuntime("validate")} className="px-3 py-1 rounded bg-amber-700 hover:bg-amber-600">validate</button>
-              <button onClick={() => doRuntime("apply")} className="px-3 py-1 rounded bg-rose-700 hover:bg-rose-600">apply</button>
-            </div>
-          </section>
-
-          <section className="rounded border border-slate-800 p-3 bg-slate-900/50">
-            <h2 className="font-medium mb-2">users</h2>
-            <form onSubmit={createUser} className="flex flex-wrap gap-2 mb-3">
-              <input className="px-2 py-1 rounded bg-slate-800 border border-slate-700" placeholder="user name" value={userName} onChange={(e) => setUserName(e.target.value)} />
-              <button className="px-3 py-1 rounded bg-cyan-700 hover:bg-cyan-600" type="submit">create</button>
-            </form>
-            <div className="overflow-auto">
-              <table className="w-full text-sm">
-                <thead className="text-slate-400"><tr><th className="text-left p-2">name</th><th className="text-left p-2">id</th><th className="text-left p-2">actions</th></tr></thead>
-                <tbody>
-                  {snap.Users.map((u) => (
-                    <tr key={u.ID} className="border-t border-slate-800">
-                      <td className="p-2">{u.Name}</td>
-                      <td className="p-2 text-slate-400">{u.ID}</td>
-                      <td className="p-2"><button onClick={() => deleteUser(u)} className="px-2 py-1 rounded bg-rose-700 hover:bg-rose-600">delete</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section className="rounded border border-slate-800 p-3 bg-slate-900/50">
-            <h2 className="font-medium mb-2">subscription links</h2>
-            <ul className="space-y-2">
-              {snap.Subscriptions.map((s) => (
-                <li key={s} className="flex flex-wrap items-center gap-2">
-                  <a className="text-cyan-300 underline break-all" href={s} target="_blank" rel="noreferrer">{s}</a>
-                  <button className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600" onClick={() => navigator.clipboard?.writeText(s)}>copy</button>
-                </li>
-              ))}
-            </ul>
-          </section>
-        </main>
-      );
+      document.querySelectorAll("[data-copy]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const txt = btn.getAttribute("data-copy") || "";
+          navigator.clipboard?.writeText(txt);
+        });
+      });
     }
 
-    function Card({ label, value }) {
-      return <div className="rounded border border-slate-800 p-3 bg-slate-900/50"><div className="text-slate-400 text-xs">{label}</div><div className="text-lg font-semibold">{value}</div></div>;
-    }
+    document.querySelectorAll("[data-runtime]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await postForm(cfg.dashboardActionPath, { action: btn.getAttribute("data-runtime") || "" });
+        } catch (e) {
+          showOp("error", String(e));
+        }
+      });
+    });
+    document.getElementById("createUserBtn").addEventListener("click", async () => {
+      const field = document.getElementById("newUserName");
+      const name = (field.value || "").trim();
+      if (!name) return;
+      try {
+        await postForm(cfg.usersActionPath, { op: "create", name, enabled: "1" });
+        field.value = "";
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
 
-    ReactDOM.createRoot(document.getElementById("app-root")).render(<App />);
+    getSnapshot().catch((e) => showOp("error", String(e)));
   </script>
 </body>
 </html>`))
