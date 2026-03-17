@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"proxyctl/internal/domain"
 	"proxyctl/internal/renderer"
@@ -121,6 +122,50 @@ func TestValidateDryRunHasNoSideEffects(t *testing.T) {
 	}
 	if _, err := os.Stat(rtDir); !os.IsNotExist(err) {
 		t.Fatalf("runtime dir should not be created in dry-run")
+	}
+}
+
+func TestApplyPrefersPrimaryNodeWhenWorkerNodeExists(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	store := fakeStore{
+		nodes: []domain.Node{
+			{
+				ID:        "node-worker",
+				Enabled:   true,
+				Role:      domain.NodeRoleNode,
+				Host:      "worker.example.com",
+				CreatedAt: now.Add(-2 * time.Hour),
+			},
+			{
+				ID:        "node-primary",
+				Enabled:   true,
+				Role:      domain.NodeRolePrimary,
+				Host:      "primary.example.com",
+				CreatedAt: now.Add(-1 * time.Hour),
+			},
+		},
+		inbounds: []domain.Inbound{
+			{ID: "in-primary", NodeID: "node-primary", Enabled: true, Engine: domain.EngineXray},
+		},
+	}
+	root := t.TempDir()
+	rtDir := filepath.Join(root, "runtime")
+	bkDir := filepath.Join(root, "backups")
+
+	svc := &fakeServiceManager{}
+	orch := newTestOrchestrator(t, store, rtDir, bkDir, svc)
+
+	result, err := orch.Apply(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("Apply() error: %v", err)
+	}
+	if result.RolledBack {
+		t.Fatalf("result.RolledBack = true, want false")
+	}
+	if len(result.Validated) != 2 {
+		t.Fatalf("validated count = %d, want 2", len(result.Validated))
 	}
 }
 

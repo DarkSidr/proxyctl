@@ -397,25 +397,30 @@ func collectBuildRequest(ctx context.Context, store storage.Store) (renderer.Bui
 
 func selectPrimaryNode(nodes []domain.Node) (domain.Node, error) {
 	enabled := make([]domain.Node, 0, len(nodes))
+	enabledPrimary := make([]domain.Node, 0, len(nodes))
 	for _, node := range nodes {
 		if node.Enabled {
 			enabled = append(enabled, node)
+			if node.Role == domain.NodeRolePrimary {
+				enabledPrimary = append(enabledPrimary, node)
+			}
 		}
 	}
 	if len(enabled) == 0 {
 		return domain.Node{}, fmt.Errorf("no enabled nodes found")
 	}
 
-	sort.Slice(enabled, func(i, j int) bool {
-		if enabled[i].Role != enabled[j].Role {
-			return enabled[i].Role < enabled[j].Role
+	candidates := enabled
+	if len(enabledPrimary) > 0 {
+		candidates = enabledPrimary
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].CreatedAt != candidates[j].CreatedAt {
+			return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
 		}
-		if enabled[i].CreatedAt != enabled[j].CreatedAt {
-			return enabled[i].CreatedAt.Before(enabled[j].CreatedAt)
-		}
-		return enabled[i].ID < enabled[j].ID
+		return candidates[i].ID < candidates[j].ID
 	})
-	return enabled[0], nil
+	return candidates[0], nil
 }
 
 func selectPreviewContent(result renderer.RenderResult) []byte {
