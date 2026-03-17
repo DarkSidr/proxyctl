@@ -2742,6 +2742,7 @@ func runWizardMaybeInstallProxyctlOnNode(cmd *cobra.Command, in *bufio.Reader, o
 
 	target := fmt.Sprintf("%s@%s", strings.TrimSpace(ssh.User), host)
 	sshArgs := buildSSHArgs(ssh.Port, ssh.KeyPath, ssh.StrictHostKey)
+	fmt.Fprintf(out, "checking remote proxyctl on %s...\n", host)
 	checkArgs := append(append([]string{}, sshArgs...), target, "command -v proxyctl >/dev/null 2>&1")
 	_, checkErr := runExecCombined(cmd.Context(), "ssh", checkArgs...)
 	if checkErr == nil {
@@ -2776,10 +2777,15 @@ func runWizardMaybeInstallProxyctlOnNode(cmd *cobra.Command, in *bufio.Reader, o
 	}, "; ")
 	installArgs := append(append([]string{}, sshArgs...), target, installCmd)
 	fmt.Fprintf(out, "installing proxyctl on node=%s host=%s...\n", node.ID, host)
-	outBytes, installErr := runExecCombined(cmd.Context(), "ssh", installArgs...)
-	if installErr != nil {
-		return fmt.Errorf("remote proxyctl install failed for node %s (%s): %w\n%s", node.ID, host, installErr, strings.TrimSpace(string(outBytes)))
+	fmt.Fprintln(out, "remote install started, streaming output:")
+	installExec := exec.CommandContext(cmd.Context(), "ssh", installArgs...)
+	installExec.Stdout = cmd.OutOrStdout()
+	installExec.Stderr = cmd.ErrOrStderr()
+	installExec.Stdin = cmd.InOrStdin()
+	if err := installExec.Run(); err != nil {
+		return fmt.Errorf("remote proxyctl install failed for node %s (%s): %w", node.ID, host, err)
 	}
+	fmt.Fprintln(out, "remote install finished")
 	fmt.Fprintf(out, "remote proxyctl install completed: node=%s host=%s\n", node.ID, host)
 	return nil
 }
