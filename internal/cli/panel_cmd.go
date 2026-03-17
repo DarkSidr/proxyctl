@@ -1357,14 +1357,19 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       showOp(snapshot.OperationStatus, snapshot.OperationMessage);
 
       const c = snapshot.Counts || {};
+      const dash = snapshot.Dashboard || {};
       document.getElementById("counts").innerHTML = [
         ["users", c.UsersTotal],
         ["enabled users", c.UsersEnabled],
         ["inbounds", c.InboundsTotal],
         ["active inbounds", c.InboundsActive],
+        ["proxyctl", dash.ProxyctlVersion || "dev"],
+        ["cpu load (1m)", dash.Load1 ?? 0],
+        ["memory", fmtBytes(dash.MemUsedBytes) + " / " + fmtBytes(dash.MemTotalBytes)],
+        ["traffic total", fmtBytes(dash.TotalBytes)],
       ].map(([k, v]) => '<div class="card"><div class="label">'+esc(k)+'</div><div class="value">'+esc(v)+'</div></div>').join("");
-      const dash = snapshot.Dashboard || {};
-      document.getElementById("dashCards").innerHTML = [
+      const dashCardsEl = document.getElementById("dashCards");
+      if (dashCardsEl) dashCardsEl.innerHTML = [
         ["proxyctl", dash.ProxyctlVersion || "dev"],
         ["cpu load (1m)", dash.Load1 ?? 0],
         ["cpu cores", dash.CPUCores ?? 0],
