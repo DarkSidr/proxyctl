@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -98,6 +99,7 @@ type panelPageData struct {
 	UsersActionPath     string
 	InboundsActionPath  string
 	SubsActionPath      string
+	AppPath             string
 }
 
 type panelOperationFeed struct {
@@ -352,6 +354,7 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
       <a href="{{.BasePath}}/users" class="{{if eq .ActiveTab "users"}}active{{end}}">users</a>
       <a href="{{.BasePath}}/inbounds" class="{{if eq .ActiveTab "inbounds"}}active{{end}}">inbounds</a>
       <a href="{{.BasePath}}/subscriptions" class="{{if eq .ActiveTab "subscriptions"}}active{{end}}">subscriptions</a>
+      {{if .AppPath}}<a href="{{.AppPath}}">app (react beta)</a>{{end}}
     </nav>
 
     {{if .OperationMessage}}
@@ -785,6 +788,171 @@ var panelLoginTmpl = template.Must(template.New("panel-login").Parse(`<!doctype 
 </body>
 </html>`))
 
+type panelAppData struct {
+	BasePath            string
+	LogoutPath          string
+	SnapshotPath        string
+	DashboardActionPath string
+	UsersActionPath     string
+	InboundsActionPath  string
+	SubsActionPath      string
+}
+
+var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>proxyctl app</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+  <div id="app-root"></div>
+  <script type="text/babel">
+    const cfg = {
+      basePath: {{printf "%q" .BasePath}},
+      logoutPath: {{printf "%q" .LogoutPath}},
+      snapshotPath: {{printf "%q" .SnapshotPath}},
+      dashboardActionPath: {{printf "%q" .DashboardActionPath}},
+      usersActionPath: {{printf "%q" .UsersActionPath}},
+      inboundsActionPath: {{printf "%q" .InboundsActionPath}},
+      subsActionPath: {{printf "%q" .SubsActionPath}},
+    };
+
+    function App() {
+      const [snap, setSnap] = React.useState(null);
+      const [loading, setLoading] = React.useState(true);
+      const [err, setErr] = React.useState("");
+      const [userName, setUserName] = React.useState("");
+
+      const fetchSnapshot = React.useCallback(async () => {
+        try {
+          setLoading(true);
+          setErr("");
+          const res = await fetch(cfg.snapshotPath, { headers: { "Accept": "application/json" } });
+          if (!res.ok) throw new Error("snapshot request failed");
+          const data = await res.json();
+          setSnap(data);
+        } catch (e) {
+          setErr(String(e));
+        } finally {
+          setLoading(false);
+        }
+      }, []);
+
+      React.useEffect(() => { fetchSnapshot(); }, [fetchSnapshot]);
+
+      async function postForm(path, form) {
+        const res = await fetch(path, {
+          method: "POST",
+          headers: { "Accept": "application/json" },
+          body: new URLSearchParams(form),
+        });
+        if (!res.ok) throw new Error("action failed");
+        await res.json();
+        await fetchSnapshot();
+      }
+
+      async function createUser(e) {
+        e.preventDefault();
+        if (!userName.trim()) return;
+        await postForm(cfg.usersActionPath, { op: "create", name: userName.trim(), enabled: "1" });
+        setUserName("");
+      }
+
+      async function deleteUser(user) {
+        await postForm(cfg.usersActionPath, { op: "delete", user_id: user.ID, version: user.Version });
+      }
+
+      async function doRuntime(action) {
+        await postForm(cfg.dashboardActionPath, { action });
+      }
+
+      if (loading && !snap) return <div className="p-6">Loading...</div>;
+      if (!snap) return <div className="p-6 text-rose-400">{err || "No data"}</div>;
+
+      return (
+        <main className="max-w-7xl mx-auto p-4 md:p-6 space-y-4">
+          <header className="flex flex-wrap items-center justify-between gap-3">
+            <h1 className="text-xl font-semibold">proxyctl app (react beta)</h1>
+            <div className="flex gap-2">
+              <a className="px-3 py-1 rounded bg-slate-800 hover:bg-slate-700" href={cfg.basePath}>legacy panel</a>
+              <form method="post" action={cfg.logoutPath}><button className="px-3 py-1 rounded bg-cyan-700 hover:bg-cyan-600" type="submit">logout</button></form>
+            </div>
+          </header>
+
+          {snap.OperationMessage ? (
+            <div className={"rounded p-3 border " + (snap.OperationStatus === "ok" ? "border-emerald-700 bg-emerald-950/40" : "border-rose-700 bg-rose-950/30")}>
+              {snap.OperationMessage}
+            </div>
+          ) : null}
+          {err ? <div className="rounded p-3 border border-rose-700 bg-rose-950/30">{err}</div> : null}
+
+          <section className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <Card label="users" value={snap.Counts.UsersTotal} />
+            <Card label="enabled users" value={snap.Counts.UsersEnabled} />
+            <Card label="inbounds" value={snap.Counts.InboundsTotal} />
+            <Card label="active inbounds" value={snap.Counts.InboundsActive} />
+          </section>
+
+          <section className="rounded border border-slate-800 p-3 bg-slate-900/50">
+            <h2 className="font-medium mb-2">runtime actions</h2>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => doRuntime("render")} className="px-3 py-1 rounded bg-cyan-700 hover:bg-cyan-600">render</button>
+              <button onClick={() => doRuntime("validate")} className="px-3 py-1 rounded bg-amber-700 hover:bg-amber-600">validate</button>
+              <button onClick={() => doRuntime("apply")} className="px-3 py-1 rounded bg-rose-700 hover:bg-rose-600">apply</button>
+            </div>
+          </section>
+
+          <section className="rounded border border-slate-800 p-3 bg-slate-900/50">
+            <h2 className="font-medium mb-2">users</h2>
+            <form onSubmit={createUser} className="flex flex-wrap gap-2 mb-3">
+              <input className="px-2 py-1 rounded bg-slate-800 border border-slate-700" placeholder="user name" value={userName} onChange={(e) => setUserName(e.target.value)} />
+              <button className="px-3 py-1 rounded bg-cyan-700 hover:bg-cyan-600" type="submit">create</button>
+            </form>
+            <div className="overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="text-slate-400"><tr><th className="text-left p-2">name</th><th className="text-left p-2">id</th><th className="text-left p-2">actions</th></tr></thead>
+                <tbody>
+                  {snap.Users.map((u) => (
+                    <tr key={u.ID} className="border-t border-slate-800">
+                      <td className="p-2">{u.Name}</td>
+                      <td className="p-2 text-slate-400">{u.ID}</td>
+                      <td className="p-2"><button onClick={() => deleteUser(u)} className="px-2 py-1 rounded bg-rose-700 hover:bg-rose-600">delete</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="rounded border border-slate-800 p-3 bg-slate-900/50">
+            <h2 className="font-medium mb-2">subscription links</h2>
+            <ul className="space-y-2">
+              {snap.Subscriptions.map((s) => (
+                <li key={s} className="flex flex-wrap items-center gap-2">
+                  <a className="text-cyan-300 underline break-all" href={s} target="_blank" rel="noreferrer">{s}</a>
+                  <button className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600" onClick={() => navigator.clipboard?.writeText(s)}>copy</button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </main>
+      );
+    }
+
+    function Card({ label, value }) {
+      return <div className="rounded border border-slate-800 p-3 bg-slate-900/50"><div className="text-slate-400 text-xs">{label}</div><div className="text-lg font-semibold">{value}</div></div>;
+    }
+
+    ReactDOM.createRoot(document.getElementById("app-root")).render(<App />);
+  </script>
+</body>
+</html>`))
+
 func newPanelCmd(configPath, dbPath *string) *cobra.Command {
 	cmd := newGroupCmd(
 		"panel",
@@ -841,6 +1009,8 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			usersPath := panelJoin(basePath, "users")
 			inboundsPath := panelJoin(basePath, "inbounds")
 			subsPath := panelJoin(basePath, "subscriptions")
+			appPath := panelJoin(basePath, "app")
+			apiSnapshotPath := panelJoin(basePath, "api/snapshot")
 			dashboardActionPath := panelJoin(basePath, "actions")
 			usersActionPath := panelJoin(basePath, "users/action")
 			inboundsActionPath := panelJoin(basePath, "inbounds/action")
@@ -877,6 +1047,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						UsersActionPath:     usersActionPath,
 						InboundsActionPath:  inboundsActionPath,
 						SubsActionPath:      subsActionPath,
+						AppPath:             appPath,
 					}
 					data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 					w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -896,6 +1067,55 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			panelMux.HandleFunc(usersPath, handlePage("users"))
 			panelMux.HandleFunc(inboundsPath, handlePage("inbounds"))
 			panelMux.HandleFunc(subsPath, handlePage("subscriptions"))
+			panelMux.HandleFunc(appPath, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_ = panelAppTmpl.Execute(w, panelAppData{
+					BasePath:            basePath,
+					LogoutPath:          logoutPath,
+					SnapshotPath:        apiSnapshotPath,
+					DashboardActionPath: dashboardActionPath,
+					UsersActionPath:     usersActionPath,
+					InboundsActionPath:  inboundsActionPath,
+					SubsActionPath:      subsActionPath,
+				})
+			})
+			panelMux.HandleFunc(apiSnapshotPath, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				snapshot, snapErr := buildPanelSnapshot(r.Context(), resolvedDB, cfg)
+				if snapErr != nil {
+					http.Error(w, "failed to build panel data: "+snapErr.Error(), http.StatusInternalServerError)
+					return
+				}
+				data := panelPageData{
+					Title:               "proxyctl panel",
+					ActiveTab:           "dashboard",
+					BasePath:            basePath,
+					LogoutPath:          logoutPath,
+					ListenAddr:          listenAddr,
+					GeneratedAt:         time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
+					Counts:              snapshot.counts,
+					Units:               snapshot.units,
+					Users:               snapshot.users,
+					Nodes:               snapshot.nodes,
+					Inbounds:            snapshot.inbounds,
+					Credentials:         snapshot.credentials,
+					Subscriptions:       snapshot.subscriptionLinks,
+					DashboardActionPath: dashboardActionPath,
+					UsersActionPath:     usersActionPath,
+					InboundsActionPath:  inboundsActionPath,
+					SubsActionPath:      subsActionPath,
+					AppPath:             appPath,
+				}
+				data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
+				panelWriteJSON(w, http.StatusOK, data)
+			})
 			panelMux.HandleFunc(dashboardActionPath, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -932,7 +1152,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				default:
 					ops.set("error", "unknown dashboard action")
 				}
-				http.Redirect(w, r, dashboardPath, http.StatusSeeOther)
+				panelRespondAction(w, r, dashboardPath, ops)
 			})
 			panelMux.HandleFunc(usersActionPath, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -942,7 +1162,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				if err := panelHandleUserAction(r.Context(), resolvedDB, r, ops); err != nil {
 					ops.set("error", err.Error())
 				}
-				http.Redirect(w, r, usersPath, http.StatusSeeOther)
+				panelRespondAction(w, r, usersPath, ops)
 			})
 			panelMux.HandleFunc(inboundsActionPath, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -952,7 +1172,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				if err := panelHandleInboundAction(r.Context(), resolvedDB, r, ops); err != nil {
 					ops.set("error", err.Error())
 				}
-				http.Redirect(w, r, inboundsPath, http.StatusSeeOther)
+				panelRespondAction(w, r, inboundsPath, ops)
 			})
 			panelMux.HandleFunc(subsActionPath, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -993,7 +1213,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				default:
 					ops.set("error", "unknown subscription action")
 				}
-				http.Redirect(w, r, subsPath, http.StatusSeeOther)
+				panelRespondAction(w, r, subsPath, ops)
 			})
 			if dashboardPath != "/" {
 				panelMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -1180,6 +1400,44 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 
 func panelExecuteCommand(ctx context.Context, cmd *cobra.Command, args []string) (string, error) {
 	return panelExecuteCommandWithSetup(ctx, cmd, args, nil)
+}
+
+func panelRespondAction(w http.ResponseWriter, r *http.Request, redirectPath string, ops *panelOperationFeed) {
+	if panelWantsJSON(r) {
+		status, message, at := ops.snapshot()
+		panelWriteJSON(w, http.StatusOK, map[string]string{
+			"status":  status,
+			"message": message,
+			"at":      at,
+		})
+		return
+	}
+	http.Redirect(w, r, redirectPath, http.StatusSeeOther)
+}
+
+func panelWantsJSON(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("api")), "1") {
+		return true
+	}
+	accept := strings.ToLower(strings.TrimSpace(r.Header.Get("Accept")))
+	return strings.Contains(accept, "application/json")
+}
+
+func panelWriteJSON(w http.ResponseWriter, status int, payload any) {
+	if w == nil {
+		return
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		http.Error(w, "json marshal failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 func panelExecuteCommandWithSetup(ctx context.Context, cmd *cobra.Command, args []string, setup func(*cobra.Command) error) (string, error) {
