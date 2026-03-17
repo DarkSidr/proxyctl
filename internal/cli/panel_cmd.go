@@ -110,6 +110,7 @@ type panelPageData struct {
 	Subscriptions       []string
 	SubscriptionState   map[string]panelSubscriptionState
 	SuggestedPorts      map[string]int
+	SNIPresets          []string
 	OperationStatus     string
 	OperationMessage    string
 	OperationAt         string
@@ -1180,15 +1181,18 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
     }
     function refreshInboundSniList(nodes, inbounds) {
-      const set = new Set();
-      (Array.isArray(nodes) ? nodes : []).forEach((n) => {
-        const host = String((n && n.Host) || "").trim();
-        if (host) set.add(host);
-      });
-      (Array.isArray(inbounds) ? inbounds : []).forEach((i) => {
-        const domain = String((i && i.Domain) || "").trim();
-        if (domain) set.add(domain);
-      });
+      const presets = (snapshot && Array.isArray(snapshot.SNIPresets)) ? snapshot.SNIPresets : [];
+      const set = new Set((Array.isArray(presets) ? presets : []).map((v) => String(v || "").trim()).filter(Boolean));
+      if (set.size === 0) {
+        (Array.isArray(nodes) ? nodes : []).forEach((n) => {
+          const host = String((n && n.Host) || "").trim();
+          if (host) set.add(host);
+        });
+        (Array.isArray(inbounds) ? inbounds : []).forEach((i) => {
+          const domain = String((i && i.Domain) || "").trim();
+          if (domain) set.add(domain);
+        });
+      }
       inboundSniOptions = Array.from(set).sort((a, b) => a.localeCompare(b));
       const list = document.getElementById("inSniList");
       if (!list) return;
@@ -1781,6 +1785,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						AppPath:             appPath,
 						SubscriptionState:   snapshot.subscriptionState,
 						SuggestedPorts:      snapshot.suggestedPorts,
+						SNIPresets:          snapshot.sniPresets,
 					}
 					data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 					w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1849,6 +1854,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					AppPath:             appPath,
 					SubscriptionState:   snapshot.subscriptionState,
 					SuggestedPorts:      snapshot.suggestedPorts,
+					SNIPresets:          snapshot.sniPresets,
 				}
 				data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 				panelWriteJSON(w, http.StatusOK, data)
@@ -2098,6 +2104,7 @@ type panelSnapshot struct {
 	subscriptionLinks []string
 	subscriptionState map[string]panelSubscriptionState
 	suggestedPorts    map[string]int
+	sniPresets        []string
 }
 
 func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig) (panelSnapshot, error) {
@@ -2268,7 +2275,29 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		subscriptionLinks: subLinks,
 		subscriptionState: subscriptions,
 		suggestedPorts:    suggestedPorts,
+		sniPresets:        panelWizardSNIPresets(),
 	}, nil
+}
+
+func panelWizardSNIPresets() []string {
+	if len(realityServerPresets) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(realityServerPresets))
+	out := make([]string, 0, len(realityServerPresets))
+	for _, raw := range realityServerPresets {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func panelExecuteCommand(ctx context.Context, cmd *cobra.Command, args []string) (string, error) {
