@@ -64,6 +64,8 @@ type panelCredentialView struct {
 	InboundAddr string
 	Kind        string
 	SecretMask  string
+	ClientURI   string
+	ClientError string
 	Version     string
 }
 
@@ -306,6 +308,18 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
     .links a { color: #a5f3fc; word-break: break-all; }
     .links li { margin: 8px 0; }
     .inline { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .table-wrap { overflow-x: auto; }
+    .uri {
+      min-width: 320px;
+      max-width: 520px;
+      width: 100%;
+      border: 1px solid var(--line);
+      background: rgba(15, 23, 42, 0.62);
+      border-radius: 8px;
+      color: var(--text);
+      padding: 6px 8px;
+      font-size: 0.78rem;
+    }
     @media (max-width: 960px) {
       .top { flex-direction: column; align-items: flex-start; }
       th, td { padding: 8px; font-size: 0.8rem; }
@@ -465,6 +479,7 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
 
     <section class="section">
       <h2>inbounds</h2>
+      <div class="table-wrap">
       <table>
         <thead><tr><th>id</th><th>type</th><th>engine</th><th>node</th><th>domain</th><th>port</th><th>transport</th><th>path</th><th>sni</th><th>flags</th><th>actions</th></tr></thead>
         <tbody>
@@ -530,6 +545,7 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
           {{end}}
         </tbody>
       </table>
+      </div>
     </section>
     {{end}}
 
@@ -576,8 +592,9 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
 
     <section class="section">
       <h2>credentials</h2>
+      <div class="table-wrap">
       <table>
-        <thead><tr><th>id</th><th>user</th><th>inbound</th><th>kind</th><th>secret</th><th>actions</th></tr></thead>
+        <thead><tr><th>id</th><th>user</th><th>inbound</th><th>kind</th><th>secret</th><th>ready config (uri)</th><th>actions</th></tr></thead>
         <tbody>
           {{range .Credentials}}
           <tr>
@@ -586,6 +603,13 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
             <td>{{.InboundType}} {{.InboundAddr}}<br><span class="muted">{{.InboundID}}</span></td>
             <td>{{.Kind}}</td>
             <td>{{.SecretMask}}</td>
+            <td>
+              {{if .ClientURI}}
+              <input class="uri" type="text" readonly value="{{.ClientURI}}">
+              {{else}}
+              <span class="muted">unavailable: {{.ClientError}}</span>
+              {{end}}
+            </td>
             <td>
               <form method="post" action="{{$.SubsActionPath}}" class="inline">
                 <input type="hidden" name="op" value="delete_credential">
@@ -597,10 +621,11 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
             </td>
           </tr>
           {{else}}
-          <tr><td colspan="6" class="muted">no credentials</td></tr>
+          <tr><td colspan="7" class="muted">no credentials</td></tr>
           {{end}}
         </tbody>
       </table>
+      </div>
     </section>
 
     <section class="section">
@@ -996,8 +1021,10 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	}
 
 	nodeNameByID := make(map[string]string, len(nodes))
+	nodeByID := make(map[string]domain.Node, len(nodes))
 	for _, node := range nodes {
 		nodeNameByID[node.ID] = strings.TrimSpace(node.Name)
+		nodeByID[node.ID] = node
 	}
 
 	inboundRows := make([]panelInboundView, 0, len(inbounds))
@@ -1063,6 +1090,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			}
 			inboundAddr = fmt.Sprintf("%s:%d", addr, in.Port)
 		}
+		clientURI, clientErr := panelBuildClientURI(ctx, nodeByID, inboundByID, cred)
 		credentialRows = append(credentialRows, panelCredentialView{
 			ID:          cred.ID,
 			UserID:      cred.UserID,
@@ -1072,6 +1100,8 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			InboundAddr: inboundAddr,
 			Kind:        string(cred.Kind),
 			SecretMask:  maskSecret(cred.Secret),
+			ClientURI:   clientURI,
+			ClientError: clientErr,
 			Version:     panelCredentialVersion(cred),
 		})
 	}
@@ -1577,6 +1607,22 @@ func maskSecret(secret string) string {
 		return "***"
 	}
 	return s[:4] + "..." + s[len(s)-4:]
+}
+
+func panelBuildClientURI(ctx context.Context, nodeByID map[string]domain.Node, inboundByID map[string]domain.Inbound, credential domain.Credential) (string, string) {
+	inbound, ok := inboundByID[credential.InboundID]
+	if !ok {
+		return "", "inbound not found"
+	}
+	node, ok := nodeByID[inbound.NodeID]
+	if !ok {
+		return "", "node not found"
+	}
+	uri, err := renderSingleClientURI(ctx, node, inbound, credential)
+	if err != nil {
+		return "", strings.TrimSpace(err.Error())
+	}
+	return strings.TrimSpace(uri), ""
 }
 
 func runtimeUnitStates(ctx context.Context, cfg config.AppConfig) []panelUnitState {

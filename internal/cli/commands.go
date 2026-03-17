@@ -2257,6 +2257,7 @@ func runWizardNodesMenu(cmd *cobra.Command, configPath, dbPath string) error {
 		action, err := promptChoice(in, out, "Nodes", []string{
 			"list nodes",
 			"sync nodes",
+			"update proxyctl on nodes",
 			"create node",
 			"open node",
 			"back",
@@ -2276,6 +2277,10 @@ func runWizardNodesMenu(cmd *cobra.Command, configPath, dbPath string) error {
 			}
 		case "sync nodes":
 			if err := runWizardNodeSync(cmd, in, out, configPath, dbPath); err != nil {
+				return err
+			}
+		case "update proxyctl on nodes":
+			if err := runWizardNodeRemoteUpdateProxyctl(cmd, in, out, configPath, dbPath); err != nil {
 				return err
 			}
 		case "create node":
@@ -2456,6 +2461,171 @@ func runWizardNodeSync(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 
 	fmt.Fprintln(out, "starting node sync...")
 	return runProxyctlSubcommand(cmd, args...)
+}
+
+func runWizardNodeRemoteUpdateProxyctl(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string) error {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	nodes, err := store.Nodes().List(cmd.Context())
+	if err != nil {
+		return err
+	}
+	enabledWorkerNodes := make([]domain.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if !node.Enabled || node.Role != domain.NodeRoleNode {
+			continue
+		}
+		enabledWorkerNodes = append(enabledWorkerNodes, node)
+	}
+	if len(enabledWorkerNodes) == 0 {
+		fmt.Fprintln(out, "no enabled worker nodes (role=node) found")
+		return nil
+	}
+
+	scope, err := promptChoice(in, out, "Update scope", []string{"all enabled worker nodes (role=node)", "select nodes", "back"}, "all enabled worker nodes (role=node)")
+	if err != nil {
+		return err
+	}
+	if isBackOptionLabel(scope) {
+		return nil
+	}
+
+	selectedNodes := make([]domain.Node, 0, len(enabledWorkerNodes))
+	if scope == "select nodes" {
+		fmt.Fprintln(out, "available enabled worker nodes (role=node):")
+		defaultIndexes := make([]string, 0, len(enabledWorkerNodes))
+		for i, node := range enabledWorkerNodes {
+			idx := i + 1
+			defaultIndexes = append(defaultIndexes, strconv.Itoa(idx))
+			fmt.Fprintf(out, "  %d) %s (%s, %s)\n", idx, node.ID, node.Name, node.Host)
+		}
+		selection, err := promptLine(in, out, "Select nodes (comma-separated numbers)", strings.Join(defaultIndexes, ","))
+		if err != nil {
+			return err
+		}
+		selectedIdx, err := parseIndexCSV(selection, len(enabledWorkerNodes))
+		if err != nil {
+			return err
+		}
+		if len(selectedIdx) == 0 {
+			fmt.Fprintln(out, "cancelled: no nodes selected")
+			return nil
+		}
+		selectedNodes = make([]domain.Node, 0, len(selectedIdx))
+		for _, idx := range selectedIdx {
+			selectedNodes = append(selectedNodes, enabledWorkerNodes[idx-1])
+		}
+	} else {
+		selectedNodes = append(selectedNodes, enabledWorkerNodes...)
+	}
+
+	sshUser, err := promptLine(in, out, "SSH user", "root")
+	if err != nil {
+		return err
+	}
+	sshUser = strings.TrimSpace(sshUser)
+	if sshUser == "" {
+		return fmt.Errorf("ssh user is required")
+	}
+	sshPort, err := promptInt(in, out, "SSH port", 22)
+	if err != nil {
+		return err
+	}
+	if sshPort < 1 || sshPort > 65535 {
+		return fmt.Errorf("ssh port must be in range 1..65535")
+	}
+	sshKey, err := promptLine(in, out, "SSH private key path (optional)", "~/.ssh/id_ed25519")
+	if err != nil {
+		return err
+	}
+	sshKey, generated, err := ensureWizardSSHKey(cmd.Context(), strings.TrimSpace(sshKey))
+	if err != nil {
+		return err
+	}
+	if generated {
+		fmt.Fprintf(out, "generated ssh key: %s\n", sshKey)
+	}
+	pubKeyPath := sshKey + ".pub"
+	if pubKey, readErr := os.ReadFile(pubKeyPath); readErr == nil {
+		fmt.Fprintf(out, "public key: %s\n", strings.TrimSpace(string(pubKey)))
+	}
+	strictHostKey, err := promptBool(in, out, "Enable strict SSH host key checking (y/n)", false)
+	if err != nil {
+		return err
+	}
+	if len(selectedNodes) > 0 {
+		copyNow, err := promptBool(in, out, "Install SSH public key to selected nodes now via ssh-copy-id (y/n)", generated)
+		if err != nil {
+			return err
+		}
+		if copyNow {
+			if err := runWizardSSHCopyID(cmd, out, selectedNodes, sshUser, sshPort, sshKey, strictHostKey); err != nil {
+				return err
+			}
+		}
+	}
+
+	useSudoDefault := sshUser != "root"
+	useSudo, err := promptBool(in, out, "Use sudo on remote host for update/install (y/n)", useSudoDefault)
+	if err != nil {
+		return err
+	}
+	forceUpdate, err := promptBool(in, out, "Force update even when current version looks up-to-date (y/n)", true)
+	if err != nil {
+		return err
+	}
+
+	contactEmail := ""
+	if cfg, cfgErr := config.Load(configPath); cfgErr == nil {
+		contactEmail = strings.TrimSpace(cfg.Public.ContactEmail)
+	}
+	prefix := ""
+	if useSudo {
+		prefix = "sudo "
+	}
+
+	for _, node := range selectedNodes {
+		host := strings.TrimSpace(node.Host)
+		if host == "" {
+			fmt.Fprintf(out, "skip node %s: host is empty\n", node.ID)
+			continue
+		}
+		target := fmt.Sprintf("%s@%s", sshUser, host)
+		sshArgs := buildSSHArgs(sshPort, sshKey, strictHostKey)
+		updateCmd := prefix + "proxyctl update"
+		if forceUpdate {
+			updateCmd += " --force"
+		}
+		installEnv := "PROXYCTL_PROMPT_CONFIG=0 PROXYCTL_DEPLOYMENT_MODE=node PROXYCTL_REVERSE_PROXY=caddy PROXYCTL_PUBLIC_DOMAIN=" + shellQuote(host)
+		if contactEmail != "" {
+			installEnv += " PROXYCTL_CONTACT_EMAIL=" + shellQuote(contactEmail)
+		}
+		installCmd := prefix + "bash -lc " + shellQuote(
+			"curl -fsSL "+defaultUpdateInstallURL+
+				" | "+installEnv+" bash",
+		)
+		remoteCmd := strings.Join([]string{
+			"set -e",
+			"if command -v proxyctl >/dev/null 2>&1; then " + updateCmd + "; else " + installCmd + "; fi",
+			"command -v proxyctl >/dev/null 2>&1 && proxyctl --version || true",
+		}, "; ")
+
+		sshExecArgs := append(append([]string{}, sshArgs...), target, remoteCmd)
+		fmt.Fprintf(out, "updating proxyctl on node=%s host=%s...\n", node.ID, host)
+		updateExec := exec.CommandContext(cmd.Context(), "ssh", sshExecArgs...)
+		updateExec.Stdout = cmd.OutOrStdout()
+		updateExec.Stderr = cmd.ErrOrStderr()
+		updateExec.Stdin = cmd.InOrStdin()
+		if err := updateExec.Run(); err != nil {
+			return fmt.Errorf("remote proxyctl update failed for node %s (%s): %w", node.ID, host, err)
+		}
+		fmt.Fprintf(out, "remote proxyctl update completed: node=%s host=%s\n", node.ID, host)
+	}
+	return nil
 }
 
 func runWizardAutoSyncNodeWorkers(cmd *cobra.Command, out io.Writer, configPath, dbPath string, appCfg config.AppConfig) error {
