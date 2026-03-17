@@ -109,6 +109,7 @@ type panelPageData struct {
 	Credentials         []panelCredentialView
 	Subscriptions       []string
 	SubscriptionState   map[string]panelSubscriptionState
+	SuggestedPorts      map[string]int
 	OperationStatus     string
 	OperationMessage    string
 	OperationAt         string
@@ -891,6 +892,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     .op.ok { border-color: #065f46; }
     .op.error { border-color: #9f1239; }
     .muted { color: var(--muted); }
+    .hidden { display: none !important; }
     a { color: #67e8f9; }
   </style>
 </head>
@@ -966,7 +968,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         <input id="inDomain" type="text" placeholder="domain">
         <input id="inPort" type="number" min="1" max="65535" placeholder="port">
         <input id="inPath" type="text" placeholder="path (optional)">
-        <input id="inSni" type="text" placeholder="sni (optional)">
+        <select id="inSniMode">
+          <option value="none">sni: none</option>
+          <option value="list">sni: from list</option>
+          <option value="domain">sni: same as domain</option>
+          <option value="custom">sni: custom</option>
+        </select>
+        <input id="inSni" type="text" list="inSniList" placeholder="sni value">
+        <datalist id="inSniList"></datalist>
         <button id="createInboundBtn" class="btn">create inbound</button>
       </div>
       <div class="table-wrap">
@@ -1064,6 +1073,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     let snapshot = null;
     let opTimer = null;
     let selectedSubInboundByUser = {};
+    let inboundSniOptions = [];
 
     function esc(v) {
       return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -1131,6 +1141,100 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         disableBtn.disabled = !!(!state || !state.Exists || !state.Enabled);
       }
     }
+    function getSuggestedInboundPort(type, transport) {
+      const ports = (snapshot && snapshot.SuggestedPorts) ? snapshot.SuggestedPorts : {};
+      const key = String(type || "").trim().toLowerCase() + "|" + String(transport || "").trim().toLowerCase();
+      const v = ports[key];
+      const n = Number(v);
+      return Number.isInteger(n) && n > 0 ? n : 0;
+    }
+    function updateInboundPortSuggestion(force) {
+      const type = (document.getElementById("inType").value || "").trim();
+      const transport = (document.getElementById("inTransport").value || "").trim();
+      const portEl = document.getElementById("inPort");
+      if (!portEl) return;
+      const suggested = getSuggestedInboundPort(type, transport);
+      if (!suggested) return;
+      if (force || !(portEl.value || "").trim()) {
+        portEl.value = String(suggested);
+      }
+    }
+    function updateInboundSniInputState() {
+      const mode = (document.getElementById("inSniMode").value || "none").trim();
+      const input = document.getElementById("inSni");
+      if (!input) return;
+      if (mode === "none") {
+        input.value = "";
+        input.disabled = true;
+        input.placeholder = "sni disabled";
+      } else if (mode === "domain") {
+        input.value = "";
+        input.disabled = true;
+        input.placeholder = "sni = domain";
+      } else if (mode === "list") {
+        input.disabled = false;
+        input.placeholder = "pick sni from list";
+      } else {
+        input.disabled = false;
+        input.placeholder = "custom sni";
+      }
+    }
+    function refreshInboundSniList(nodes, inbounds) {
+      const set = new Set();
+      (Array.isArray(nodes) ? nodes : []).forEach((n) => {
+        const host = String((n && n.Host) || "").trim();
+        if (host) set.add(host);
+      });
+      (Array.isArray(inbounds) ? inbounds : []).forEach((i) => {
+        const domain = String((i && i.Domain) || "").trim();
+        if (domain) set.add(domain);
+      });
+      inboundSniOptions = Array.from(set).sort((a, b) => a.localeCompare(b));
+      const list = document.getElementById("inSniList");
+      if (!list) return;
+      list.innerHTML = inboundSniOptions.map((v) => '<option value="'+esc(v)+'"></option>').join("");
+    }
+    function setTransportOptions(options) {
+      const sel = document.getElementById("inTransport");
+      if (!sel) return;
+      const prev = (sel.value || "").trim();
+      sel.innerHTML = options.map((v) => '<option value="'+esc(v)+'">'+esc(v)+'</option>').join("");
+      if (prev && options.includes(prev)) {
+        sel.value = prev;
+      } else if (options.length > 0) {
+        sel.value = options[0];
+      }
+    }
+    function updateInboundCreateFieldVisibility(forcePort) {
+      const type = (document.getElementById("inType").value || "").trim().toLowerCase();
+      const transportSel = document.getElementById("inTransport");
+      const pathEl = document.getElementById("inPath");
+      if (!transportSel || !pathEl) return;
+
+      if (type === "hysteria2") {
+        setTransportOptions(["udp"]);
+        transportSel.disabled = true;
+      } else if (type === "xhttp") {
+        setTransportOptions(["xhttp"]);
+        transportSel.disabled = true;
+      } else {
+        setTransportOptions(["tcp", "ws", "grpc"]);
+        transportSel.disabled = false;
+      }
+
+      const transport = (transportSel.value || "").trim().toLowerCase();
+      const pathNeeded = transport === "ws" || transport === "grpc" || transport === "xhttp";
+      pathEl.classList.toggle("hidden", !pathNeeded);
+      if (!pathNeeded) {
+        pathEl.value = "";
+      } else if (!(pathEl.value || "").trim()) {
+        if (transport === "ws") pathEl.value = "/ws";
+        if (transport === "grpc") pathEl.value = "grpc";
+        if (transport === "xhttp") pathEl.value = "/xhttp";
+      }
+      updateInboundPortSuggestion(!!forcePort);
+      updateInboundSniInputState();
+    }
     function currentSubUserID() {
       const subUserSel = document.getElementById("subUser");
       return subUserSel ? (subUserSel.value || "").trim() : "";
@@ -1195,6 +1299,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const nodes = Array.isArray(snapshot.Nodes) ? snapshot.Nodes : [];
       const inbounds = Array.isArray(snapshot.Inbounds) ? snapshot.Inbounds : [];
       const creds = Array.isArray(snapshot.Credentials) ? snapshot.Credentials : [];
+      refreshInboundSniList(nodes, inbounds);
+      updateInboundCreateFieldVisibility(false);
       document.getElementById("usersBody").innerHTML = users.map((u) => (
         '<tr>' +
           '<td>'+esc(u.Name)+'</td>' +
@@ -1436,14 +1542,32 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
     });
     document.getElementById("createInboundBtn").addEventListener("click", async () => {
+      updateInboundCreateFieldVisibility(false);
       const type = (document.getElementById("inType").value || "").trim();
       const transport = (document.getElementById("inTransport").value || "").trim();
       const engine = (document.getElementById("inEngine").value || "").trim();
       const nodeID = (document.getElementById("inNode").value || "").trim();
       const domain = (document.getElementById("inDomain").value || "").trim();
-      const port = (document.getElementById("inPort").value || "").trim();
+      let port = (document.getElementById("inPort").value || "").trim();
       const path = (document.getElementById("inPath").value || "").trim();
-      const sni = (document.getElementById("inSni").value || "").trim();
+      const sniMode = (document.getElementById("inSniMode").value || "none").trim();
+      let sni = "";
+      if (sniMode === "domain") {
+        sni = domain;
+      } else if (sniMode === "list" || sniMode === "custom") {
+        sni = (document.getElementById("inSni").value || "").trim();
+      }
+      if (!port) {
+        const suggested = getSuggestedInboundPort(type, transport);
+        if (suggested > 0) {
+          port = String(suggested);
+          document.getElementById("inPort").value = port;
+        }
+      }
+      if (sniMode === "list" && sni && !inboundSniOptions.includes(sni)) {
+        showOp("error", "SNI from list mode: choose value from suggestions");
+        return;
+      }
       if (!type || !transport || !nodeID || !domain || !port) return;
       try {
         await postForm(cfg.inboundsActionPath, {
@@ -1532,6 +1656,15 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         await postForm(cfg.subsActionPath, { op: "set_enabled", user_id: userID, enabled: "0" });
       } catch (e) {
         showOp("error", String(e));
+      }
+    });
+    document.getElementById("inType").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
+    document.getElementById("inTransport").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
+    document.getElementById("inSniMode").addEventListener("change", () => updateInboundSniInputState());
+    document.getElementById("inDomain").addEventListener("blur", () => {
+      const mode = (document.getElementById("inSniMode").value || "none").trim();
+      if (mode === "domain") {
+        updateInboundSniInputState();
       }
     });
     document.getElementById("subUser").addEventListener("change", () => {
@@ -1647,6 +1780,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						SubsActionPath:      subsActionPath,
 						AppPath:             appPath,
 						SubscriptionState:   snapshot.subscriptionState,
+						SuggestedPorts:      snapshot.suggestedPorts,
 					}
 					data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 					w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1714,6 +1848,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					SubsActionPath:      subsActionPath,
 					AppPath:             appPath,
 					SubscriptionState:   snapshot.subscriptionState,
+					SuggestedPorts:      snapshot.suggestedPorts,
 				}
 				data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 				panelWriteJSON(w, http.StatusOK, data)
@@ -1962,6 +2097,7 @@ type panelSnapshot struct {
 	credentials       []panelCredentialView
 	subscriptionLinks []string
 	subscriptionState map[string]panelSubscriptionState
+	suggestedPorts    map[string]int
 }
 
 func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig) (panelSnapshot, error) {
@@ -2009,6 +2145,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	inboundRows := make([]panelInboundView, 0, len(inbounds))
 	inboundByID := make(map[string]domain.Inbound, len(inbounds))
 	enabledInbounds := 0
+	usedPorts := make(map[int]struct{}, len(inbounds))
 	for _, inbound := range inbounds {
 		inboundByID[inbound.ID] = inbound
 		nodeName := inbound.NodeID
@@ -2032,9 +2169,26 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		})
 		if inbound.Enabled {
 			enabledInbounds++
+			if inbound.Port > 0 {
+				usedPorts[inbound.Port] = struct{}{}
+			}
 		}
 	}
 	sort.Slice(inboundRows, func(i, j int) bool { return inboundRows[i].ID < inboundRows[j].ID })
+	suggestedPorts := map[string]int{}
+	for _, item := range []struct {
+		protocol  string
+		transport string
+	}{
+		{protocol: "vless", transport: "tcp"},
+		{protocol: "vless", transport: "ws"},
+		{protocol: "vless", transport: "grpc"},
+		{protocol: "hysteria2", transport: "udp"},
+		{protocol: "xhttp", transport: "xhttp"},
+	} {
+		key := item.protocol + "|" + item.transport
+		suggestedPorts[key] = suggestWizardPort(item.protocol, item.transport, usedPorts, hostPortBusy)
+	}
 
 	userRows := make([]panelUserView, 0, len(users))
 	userByID := make(map[string]domain.User, len(users))
@@ -2113,6 +2267,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		credentials:       credentialRows,
 		subscriptionLinks: subLinks,
 		subscriptionState: subscriptions,
+		suggestedPorts:    suggestedPorts,
 	}, nil
 }
 
