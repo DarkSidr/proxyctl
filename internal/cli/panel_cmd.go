@@ -1219,16 +1219,41 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
       document.getElementById("nodesBody").innerHTML = nodes.map((n) => (
         '<tr>' +
-          '<td>'+esc(n.Name)+'</td>' +
-          '<td>'+esc(n.Host)+'</td>' +
-          '<td>'+esc(n.Role)+'</td>' +
+          '<td><input type="text" data-node-name="'+esc(n.ID)+'" value="'+esc(n.Name)+'"></td>' +
+          '<td><input type="text" data-node-host="'+esc(n.ID)+'" value="'+esc(n.Host)+'"></td>' +
+          '<td><select data-node-role="'+esc(n.ID)+'"><option value="primary"'+(String(n.Role) === "primary" ? " selected" : "")+'>primary</option><option value="node"'+(String(n.Role) === "node" ? " selected" : "")+'>node</option></select></td>' +
           '<td>'+ (n.Enabled ? "yes" : "no") +'</td>' +
           '<td class="row">' +
+            '<button class="btn secondary" data-node-save-id="'+esc(n.ID)+'" data-node-save-version="'+esc(n.Version)+'">save</button>' +
             '<button class="btn '+(n.Enabled ? 'warn' : '')+'" data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
             '<button class="btn err" data-node-id="'+esc(n.ID)+'" data-node-version="'+esc(n.Version)+'">delete</button>' +
           '</td>' +
         '</tr>'
       )).join("");
+      document.querySelectorAll("[data-node-save-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            const id = btn.getAttribute("data-node-save-id") || "";
+            const nameEl = document.querySelector('[data-node-name="'+id+'"]');
+            const hostEl = document.querySelector('[data-node-host="'+id+'"]');
+            const roleEl = document.querySelector('[data-node-role="'+id+'"]');
+            const name = (nameEl && nameEl.value ? nameEl.value : "").trim();
+            const host = (hostEl && hostEl.value ? hostEl.value : "").trim();
+            const role = (roleEl && roleEl.value ? roleEl.value : "").trim();
+            if (!id || !name || !host || !role) return;
+            await postForm(cfg.nodesActionPath, {
+              op: "update",
+              node_id: id,
+              version: btn.getAttribute("data-node-save-version"),
+              name,
+              host,
+              role,
+            });
+          } catch (e) {
+            showOp("error", String(e));
+          }
+        });
+      });
       document.querySelectorAll("[data-node-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           try {
@@ -2421,7 +2446,7 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		}
 		ops.set("ok", fmt.Sprintf("node created: %s (%s)", created.Name, created.Host))
 		return nil
-	case "set_enabled", "delete":
+	case "set_enabled", "update", "delete":
 		nodeID := strings.TrimSpace(r.FormValue("node_id"))
 		version := strings.TrimSpace(r.FormValue("version"))
 		if nodeID == "" {
@@ -2456,6 +2481,30 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 				return fmt.Errorf("node %q not found", nodeID)
 			}
 			ops.set("ok", fmt.Sprintf("node deleted: %s", nodeID))
+			return nil
+		}
+		if action == "update" {
+			name := strings.TrimSpace(r.FormValue("name"))
+			host := strings.TrimSpace(r.FormValue("host"))
+			roleRaw := strings.ToLower(strings.TrimSpace(r.FormValue("role")))
+			if name == "" {
+				return fmt.Errorf("node name is required")
+			}
+			if host == "" {
+				return fmt.Errorf("node host is required")
+			}
+			role := domain.NodeRoleNode
+			if roleRaw == "" || roleRaw == string(domain.NodeRolePrimary) {
+				role = domain.NodeRolePrimary
+			}
+			current.Name = name
+			current.Host = host
+			current.Role = role
+			updated, err := store.Nodes().Update(ctx, current)
+			if err != nil {
+				return fmt.Errorf("update node: %w", err)
+			}
+			ops.set("ok", fmt.Sprintf("node updated: %s (%s)", updated.Name, updated.Host))
 			return nil
 		}
 
