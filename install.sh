@@ -399,7 +399,11 @@ prepare_panel_credentials() {
   fi
 
   if [[ -n "${SELECTED_PUBLIC_DOMAIN}" ]]; then
-    PANEL_URL_HINT="http://${SELECTED_PUBLIC_DOMAIN}:${SELECTED_PANEL_PORT}${SELECTED_PANEL_PATH}"
+    if [[ "${SELECTED_REVERSE_PROXY}" == "caddy" ]]; then
+      PANEL_URL_HINT="https://${SELECTED_PUBLIC_DOMAIN}${SELECTED_PANEL_PATH}"
+    else
+      PANEL_URL_HINT="http://${SELECTED_PUBLIC_DOMAIN}${SELECTED_PANEL_PATH}"
+    fi
   else
     PANEL_URL_HINT="http://<server-ip-or-domain>:${SELECTED_PANEL_PORT}${SELECTED_PANEL_PATH}"
   fi
