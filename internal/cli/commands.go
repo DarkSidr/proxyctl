@@ -1634,6 +1634,8 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 			"show settings",
 			"show panel access info",
 			"restart panel service",
+			"set ACME contact email",
+			"reissue TLS certificate (caddy)",
 			"show installed versions",
 			"auto-update status",
 			"enable auto-update (03:00 daily)",
@@ -1658,6 +1660,7 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 			}
 			fmt.Fprintf(out, "reverse_proxy: %s\n", cfg.ReverseProxy)
 			fmt.Fprintf(out, "public.domain: %s\n", strings.TrimSpace(cfg.Public.Domain))
+			fmt.Fprintf(out, "public.contact_email: %s\n", strings.TrimSpace(cfg.Public.ContactEmail))
 			fmt.Fprintf(out, "paths.decoy_site_dir: %s\n", strings.TrimSpace(cfg.Paths.DecoySiteDir))
 		case "show panel access info":
 			if err := printPanelAccessInfoSafe(out, configPath); err != nil {
@@ -1665,6 +1668,33 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 			}
 		case "restart panel service":
 			if err := restartPanelService(cmd.Context(), out); err != nil {
+				return err
+			}
+		case "set ACME contact email":
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return err
+			}
+			nextEmail, err := promptLine(in, out, "ACME contact email", strings.TrimSpace(cfg.Public.ContactEmail))
+			if err != nil {
+				return err
+			}
+			nextEmail = strings.TrimSpace(nextEmail)
+			if err := setConfigContactEmail(configPath, nextEmail); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "updated config: public.contact_email=%s\n", nextEmail)
+			fmt.Fprintln(out, "run `settings -> reissue TLS certificate (caddy)` to request a fresh certificate with updated contact")
+		case "reissue TLS certificate (caddy)":
+			ok, err := promptBool(in, out, "Force reissue current Caddy certificate now (y/n)", false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				fmt.Fprintln(out, "cancelled")
+				continue
+			}
+			if err := reissueCaddyCertificate(cmd.Context(), out, configPath); err != nil {
 				return err
 			}
 		case "show installed versions":
@@ -2135,6 +2165,90 @@ func setConfigDecoySiteDir(configPath, decoyPath string) error {
 	return nil
 }
 
+func setConfigContactEmail(configPath, email string) error {
+	info, statErr := os.Stat(configPath)
+	if statErr != nil {
+		return fmt.Errorf("stat config %q: %w", configPath, statErr)
+	}
+	mode := info.Mode().Perm()
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		return fmt.Errorf("read config %q: %w", configPath, readErr)
+	}
+
+	root := map[string]any{}
+	if len(raw) > 0 {
+		if err := yaml.Unmarshal(raw, &root); err != nil {
+			return fmt.Errorf("parse config %q: %w", configPath, err)
+		}
+	}
+
+	publicRaw, ok := root["public"]
+	if !ok || publicRaw == nil {
+		publicRaw = map[string]any{}
+		root["public"] = publicRaw
+	}
+	publicMap, ok := publicRaw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("config key public is not an object")
+	}
+	publicMap["contact_email"] = strings.TrimSpace(email)
+
+	rendered, err := yaml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("encode config %q: %w", configPath, err)
+	}
+	if err := os.WriteFile(configPath, rendered, mode); err != nil {
+		return fmt.Errorf("write config %q: %w", configPath, err)
+	}
+	return nil
+}
+
+func reissueCaddyCertificate(ctx context.Context, out io.Writer, configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	if cfg.ReverseProxy != "caddy" {
+		fmt.Fprintf(out, "reverse_proxy is %s; certificate reissue action is available for caddy only\n", cfg.ReverseProxy)
+		return nil
+	}
+	domain := strings.TrimSpace(cfg.Public.Domain)
+	if domain == "" {
+		fmt.Fprintln(out, "public.domain is empty; set domain first")
+		return nil
+	}
+	if _, err := lookPath("systemctl"); err != nil {
+		return fmt.Errorf("systemctl not found")
+	}
+
+	paths := []string{
+		filepath.Join("/caddy/certificates/acme-v02.api.letsencrypt.org-directory", domain),
+		filepath.Join("/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory", domain),
+		filepath.Join("/var/lib/caddy/certificates/acme-v02.api.letsencrypt.org-directory", domain),
+	}
+	for _, p := range paths {
+		if err := os.RemoveAll(p); err != nil {
+			return fmt.Errorf("remove certificate cache %s: %w", p, err)
+		}
+	}
+	fmt.Fprintf(out, "removed cached certificates for domain: %s\n", domain)
+
+	if _, err := runCommandOutput(ctx, "systemctl", "restart", "proxyctl-caddy.service"); err != nil {
+		return fmt.Errorf("restart proxyctl-caddy.service: %w", err)
+	}
+	activeState, err := runCommandOutput(ctx, "systemctl", "is-active", "proxyctl-caddy.service")
+	if err != nil {
+		activeState = strings.TrimSpace(activeState)
+		if activeState == "" {
+			activeState = "unknown"
+		}
+	}
+	fmt.Fprintf(out, "proxyctl-caddy.service restarted, active state: %s\n", strings.TrimSpace(activeState))
+	fmt.Fprintln(out, "certificate obtain will be retried automatically on next TLS handshake")
+	return nil
+}
+
 func runWizardNodesMenu(cmd *cobra.Command, configPath, dbPath string) error {
 	in := bufio.NewReader(cmd.InOrStdin())
 	out := cmd.OutOrStdout()
@@ -2165,7 +2279,7 @@ func runWizardNodesMenu(cmd *cobra.Command, configPath, dbPath string) error {
 				return err
 			}
 		case "create node":
-			if err := runWizardNodeAdd(cmd, dbPath); err != nil {
+			if err := runWizardNodeAdd(cmd, configPath, dbPath); err != nil {
 				return err
 			}
 		case "open node":
@@ -2176,7 +2290,7 @@ func runWizardNodesMenu(cmd *cobra.Command, configPath, dbPath string) error {
 			if !ok {
 				continue
 			}
-			if err := runWizardNodeMenu(cmd, in, out, dbPath, node); err != nil {
+			if err := runWizardNodeMenu(cmd, in, out, configPath, dbPath, node); err != nil {
 				return err
 			}
 		default:
@@ -2517,7 +2631,7 @@ func runWizardNodesList(cmd *cobra.Command, dbPath string) error {
 	return w.Flush()
 }
 
-func runWizardNodeAdd(cmd *cobra.Command, dbPath string) error {
+func runWizardNodeAdd(cmd *cobra.Command, configPath, dbPath string) error {
 	in := bufio.NewReader(cmd.InOrStdin())
 	out := cmd.OutOrStdout()
 
@@ -2581,7 +2695,7 @@ func runWizardNodeAdd(cmd *cobra.Command, dbPath string) error {
 		if err != nil {
 			return err
 		}
-		if err := runWizardMaybeInstallProxyctlOnNode(cmd, in, out, created, sshAccess); err != nil {
+		if err := runWizardMaybeInstallProxyctlOnNode(cmd, in, out, configPath, created, sshAccess); err != nil {
 			return err
 		}
 	}
@@ -2623,7 +2737,7 @@ func promptWizardSelectNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer,
 	return byOption[choice], true, nil
 }
 
-func runWizardNodeMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string, node domain.Node) error {
+func runWizardNodeMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, node domain.Node) error {
 	for {
 		enabledAction := "enable node"
 		if node.Enabled {
@@ -2661,7 +2775,7 @@ func runWizardNodeMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPa
 			if err != nil {
 				return err
 			}
-			if err := runWizardMaybeInstallProxyctlOnNode(cmd, in, out, node, sshAccess); err != nil {
+			if err := runWizardMaybeInstallProxyctlOnNode(cmd, in, out, configPath, node, sshAccess); err != nil {
 				return err
 			}
 		case "enable node", "disable node":
@@ -2734,7 +2848,7 @@ func runWizardSetupNodeSSH(cmd *cobra.Command, in *bufio.Reader, out io.Writer, 
 	}, nil
 }
 
-func runWizardMaybeInstallProxyctlOnNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer, node domain.Node, ssh wizardSSHAccess) error {
+func runWizardMaybeInstallProxyctlOnNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath string, node domain.Node, ssh wizardSSHAccess) error {
 	host := strings.TrimSpace(node.Host)
 	if host == "" {
 		return nil
@@ -2765,17 +2879,25 @@ func runWizardMaybeInstallProxyctlOnNode(cmd *cobra.Command, in *bufio.Reader, o
 	if err != nil {
 		return err
 	}
+	contactEmail := ""
+	if cfg, cfgErr := config.Load(configPath); cfgErr == nil {
+		contactEmail = strings.TrimSpace(cfg.Public.ContactEmail)
+	}
 
 	prefix := ""
 	if useSudo {
 		prefix = "sudo "
+	}
+	installEnv := "PROXYCTL_PROMPT_CONFIG=0 PROXYCTL_DEPLOYMENT_MODE=node PROXYCTL_REVERSE_PROXY=caddy PROXYCTL_PUBLIC_DOMAIN=" + shellQuote(host)
+	if contactEmail != "" {
+		installEnv += " PROXYCTL_CONTACT_EMAIL=" + shellQuote(contactEmail)
 	}
 	installCmd := strings.Join([]string{
 		"set -e",
 		"if command -v proxyctl >/dev/null 2>&1; then exit 0; fi",
 		prefix + "bash -lc " + shellQuote(
 			"curl -fsSL "+defaultUpdateInstallURL+
-				" | PROXYCTL_PROMPT_CONFIG=0 PROXYCTL_DEPLOYMENT_MODE=node PROXYCTL_REVERSE_PROXY=caddy PROXYCTL_PUBLIC_DOMAIN="+shellQuote(host)+" bash",
+				" | "+installEnv+" bash",
 		),
 	}, "; ")
 	installArgs := append(append([]string{}, sshArgs...), target, installCmd)

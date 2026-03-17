@@ -74,6 +74,8 @@ Wizard note:
 - `proxyctl wizard` now has `settings -> switch decoy template` to activate template from `/usr/share/proxy-orchestrator/decoy-templates` (including your uploaded custom templates).
 - `proxyctl wizard` now has `settings -> show panel access info` (URL/path and credentials file path, login/password hidden in wizard output).
 - `proxyctl wizard` now has `settings -> restart panel service` to run `systemctl restart proxyctl-panel.service`.
+- `proxyctl wizard` now has `settings -> set ACME contact email` to update `public.contact_email` in config.
+- `proxyctl wizard` now has `settings -> reissue TLS certificate (caddy)` to clear local Caddy cert cache for current domain and restart `proxyctl-caddy.service`.
 - `proxyctl wizard` now has `settings -> show installed versions` to print detected versions of `proxyctl`, `sing-box`, `xray`, `caddy`, `nginx`, `sqlite3`, and `systemd`.
 - `proxyctl wizard` now has `uninstall proxyctl` for full purge flow with confirmation.
 

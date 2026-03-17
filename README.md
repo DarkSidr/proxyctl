@@ -146,6 +146,8 @@ For `panel`/`panel+node` install, installer also generates panel access placehol
 - `settings -> switch decoy template`
 - `settings -> show panel access info` (safe output without login/password)
 - `settings -> restart panel service`
+- `settings -> set ACME contact email`
+- `settings -> reissue TLS certificate (caddy)`
 - `settings -> show installed versions`
 It also includes `uninstall proxyctl` for full VPS cleanup.
 
@@ -256,7 +258,7 @@ Notes:
 - only one `primary` node is allowed;
 - in `proxyctl wizard -> nodes -> create node`, role `primary` is shown only when no existing primary node is present.
 - after `setup ssh access`, wizard checks remote host and can install `proxyctl` there interactively (with confirmation).
-- remote auto-install uses `PROXYCTL_PUBLIC_DOMAIN=<node-host>` to bootstrap TLS-ready node setup (for example for `hysteria2`).
+- remote auto-install uses `PROXYCTL_PUBLIC_DOMAIN=<node-host>` (and local `public.contact_email` when configured) to bootstrap TLS-ready node setup (for example for `hysteria2`).
 
 2. Test SSH from panel host:
 
