@@ -254,6 +254,7 @@ proxyctl node list
 Notes:
 - only one `primary` node is allowed;
 - in `proxyctl wizard -> nodes -> create node`, role `primary` is shown only when no existing primary node is present.
+- after `setup ssh access`, wizard checks remote host and can install `proxyctl` there interactively (with confirmation).
 
 2. Test SSH from panel host:
 

@@ -1945,6 +1945,13 @@ type componentVersion struct {
 	Version string
 }
 
+type wizardSSHAccess struct {
+	User          string
+	Port          int
+	KeyPath       string
+	StrictHostKey bool
+}
+
 func printInstalledVersions(ctx context.Context, out io.Writer) {
 	versions := collectInstalledVersions(ctx)
 	fmt.Fprintln(out, "installed versions:")
@@ -2570,7 +2577,11 @@ func runWizardNodeAdd(cmd *cobra.Command, dbPath string) error {
 		return err
 	}
 	if setupNow {
-		if err := runWizardSetupNodeSSH(cmd, in, out, created); err != nil {
+		sshAccess, err := runWizardSetupNodeSSH(cmd, in, out, created)
+		if err != nil {
+			return err
+		}
+		if err := runWizardMaybeInstallProxyctlOnNode(cmd, in, out, created, sshAccess); err != nil {
 			return err
 		}
 	}
@@ -2646,7 +2657,11 @@ func runWizardNodeMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPa
 			}
 			node = updated
 		case "setup ssh access":
-			if err := runWizardSetupNodeSSH(cmd, in, out, node); err != nil {
+			sshAccess, err := runWizardSetupNodeSSH(cmd, in, out, node)
+			if err != nil {
+				return err
+			}
+			if err := runWizardMaybeInstallProxyctlOnNode(cmd, in, out, node, sshAccess); err != nil {
 				return err
 			}
 		case "enable node", "disable node":
@@ -2669,31 +2684,31 @@ func runWizardNodeMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPa
 	}
 }
 
-func runWizardSetupNodeSSH(cmd *cobra.Command, in *bufio.Reader, out io.Writer, node domain.Node) error {
+func runWizardSetupNodeSSH(cmd *cobra.Command, in *bufio.Reader, out io.Writer, node domain.Node) (wizardSSHAccess, error) {
 	sshUser, err := promptLine(in, out, "SSH user", "root")
 	if err != nil {
-		return err
+		return wizardSSHAccess{}, err
 	}
 	sshUser = strings.TrimSpace(sshUser)
 	if sshUser == "" {
-		return fmt.Errorf("ssh user is required")
+		return wizardSSHAccess{}, fmt.Errorf("ssh user is required")
 	}
 
 	sshPort, err := promptInt(in, out, "SSH port", 22)
 	if err != nil {
-		return err
+		return wizardSSHAccess{}, err
 	}
 	if sshPort < 1 || sshPort > 65535 {
-		return fmt.Errorf("ssh port must be in range 1..65535")
+		return wizardSSHAccess{}, fmt.Errorf("ssh port must be in range 1..65535")
 	}
 
 	sshKey, err := promptLine(in, out, "SSH private key path (optional)", "~/.ssh/id_ed25519")
 	if err != nil {
-		return err
+		return wizardSSHAccess{}, err
 	}
 	sshKey, generated, err := ensureWizardSSHKey(cmd.Context(), strings.TrimSpace(sshKey))
 	if err != nil {
-		return err
+		return wizardSSHAccess{}, err
 	}
 	if generated {
 		fmt.Fprintf(out, "generated ssh key: %s\n", sshKey)
@@ -2705,10 +2720,68 @@ func runWizardSetupNodeSSH(cmd *cobra.Command, in *bufio.Reader, out io.Writer, 
 
 	strictHostKey, err := promptBool(in, out, "Enable strict SSH host key checking (y/n)", false)
 	if err != nil {
+		return wizardSSHAccess{}, err
+	}
+
+	if err := runWizardSSHCopyID(cmd, out, []domain.Node{node}, sshUser, sshPort, sshKey, strictHostKey); err != nil {
+		return wizardSSHAccess{}, err
+	}
+	return wizardSSHAccess{
+		User:          sshUser,
+		Port:          sshPort,
+		KeyPath:       sshKey,
+		StrictHostKey: strictHostKey,
+	}, nil
+}
+
+func runWizardMaybeInstallProxyctlOnNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer, node domain.Node, ssh wizardSSHAccess) error {
+	host := strings.TrimSpace(node.Host)
+	if host == "" {
+		return nil
+	}
+
+	target := fmt.Sprintf("%s@%s", strings.TrimSpace(ssh.User), host)
+	sshArgs := buildSSHArgs(ssh.Port, ssh.KeyPath, ssh.StrictHostKey)
+	checkArgs := append(append([]string{}, sshArgs...), target, "command -v proxyctl >/dev/null 2>&1")
+	_, checkErr := runExecCombined(cmd.Context(), "ssh", checkArgs...)
+	if checkErr == nil {
+		fmt.Fprintf(out, "remote proxyctl: already installed on %s\n", host)
+		return nil
+	}
+
+	fmt.Fprintf(out, "remote proxyctl: not detected on %s\n", host)
+	installNow, err := promptBool(in, out, "Install proxyctl on this node now (y/n)", true)
+	if err != nil {
+		return err
+	}
+	if !installNow {
+		fmt.Fprintln(out, "skipped remote proxyctl install")
+		return nil
+	}
+
+	useSudoDefault := strings.TrimSpace(ssh.User) != "root"
+	useSudo, err := promptBool(in, out, "Use sudo on remote host for install (y/n)", useSudoDefault)
+	if err != nil {
 		return err
 	}
 
-	return runWizardSSHCopyID(cmd, out, []domain.Node{node}, sshUser, sshPort, sshKey, strictHostKey)
+	prefix := ""
+	if useSudo {
+		prefix = "sudo "
+	}
+	installCmd := strings.Join([]string{
+		"set -e",
+		"if command -v proxyctl >/dev/null 2>&1; then exit 0; fi",
+		prefix + "bash -lc " + shellQuote("curl -fsSL "+defaultUpdateInstallURL+" | PROXYCTL_PROMPT_CONFIG=0 PROXYCTL_DEPLOYMENT_MODE=node bash"),
+	}, "; ")
+	installArgs := append(append([]string{}, sshArgs...), target, installCmd)
+	fmt.Fprintf(out, "installing proxyctl on node=%s host=%s...\n", node.ID, host)
+	outBytes, installErr := runExecCombined(cmd.Context(), "ssh", installArgs...)
+	if installErr != nil {
+		return fmt.Errorf("remote proxyctl install failed for node %s (%s): %w\n%s", node.ID, host, installErr, strings.TrimSpace(string(outBytes)))
+	}
+	fmt.Fprintf(out, "remote proxyctl install completed: node=%s host=%s\n", node.ID, host)
+	return nil
 }
 
 func runWizardShowNodeDetails(cmd *cobra.Command, out io.Writer, dbPath, nodeID string) error {
