@@ -1114,7 +1114,28 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath, linkedUserID string) (in
 				linkUserID = userByOption[linkChoice]
 			}
 		} else {
-			fmt.Fprintln(out, "No enabled users found, skipping immediate client link creation")
+			fmt.Fprintln(out, "No enabled users found")
+			createNow, err := promptBool(in, out, "Create enabled user now and attach to this inbound (y/n)", true)
+			if err != nil {
+				return inboundAddPromptResult{}, err
+			}
+			if createNow {
+				name, err := promptLineRequired(in, out, "User name")
+				if err != nil {
+					return inboundAddPromptResult{}, err
+				}
+				createdUser, err := store.Users().Create(cmd.Context(), domain.User{
+					Name:    strings.TrimSpace(name),
+					Enabled: true,
+				})
+				if err != nil {
+					return inboundAddPromptResult{}, err
+				}
+				fmt.Fprintf(out, "added user: id=%s name=%s enabled=%t created_at=%s\n", createdUser.ID, createdUser.Name, createdUser.Enabled, createdUser.CreatedAt.Format(time.RFC3339))
+				linkUserID = createdUser.ID
+			} else {
+				fmt.Fprintln(out, "Skipping user creation; apply may fail until at least one user credential is attached")
+			}
 		}
 	}
 
