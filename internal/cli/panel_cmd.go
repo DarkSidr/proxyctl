@@ -1078,9 +1078,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         <button id="genSubBtn" class="btn">generate for user</button>
         <input id="subProfile" type="text" placeholder="profile for selected (default: panel)">
         <button id="genSelectedSubBtn" class="btn secondary">generate selected</button>
+        <button id="detachSelectedCredsBtn" class="btn secondary">detach selected creds</button>
         <button id="refreshSubBtn" class="btn warn">refresh all</button>
         <button id="subEnableBtn" class="btn">enable</button>
         <button id="subDisableBtn" class="btn err">disable</button>
+        <button id="subDeleteBtn" class="btn err">delete subscription</button>
       </div>
       <div class="pad" id="subInboundPick"></div>
       <div class="pad" id="subsList"></div>
@@ -1304,11 +1306,15 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const state = selectedSubUser ? subStates[selectedSubUser] : null;
       const enableBtn = document.getElementById("subEnableBtn");
       const disableBtn = document.getElementById("subDisableBtn");
+      const deleteBtn = document.getElementById("subDeleteBtn");
       if (enableBtn) {
         enableBtn.disabled = !!(state && state.Enabled);
       }
       if (disableBtn) {
         disableBtn.disabled = !!(!state || !state.Exists || !state.Enabled);
+      }
+      if (deleteBtn) {
+        deleteBtn.disabled = !!(!state || !state.Exists);
       }
     }
     function getSuggestedInboundPort(type, transport) {
@@ -1421,7 +1427,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         '<div class="label" style="margin-bottom:8px">selected profile inbounds</div>',
         '<div class="table-wrap">',
         '<table>',
-        '<thead><tr><th></th><th>label</th><th>node</th><th>domain</th><th>port</th><th>type</th><th>transport</th><th>path</th><th>sni</th><th>enabled</th></tr></thead>',
+        '<thead><tr><th><input type="checkbox" id="subInboundAll"></th><th>label</th><th>node</th><th>domain</th><th>port</th><th>type</th><th>transport</th><th>path</th><th>sni</th><th>enabled</th></tr></thead>',
         '<tbody>',
         inbounds.map((i) => {
           const checked = selected.has(String(i.ID)) ? ' checked' : '';
@@ -1445,6 +1451,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         '</table>',
         '</div>',
       ].join("");
+      const allBox = pick.querySelector("#subInboundAll");
+      const syncAllBox = () => {
+        const boxes = Array.from(pick.querySelectorAll("[data-sub-inbound-id]"));
+        const checkedCount = boxes.filter((el) => el.checked).length;
+        if (allBox) {
+          allBox.checked = boxes.length > 0 && checkedCount === boxes.length;
+        }
+      };
       pick.querySelectorAll("[data-sub-inbound-id]").forEach((box) => {
         box.addEventListener("change", () => {
           const ids = Array.from(pick.querySelectorAll("[data-sub-inbound-id]:checked"))
@@ -1453,8 +1467,32 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           if (userID) {
             selectedSubInboundByUser[userID] = ids;
           }
+          syncAllBox();
         });
       });
+      if (allBox) {
+        allBox.addEventListener("change", () => {
+          const checked = !!allBox.checked;
+          pick.querySelectorAll("[data-sub-inbound-id]").forEach((el) => {
+            el.checked = checked;
+          });
+          const ids = checked
+            ? Array.from(pick.querySelectorAll("[data-sub-inbound-id]"))
+                .map((el) => (el.getAttribute("data-sub-inbound-id") || "").trim())
+                .filter(Boolean)
+            : [];
+          if (userID) {
+            selectedSubInboundByUser[userID] = ids;
+          }
+          syncAllBox();
+        });
+      }
+      syncAllBox();
+    }
+    function selectedSubInboundIDs() {
+      return Array.from(document.querySelectorAll("[data-sub-inbound-id]:checked"))
+        .map((el) => (el.getAttribute("data-sub-inbound-id") || "").trim())
+        .filter(Boolean);
     }
     function render() {
       if (!snapshot) return;
@@ -1810,9 +1848,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const userID = (document.getElementById("subUser").value || "").trim();
       const profile = (document.getElementById("subProfile").value || "").trim();
       if (!userID) return;
-      const ids = Array.from(document.querySelectorAll("[data-sub-inbound-id]:checked"))
-        .map((el) => (el.getAttribute("data-sub-inbound-id") || "").trim())
-        .filter(Boolean);
+      const ids = selectedSubInboundIDs();
       if (ids.length === 0) {
         showOp("error", "select at least one inbound");
         return;
@@ -1822,6 +1858,24 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           op: "generate_user_selected",
           user_id: userID,
           profile,
+          inbounds: ids.join(","),
+        });
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("detachSelectedCredsBtn").addEventListener("click", async () => {
+      const userID = (document.getElementById("subUser").value || "").trim();
+      if (!userID) return;
+      const ids = selectedSubInboundIDs();
+      if (ids.length === 0) {
+        showOp("error", "select at least one inbound");
+        return;
+      }
+      try {
+        await postForm(cfg.subsActionPath, {
+          op: "delete_selected_credentials",
+          user_id: userID,
           inbounds: ids.join(","),
         });
       } catch (e) {
@@ -1849,6 +1903,15 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (!userID) return;
       try {
         await postForm(cfg.subsActionPath, { op: "set_enabled", user_id: userID, enabled: "0" });
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("subDeleteBtn").addEventListener("click", async () => {
+      const userID = (document.getElementById("subUser").value || "").trim();
+      if (!userID) return;
+      try {
+        await postForm(cfg.subsActionPath, { op: "delete_user", user_id: userID });
       } catch (e) {
         showOp("error", String(e));
       }
@@ -2287,6 +2350,130 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						ops.set("error", "subscription refresh failed: "+panelErrWithOutput(runErr, out))
 					} else {
 						ops.set("ok", "subscriptions refreshed: "+panelSummarizeOutput(out))
+					}
+				case "delete_user":
+					userID := strings.TrimSpace(r.FormValue("user_id"))
+					if userID == "" {
+						ops.set("error", "user id is required")
+						break
+					}
+					store, storeErr := openStoreWithInit(r.Context(), resolvedDB)
+					if storeErr != nil {
+						ops.set("error", storeErr.Error())
+						break
+					}
+					subscriptionDir, dirErr := resolveSubscriptionDir(configPathValue)
+					if dirErr != nil {
+						_ = store.Close()
+						ops.set("error", fmt.Sprintf("resolve subscription dir: %v", dirErr))
+						break
+					}
+					sub, subErr := store.Subscriptions().GetByUserID(r.Context(), userID)
+					removedFiles := 0
+					if subErr == nil {
+						rmCount, rmErr := cleanupUserSubscriptionFiles(userID, subscriptionDir, strings.TrimSpace(sub.OutputPath), strings.TrimSpace(sub.AccessToken))
+						if rmErr != nil {
+							_ = store.Close()
+							ops.set("error", fmt.Sprintf("cleanup subscription files: %v", rmErr))
+							break
+						}
+						removedFiles = rmCount
+					} else {
+						rmCount, rmErr := cleanupUserSubscriptionFiles(userID, subscriptionDir, "", "")
+						if rmErr != nil {
+							_ = store.Close()
+							ops.set("error", fmt.Sprintf("cleanup subscription files: %v", rmErr))
+							break
+						}
+						removedFiles = rmCount
+					}
+					deleted, delErr := store.Subscriptions().DeleteByUserID(r.Context(), userID)
+					_ = store.Close()
+					if delErr != nil {
+						ops.set("error", fmt.Sprintf("delete subscription: %v", delErr))
+						break
+					}
+					if deleted {
+						ops.set("ok", fmt.Sprintf("subscription deleted for user %s (removed files: %d)", userID, removedFiles))
+					} else {
+						ops.set("ok", fmt.Sprintf("subscription files cleaned for user %s (removed files: %d)", userID, removedFiles))
+					}
+				case "delete_selected_credentials":
+					userID := strings.TrimSpace(r.FormValue("user_id"))
+					if userID == "" {
+						ops.set("error", "user id is required")
+						break
+					}
+					inboundIDs := parseCSV(r.FormValue("inbounds"))
+					if len(inboundIDs) == 0 {
+						ops.set("error", "select at least one inbound")
+						break
+					}
+					inboundSet := make(map[string]struct{}, len(inboundIDs))
+					for _, id := range inboundIDs {
+						inboundSet[id] = struct{}{}
+					}
+					store, storeErr := openStoreWithInit(r.Context(), resolvedDB)
+					if storeErr != nil {
+						ops.set("error", storeErr.Error())
+						break
+					}
+					credentials, listErr := store.Credentials().List(r.Context())
+					if listErr != nil {
+						_ = store.Close()
+						ops.set("error", fmt.Sprintf("list credentials: %v", listErr))
+						break
+					}
+					toDelete := make([]domain.Credential, 0, len(credentials))
+					remainingForUser := 0
+					for _, cred := range credentials {
+						if strings.TrimSpace(cred.UserID) != userID {
+							continue
+						}
+						if _, ok := inboundSet[strings.TrimSpace(cred.InboundID)]; ok {
+							toDelete = append(toDelete, cred)
+							continue
+						}
+						remainingForUser++
+					}
+					deleteFailed := false
+					for _, cred := range toDelete {
+						if _, delErr := store.Credentials().Delete(r.Context(), cred.ID); delErr != nil {
+							_ = store.Close()
+							ops.set("error", fmt.Sprintf("detach credential %s: %v", cred.ID, delErr))
+							deleteFailed = true
+							break
+						}
+					}
+					if deleteFailed {
+						break
+					}
+					deletedCount := len(toDelete)
+					if deletedCount == 0 {
+						_ = store.Close()
+						ops.set("ok", "no matching credentials to detach")
+						break
+					}
+					if remainingForUser == 0 {
+						removedFiles := 0
+						if sub, subErr := store.Subscriptions().GetByUserID(r.Context(), userID); subErr == nil {
+							if subscriptionDir, dirErr := resolveSubscriptionDir(configPathValue); dirErr == nil {
+								if rmCount, rmErr := cleanupUserSubscriptionFiles(userID, subscriptionDir, strings.TrimSpace(sub.OutputPath), strings.TrimSpace(sub.AccessToken)); rmErr == nil {
+									removedFiles = rmCount
+								}
+							}
+						}
+						_, _ = store.Subscriptions().DeleteByUserID(r.Context(), userID)
+						_ = store.Close()
+						ops.set("ok", fmt.Sprintf("credentials detached: %d, subscription disabled (removed files: %d)", deletedCount, removedFiles))
+						break
+					}
+					_ = store.Close()
+					out, runErr := panelExecuteCommand(r.Context(), newSubscriptionGenerateCmd(&configPathValue, &dbPathValue), []string{userID})
+					if runErr != nil {
+						ops.set("error", fmt.Sprintf("credentials detached: %d, but subscription generate failed: %s", deletedCount, panelErrWithOutput(runErr, out)))
+					} else {
+						ops.set("ok", fmt.Sprintf("credentials detached: %d | %s", deletedCount, panelSummarizeOutput(out)))
 					}
 				case "attach_credential", "delete_credential":
 					if err := panelHandleCredentialAction(r.Context(), resolvedDB, r, &configPathValue, &dbPathValue, ops); err != nil {
