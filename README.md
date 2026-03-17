@@ -417,9 +417,9 @@ Wizard is inbound-first (similar to 3x-ui workflow):
 At the end of inbound creation wizard can still print a ready client URI when a user is linked.
 Inside `open credential`, you can print URI with fingerprint presets (`chrome/google`, `safari`, `firefox`, `edge`, etc.) or custom value.
 
-## Web panel MVP (phase 0)
+## Web panel MVP (phase 1)
 
-Read-only panel is available via:
+Panel is available via:
 
 ```bash
 proxyctl panel serve --config /etc/proxy-orchestrator/proxyctl.yaml
@@ -435,11 +435,14 @@ Defaults:
 - base path: `PANEL_PATH` from the same file
 - auth: HTTP Basic Auth with `PANEL_LOGIN`/`PANEL_PASSWORD`
 
-Current pages:
+Current pages/features:
 - dashboard (`runtime units`, counters),
-- users list,
-- inbounds list,
-- subscription links list.
+- users list with create/delete actions,
+- inbounds list with create/update/delete actions,
+- explicit runtime actions: `render`, `validate`, `apply`,
+- subscription links list,
+- subscription actions: generate per user, refresh for all users,
+- credential binding UI (`user` ↔ `inbound`) with attach/detach actions.
 
 ### Hide panel behind Caddy/Nginx (recommended)
 

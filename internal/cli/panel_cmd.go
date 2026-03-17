@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
@@ -13,12 +15,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"proxyctl/internal/config"
 	"proxyctl/internal/domain"
+	"proxyctl/internal/engine"
 )
 
 type panelUnitState struct {
@@ -31,6 +35,7 @@ type panelInboundView struct {
 	ID        string
 	Type      string
 	Engine    string
+	NodeID    string
 	NodeName  string
 	Domain    string
 	Port      int
@@ -38,6 +43,28 @@ type panelInboundView struct {
 	Enabled   bool
 	Transport string
 	Path      string
+	SNI       string
+	Version   string
+}
+
+type panelUserView struct {
+	ID        string
+	Name      string
+	Enabled   bool
+	CreatedAt time.Time
+	Version   string
+}
+
+type panelCredentialView struct {
+	ID          string
+	UserID      string
+	UserName    string
+	InboundID   string
+	InboundType string
+	InboundAddr string
+	Kind        string
+	SecretMask  string
+	Version     string
 }
 
 type panelCounts struct {
@@ -48,17 +75,53 @@ type panelCounts struct {
 }
 
 type panelPageData struct {
-	Title         string
-	ActiveTab     string
-	BasePath      string
-	LogoutPath    string
-	ListenAddr    string
-	GeneratedAt   string
-	Counts        panelCounts
-	Units         []panelUnitState
-	Users         []domain.User
-	Inbounds      []panelInboundView
-	Subscriptions []string
+	Title               string
+	ActiveTab           string
+	BasePath            string
+	LogoutPath          string
+	ListenAddr          string
+	GeneratedAt         string
+	Counts              panelCounts
+	Units               []panelUnitState
+	Users               []panelUserView
+	Nodes               []domain.Node
+	Inbounds            []panelInboundView
+	Credentials         []panelCredentialView
+	Subscriptions       []string
+	OperationStatus     string
+	OperationMessage    string
+	OperationAt         string
+	DashboardActionPath string
+	UsersActionPath     string
+	InboundsActionPath  string
+	SubsActionPath      string
+}
+
+type panelOperationFeed struct {
+	mu      sync.RWMutex
+	status  string
+	message string
+	at      string
+}
+
+func (f *panelOperationFeed) set(status, message string) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.status = strings.TrimSpace(status)
+	f.message = strings.TrimSpace(message)
+	f.at = time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
+}
+
+func (f *panelOperationFeed) snapshot() (status, message, at string) {
+	if f == nil {
+		return "", "", ""
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.status, f.message, f.at
 }
 
 var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
@@ -97,6 +160,7 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
       --muted: #94a3b8;
       --ok: #34d399;
       --warn: #f59e0b;
+      --err: #fb7185;
       --brand: #22d3ee;
     }
     * { box-sizing: border-box; }
@@ -110,7 +174,7 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
         linear-gradient(160deg, var(--bg-a), var(--bg-b));
       min-height: 100vh;
     }
-    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 44px; }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 24px 16px 44px; }
     .top {
       display: flex;
       justify-content: space-between;
@@ -180,9 +244,60 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
       overflow: hidden;
       margin-top: 10px;
     }
-    .section h2 { margin: 0; padding: 12px 14px; font-size: 1rem; border-bottom: 1px solid var(--line); }
+    .section h2 {
+      margin: 0;
+      padding: 12px 14px;
+      font-size: 1rem;
+      border-bottom: 1px solid var(--line);
+    }
+    .pad { padding: 10px 14px; }
+    .line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .btn {
+      appearance: none;
+      border: 1px solid #0ea5e9;
+      color: #e0f2fe;
+      background: linear-gradient(180deg, #0ea5e9, #0369a1);
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 0.82rem;
+    }
+    .btn.warn { border-color: #f59e0b; background: linear-gradient(180deg, #d97706, #92400e); }
+    .btn.err { border-color: #e11d48; background: linear-gradient(180deg, #be123c, #881337); }
+    input, select {
+      border: 1px solid var(--line);
+      background: rgba(15, 23, 42, 0.62);
+      border-radius: 8px;
+      color: var(--text);
+      padding: 6px 8px;
+      font-size: 0.82rem;
+      min-width: 0;
+    }
+    label.slim { color: var(--muted); font-size: 0.78rem; }
+    .op {
+      border: 1px solid var(--line);
+      background: rgba(15, 23, 42, 0.45);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      font-size: 0.86rem;
+    }
+    .op.ok { border-color: #065f46; }
+    .op.error { border-color: #9f1239; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid rgba(148, 163, 184, 0.15); font-size: 0.88rem; }
+    th, td {
+      text-align: left;
+      padding: 9px 12px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+      font-size: 0.82rem;
+      vertical-align: top;
+    }
     th { color: var(--muted); font-weight: 600; }
     tbody tr:hover { background: rgba(15, 23, 42, 0.45); }
     .ok { color: var(--ok); }
@@ -190,16 +305,17 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
     .links { padding: 10px 14px; }
     .links a { color: #a5f3fc; word-break: break-all; }
     .links li { margin: 8px 0; }
-    @media (max-width: 720px) {
+    .inline { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    @media (max-width: 960px) {
       .top { flex-direction: column; align-items: flex-start; }
-      th, td { padding: 8px; font-size: 0.82rem; }
+      th, td { padding: 8px; font-size: 0.8rem; }
     }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="top">
-      <h1 class="title">proxyctl visual panel (phase 0)</h1>
+      <h1 class="title">proxyctl visual panel (phase 1)</h1>
       <div class="top-right">
         <div class="meta">{{.GeneratedAt}} | listen {{.ListenAddr}}</div>
         {{if .LogoutPath}}
@@ -217,6 +333,13 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
       <a href="{{.BasePath}}/subscriptions" class="{{if eq .ActiveTab "subscriptions"}}active{{end}}">subscriptions</a>
     </nav>
 
+    {{if .OperationMessage}}
+    <section class="op {{if eq .OperationStatus "ok"}}ok{{else}}error{{end}}">
+      <strong>last operation:</strong> {{.OperationMessage}}
+      {{if .OperationAt}}<span class="muted">({{.OperationAt}})</span>{{end}}
+    </section>
+    {{end}}
+
     <div class="cards">
       <div class="card"><div class="label">users</div><div class="value">{{.Counts.UsersTotal}}</div></div>
       <div class="card"><div class="label">enabled users</div><div class="value">{{.Counts.UsersEnabled}}</div></div>
@@ -225,6 +348,24 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
     </div>
 
     {{if eq .ActiveTab "dashboard"}}
+    <section class="section">
+      <h2>runtime actions</h2>
+      <div class="pad line">
+        <form method="post" action="{{.DashboardActionPath}}" class="inline">
+          <input type="hidden" name="action" value="render">
+          <button class="btn" type="submit">render configs</button>
+        </form>
+        <form method="post" action="{{.DashboardActionPath}}" class="inline">
+          <input type="hidden" name="action" value="validate">
+          <button class="btn warn" type="submit">validate</button>
+        </form>
+        <form method="post" action="{{.DashboardActionPath}}" class="inline">
+          <input type="hidden" name="action" value="apply">
+          <button class="btn err" type="submit">apply</button>
+        </form>
+      </div>
+    </section>
+
     <section class="section">
       <h2>runtime units</h2>
       <table>
@@ -244,9 +385,21 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
 
     {{if eq .ActiveTab "users"}}
     <section class="section">
+      <h2>create user</h2>
+      <div class="pad">
+        <form method="post" action="{{.UsersActionPath}}" class="line">
+          <input type="hidden" name="op" value="create">
+          <input name="name" type="text" placeholder="username" required>
+          <label class="slim"><input type="checkbox" name="enabled" value="1" checked> enabled</label>
+          <button class="btn" type="submit">create</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="section">
       <h2>users</h2>
       <table>
-        <thead><tr><th>id</th><th>name</th><th>enabled</th><th>created at</th></tr></thead>
+        <thead><tr><th>id</th><th>name</th><th>enabled</th><th>created at</th><th>actions</th></tr></thead>
         <tbody>
           {{range .Users}}
           <tr>
@@ -254,9 +407,17 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
             <td>{{.Name}}</td>
             <td class="{{stateClass .Enabled}}">{{yesNo .Enabled}}</td>
             <td>{{timefmt .CreatedAt}}</td>
+            <td>
+              <form method="post" action="{{$.UsersActionPath}}" class="inline">
+                <input type="hidden" name="op" value="delete">
+                <input type="hidden" name="user_id" value="{{.ID}}">
+                <input type="hidden" name="version" value="{{.Version}}">
+                <button class="btn err" type="submit">delete</button>
+              </form>
+            </td>
           </tr>
           {{else}}
-          <tr><td colspan="4" class="muted">no users</td></tr>
+          <tr><td colspan="5" class="muted">no users</td></tr>
           {{end}}
         </tbody>
       </table>
@@ -265,23 +426,107 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
 
     {{if eq .ActiveTab "inbounds"}}
     <section class="section">
+      <h2>create inbound</h2>
+      <div class="pad">
+        <form method="post" action="{{.InboundsActionPath}}" class="line">
+          <input type="hidden" name="op" value="create">
+          <select name="type">
+            <option value="vless">vless</option>
+            <option value="hysteria2">hysteria2</option>
+            <option value="xhttp">xhttp</option>
+          </select>
+          <select name="transport">
+            <option value="tcp">tcp</option>
+            <option value="ws">ws</option>
+            <option value="grpc">grpc</option>
+            <option value="udp">udp</option>
+            <option value="xhttp">xhttp</option>
+          </select>
+          <select name="engine">
+            <option value="">auto</option>
+            <option value="sing-box">sing-box</option>
+            <option value="xray">xray</option>
+          </select>
+          <select name="node_id" required>
+            {{range .Nodes}}
+            <option value="{{.ID}}">{{.Name}} ({{.Host}})</option>
+            {{end}}
+          </select>
+          <input name="domain" type="text" placeholder="domain" required>
+          <input name="port" type="number" min="1" max="65535" placeholder="port" required>
+          <input name="path" type="text" placeholder="path (optional)">
+          <input name="sni" type="text" placeholder="sni (optional)">
+          <label class="slim"><input type="checkbox" name="tls" value="1"> tls</label>
+          <label class="slim"><input type="checkbox" name="enabled" value="1" checked> enabled</label>
+          <button class="btn" type="submit">create inbound</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="section">
       <h2>inbounds</h2>
       <table>
-        <thead><tr><th>id</th><th>type</th><th>engine</th><th>node</th><th>domain</th><th>port</th><th>tls</th><th>enabled</th></tr></thead>
+        <thead><tr><th>id</th><th>type</th><th>engine</th><th>node</th><th>domain</th><th>port</th><th>transport</th><th>path</th><th>sni</th><th>flags</th><th>actions</th></tr></thead>
         <tbody>
           {{range .Inbounds}}
+          {{$row := .}}
+          {{$formID := printf "inbound-form-%s" .ID}}
           <tr>
             <td>{{.ID}}</td>
-            <td>{{.Type}}</td>
-            <td>{{.Engine}}</td>
-            <td>{{.NodeName}}</td>
-            <td>{{.Domain}}</td>
-            <td>{{.Port}}</td>
-            <td class="{{stateClass .TLS}}">{{yesNo .TLS}}</td>
-            <td class="{{stateClass .Enabled}}">{{yesNo .Enabled}}</td>
+            <td>
+              <select name="type" form="{{$formID}}">
+                <option value="vless" {{if eq .Type "vless"}}selected{{end}}>vless</option>
+                <option value="hysteria2" {{if eq .Type "hysteria2"}}selected{{end}}>hysteria2</option>
+                <option value="xhttp" {{if eq .Type "xhttp"}}selected{{end}}>xhttp</option>
+              </select>
+            </td>
+            <td>
+              <select name="engine" form="{{$formID}}">
+                <option value="sing-box" {{if eq .Engine "sing-box"}}selected{{end}}>sing-box</option>
+                <option value="xray" {{if eq .Engine "xray"}}selected{{end}}>xray</option>
+              </select>
+            </td>
+            <td>
+              <select name="node_id" form="{{$formID}}">
+                {{range $.Nodes}}
+                <option value="{{.ID}}" {{if eq $row.NodeID .ID}}selected{{end}}>{{.Name}}</option>
+                {{end}}
+              </select>
+            </td>
+            <td><input name="domain" value="{{.Domain}}" type="text" required form="{{$formID}}"></td>
+            <td><input name="port" value="{{.Port}}" type="number" min="1" max="65535" required form="{{$formID}}"></td>
+            <td>
+              <select name="transport" form="{{$formID}}">
+                <option value="tcp" {{if eq .Transport "tcp"}}selected{{end}}>tcp</option>
+                <option value="ws" {{if eq .Transport "ws"}}selected{{end}}>ws</option>
+                <option value="grpc" {{if eq .Transport "grpc"}}selected{{end}}>grpc</option>
+                <option value="udp" {{if eq .Transport "udp"}}selected{{end}}>udp</option>
+                <option value="xhttp" {{if eq .Transport "xhttp"}}selected{{end}}>xhttp</option>
+              </select>
+            </td>
+            <td><input name="path" value="{{.Path}}" type="text" form="{{$formID}}"></td>
+            <td><input name="sni" value="{{.SNI}}" type="text" form="{{$formID}}"></td>
+            <td>
+              <label class="slim"><input type="checkbox" name="tls" value="1" {{if .TLS}}checked{{end}} form="{{$formID}}"> tls</label>
+              <label class="slim"><input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}} form="{{$formID}}"> enabled</label>
+            </td>
+            <td>
+              <form id="{{$formID}}" method="post" action="{{$.InboundsActionPath}}" class="inline">
+                <input type="hidden" name="op" value="update">
+                <input type="hidden" name="inbound_id" value="{{.ID}}">
+                <input type="hidden" name="version" value="{{.Version}}">
+                <button class="btn" type="submit">save</button>
+              </form>
+              <form method="post" action="{{$.InboundsActionPath}}" class="inline">
+                <input type="hidden" name="op" value="delete">
+                <input type="hidden" name="inbound_id" value="{{.ID}}">
+                <input type="hidden" name="version" value="{{.Version}}">
+                <button class="btn err" type="submit">delete</button>
+              </form>
+            </td>
           </tr>
           {{else}}
-          <tr><td colspan="8" class="muted">no inbounds</td></tr>
+          <tr><td colspan="11" class="muted">no inbounds</td></tr>
           {{end}}
         </tbody>
       </table>
@@ -289,6 +534,75 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
     {{end}}
 
     {{if eq .ActiveTab "subscriptions"}}
+    <section class="section">
+      <h2>subscription actions</h2>
+      <div class="pad line">
+        <form method="post" action="{{.SubsActionPath}}" class="inline">
+          <input type="hidden" name="op" value="generate_user">
+          <select name="user_id">
+            {{range .Users}}
+            <option value="{{.ID}}">{{.Name}} ({{.ID}})</option>
+            {{end}}
+          </select>
+          <button class="btn" type="submit">generate for user</button>
+        </form>
+        <form method="post" action="{{.SubsActionPath}}" class="inline">
+          <input type="hidden" name="op" value="refresh_all">
+          <button class="btn warn" type="submit">refresh all</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>attach credential (user ↔ inbound)</h2>
+      <div class="pad">
+        <form method="post" action="{{.SubsActionPath}}" class="line">
+          <input type="hidden" name="op" value="attach_credential">
+          <select name="user_id" required>
+            {{range .Users}}
+            <option value="{{.ID}}">{{.Name}} ({{.ID}})</option>
+            {{end}}
+          </select>
+          <select name="inbound_id" required>
+            {{range .Inbounds}}
+            <option value="{{.ID}}">{{.ID}} {{.Type}} {{.Domain}}:{{.Port}}</option>
+            {{end}}
+          </select>
+          <input name="label" type="text" placeholder="client label (optional)">
+          <button class="btn" type="submit">attach</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>credentials</h2>
+      <table>
+        <thead><tr><th>id</th><th>user</th><th>inbound</th><th>kind</th><th>secret</th><th>actions</th></tr></thead>
+        <tbody>
+          {{range .Credentials}}
+          <tr>
+            <td>{{.ID}}</td>
+            <td>{{.UserName}}<br><span class="muted">{{.UserID}}</span></td>
+            <td>{{.InboundType}} {{.InboundAddr}}<br><span class="muted">{{.InboundID}}</span></td>
+            <td>{{.Kind}}</td>
+            <td>{{.SecretMask}}</td>
+            <td>
+              <form method="post" action="{{$.SubsActionPath}}" class="inline">
+                <input type="hidden" name="op" value="delete_credential">
+                <input type="hidden" name="credential_id" value="{{.ID}}">
+                <input type="hidden" name="user_id" value="{{.UserID}}">
+                <input type="hidden" name="version" value="{{.Version}}">
+                <button class="btn err" type="submit">detach</button>
+              </form>
+            </td>
+          </tr>
+          {{else}}
+          <tr><td colspan="6" class="muted">no credentials</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </section>
+
     <section class="section">
       <h2>generated subscription links</h2>
       <div class="links">
@@ -414,14 +728,16 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Serve read-only visual panel",
-		Long:  "Starts phase-0 read-only visual panel bound to localhost by default.",
+		Short: "Serve visual panel",
+		Long:  "Starts phase-1 visual panel with safe write operations and explicit runtime actions.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadAppConfig(*configPath)
 			if err != nil {
 				return err
 			}
 			resolvedDB := resolveDBPath(cmd, cfg, *dbPath)
+			configPathValue := strings.TrimSpace(*configPath)
+			dbPathValue := strings.TrimSpace(*dbPath)
 
 			panelInfo, err := readPanelAccessInfo(panelCredentialsPathFromConfig(*configPath))
 			if err != nil && !os.IsNotExist(err) {
@@ -451,7 +767,12 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			usersPath := panelJoin(basePath, "users")
 			inboundsPath := panelJoin(basePath, "inbounds")
 			subsPath := panelJoin(basePath, "subscriptions")
+			dashboardActionPath := panelJoin(basePath, "actions")
+			usersActionPath := panelJoin(basePath, "users/action")
+			inboundsActionPath := panelJoin(basePath, "inbounds/action")
+			subsActionPath := panelJoin(basePath, "subscriptions/action")
 			logoutPath := panelJoin(basePath, "logout")
+			ops := &panelOperationFeed{}
 
 			handlePage := func(tab string) http.HandlerFunc {
 				return func(w http.ResponseWriter, r *http.Request) {
@@ -465,18 +786,25 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						return
 					}
 					data := panelPageData{
-						Title:         "proxyctl panel",
-						ActiveTab:     tab,
-						BasePath:      basePath,
-						LogoutPath:    logoutPath,
-						ListenAddr:    listenAddr,
-						GeneratedAt:   time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
-						Counts:        snapshot.counts,
-						Units:         snapshot.units,
-						Users:         snapshot.users,
-						Inbounds:      snapshot.inbounds,
-						Subscriptions: snapshot.subscriptionLinks,
+						Title:               "proxyctl panel",
+						ActiveTab:           tab,
+						BasePath:            basePath,
+						LogoutPath:          logoutPath,
+						ListenAddr:          listenAddr,
+						GeneratedAt:         time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
+						Counts:              snapshot.counts,
+						Units:               snapshot.units,
+						Users:               snapshot.users,
+						Nodes:               snapshot.nodes,
+						Inbounds:            snapshot.inbounds,
+						Credentials:         snapshot.credentials,
+						Subscriptions:       snapshot.subscriptionLinks,
+						DashboardActionPath: dashboardActionPath,
+						UsersActionPath:     usersActionPath,
+						InboundsActionPath:  inboundsActionPath,
+						SubsActionPath:      subsActionPath,
 					}
+					data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 					w.Header().Set("Content-Type", "text/html; charset=utf-8")
 					if execErr := panelPageTmpl.Execute(w, data); execErr != nil {
 						http.Error(w, "template render failed", http.StatusInternalServerError)
@@ -494,6 +822,105 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			panelMux.HandleFunc(usersPath, handlePage("users"))
 			panelMux.HandleFunc(inboundsPath, handlePage("inbounds"))
 			panelMux.HandleFunc(subsPath, handlePage("subscriptions"))
+			panelMux.HandleFunc(dashboardActionPath, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				if err := r.ParseForm(); err != nil {
+					ops.set("error", "invalid action request")
+					http.Redirect(w, r, dashboardPath, http.StatusSeeOther)
+					return
+				}
+				action := strings.TrimSpace(r.FormValue("action"))
+				switch action {
+				case "render":
+					out, runErr := panelExecuteCommand(r.Context(), newRenderCmd(&configPathValue, &dbPathValue), nil)
+					if runErr != nil {
+						ops.set("error", "render failed: "+panelErrWithOutput(runErr, out))
+					} else {
+						ops.set("ok", "render completed: "+panelSummarizeOutput(out))
+					}
+				case "validate":
+					out, runErr := panelExecuteCommand(r.Context(), newValidateCmd(&configPathValue, &dbPathValue), nil)
+					if runErr != nil {
+						ops.set("error", "validate failed: "+panelErrWithOutput(runErr, out))
+					} else {
+						ops.set("ok", "validate completed: "+panelSummarizeOutput(out))
+					}
+				case "apply":
+					out, runErr := panelExecuteCommand(r.Context(), newApplyCmd(&configPathValue, &dbPathValue), nil)
+					if runErr != nil {
+						ops.set("error", "apply failed: "+panelErrWithOutput(runErr, out))
+					} else {
+						ops.set("ok", "apply completed: "+panelSummarizeOutput(out))
+					}
+				default:
+					ops.set("error", "unknown dashboard action")
+				}
+				http.Redirect(w, r, dashboardPath, http.StatusSeeOther)
+			})
+			panelMux.HandleFunc(usersActionPath, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				if err := panelHandleUserAction(r.Context(), resolvedDB, r, ops); err != nil {
+					ops.set("error", err.Error())
+				}
+				http.Redirect(w, r, usersPath, http.StatusSeeOther)
+			})
+			panelMux.HandleFunc(inboundsActionPath, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				if err := panelHandleInboundAction(r.Context(), resolvedDB, r, ops); err != nil {
+					ops.set("error", err.Error())
+				}
+				http.Redirect(w, r, inboundsPath, http.StatusSeeOther)
+			})
+			panelMux.HandleFunc(subsActionPath, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				if err := r.ParseForm(); err != nil {
+					ops.set("error", "invalid subscription action request")
+					http.Redirect(w, r, subsPath, http.StatusSeeOther)
+					return
+				}
+				switch strings.TrimSpace(r.FormValue("op")) {
+				case "generate_user":
+					userID := strings.TrimSpace(r.FormValue("user_id"))
+					if userID == "" {
+						ops.set("error", "user id is required")
+						break
+					}
+					out, runErr := panelExecuteCommand(r.Context(), newSubscriptionGenerateCmd(&configPathValue, &dbPathValue), []string{userID})
+					if runErr != nil {
+						ops.set("error", "subscription generate failed: "+panelErrWithOutput(runErr, out))
+					} else {
+						ops.set("ok", "subscription generated: "+panelSummarizeOutput(out))
+					}
+				case "refresh_all":
+					out, runErr := panelExecuteCommandWithSetup(r.Context(), newSubscriptionRefreshCmd(&configPathValue, &dbPathValue), nil, func(cmd *cobra.Command) error {
+						return cmd.Flags().Set("all", "true")
+					})
+					if runErr != nil {
+						ops.set("error", "subscription refresh failed: "+panelErrWithOutput(runErr, out))
+					} else {
+						ops.set("ok", "subscriptions refreshed: "+panelSummarizeOutput(out))
+					}
+				case "attach_credential", "delete_credential":
+					if err := panelHandleCredentialAction(r.Context(), resolvedDB, r, &configPathValue, &dbPathValue, ops); err != nil {
+						ops.set("error", err.Error())
+					}
+				default:
+					ops.set("error", "unknown subscription action")
+				}
+				http.Redirect(w, r, subsPath, http.StatusSeeOther)
+			})
 			if dashboardPath != "/" {
 				panelMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/" {
@@ -537,8 +964,10 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 type panelSnapshot struct {
 	counts            panelCounts
 	units             []panelUnitState
-	users             []domain.User
+	users             []panelUserView
+	nodes             []domain.Node
 	inbounds          []panelInboundView
+	credentials       []panelCredentialView
 	subscriptionLinks []string
 }
 
@@ -561,6 +990,10 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	if err != nil {
 		return panelSnapshot{}, fmt.Errorf("list inbounds: %w", err)
 	}
+	credentials, err := store.Credentials().List(ctx)
+	if err != nil {
+		return panelSnapshot{}, fmt.Errorf("list credentials: %w", err)
+	}
 
 	nodeNameByID := make(map[string]string, len(nodes))
 	for _, node := range nodes {
@@ -568,8 +1001,10 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	}
 
 	inboundRows := make([]panelInboundView, 0, len(inbounds))
+	inboundByID := make(map[string]domain.Inbound, len(inbounds))
 	enabledInbounds := 0
 	for _, inbound := range inbounds {
+		inboundByID[inbound.ID] = inbound
 		nodeName := inbound.NodeID
 		if name := strings.TrimSpace(nodeNameByID[inbound.NodeID]); name != "" {
 			nodeName = name
@@ -578,6 +1013,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			ID:        inbound.ID,
 			Type:      string(inbound.Type),
 			Engine:    string(inbound.Engine),
+			NodeID:    inbound.NodeID,
 			NodeName:  nodeName,
 			Domain:    strings.TrimSpace(inbound.Domain),
 			Port:      inbound.Port,
@@ -585,6 +1021,8 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			Enabled:   inbound.Enabled,
 			Transport: strings.TrimSpace(inbound.Transport),
 			Path:      strings.TrimSpace(inbound.Path),
+			SNI:       strings.TrimSpace(inbound.SNI),
+			Version:   panelInboundVersion(inbound),
 		})
 		if inbound.Enabled {
 			enabledInbounds++
@@ -592,12 +1030,52 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	}
 	sort.Slice(inboundRows, func(i, j int) bool { return inboundRows[i].ID < inboundRows[j].ID })
 
+	userRows := make([]panelUserView, 0, len(users))
+	userByID := make(map[string]domain.User, len(users))
 	enabledUsers := 0
 	for _, user := range users {
+		userByID[user.ID] = user
+		userRows = append(userRows, panelUserView{
+			ID:        user.ID,
+			Name:      user.Name,
+			Enabled:   user.Enabled,
+			CreatedAt: user.CreatedAt,
+			Version:   panelUserVersion(user),
+		})
 		if user.Enabled {
 			enabledUsers++
 		}
 	}
+
+	credentialRows := make([]panelCredentialView, 0, len(credentials))
+	for _, cred := range credentials {
+		userName := cred.UserID
+		if u, ok := userByID[cred.UserID]; ok && strings.TrimSpace(u.Name) != "" {
+			userName = strings.TrimSpace(u.Name)
+		}
+		inboundAddr := cred.InboundID
+		inboundType := ""
+		if in, ok := inboundByID[cred.InboundID]; ok {
+			inboundType = string(in.Type)
+			addr := strings.TrimSpace(in.Domain)
+			if addr == "" {
+				addr = "<no-domain>"
+			}
+			inboundAddr = fmt.Sprintf("%s:%d", addr, in.Port)
+		}
+		credentialRows = append(credentialRows, panelCredentialView{
+			ID:          cred.ID,
+			UserID:      cred.UserID,
+			UserName:    userName,
+			InboundID:   cred.InboundID,
+			InboundType: inboundType,
+			InboundAddr: inboundAddr,
+			Kind:        string(cred.Kind),
+			SecretMask:  maskSecret(cred.Secret),
+			Version:     panelCredentialVersion(cred),
+		})
+	}
+	sort.Slice(credentialRows, func(i, j int) bool { return credentialRows[i].ID < credentialRows[j].ID })
 
 	subLinks, err := listPanelSubscriptionLinks(cfg)
 	if err != nil {
@@ -612,10 +1090,493 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			InboundsActive: enabledInbounds,
 		},
 		units:             runtimeUnitStates(ctx, cfg),
-		users:             users,
+		users:             userRows,
+		nodes:             nodes,
 		inbounds:          inboundRows,
+		credentials:       credentialRows,
 		subscriptionLinks: subLinks,
 	}, nil
+}
+
+func panelExecuteCommand(ctx context.Context, cmd *cobra.Command, args []string) (string, error) {
+	return panelExecuteCommandWithSetup(ctx, cmd, args, nil)
+}
+
+func panelExecuteCommandWithSetup(ctx context.Context, cmd *cobra.Command, args []string, setup func(*cobra.Command) error) (string, error) {
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetContext(ctx)
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	if setup != nil {
+		if err := setup(cmd); err != nil {
+			return "", err
+		}
+	}
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(ctx)
+	return strings.TrimSpace(out.String()), err
+}
+
+func panelErrWithOutput(err error, out string) string {
+	base := strings.TrimSpace(err.Error())
+	if strings.TrimSpace(out) == "" {
+		return base
+	}
+	return base + " | " + panelSummarizeOutput(out)
+}
+
+func panelSummarizeOutput(out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	parts := make([]string, 0, 2)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts = append(parts, line)
+		if len(parts) == 2 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return "ok"
+	}
+	return strings.Join(parts, " | ")
+}
+
+func panelHandleUserAction(ctx context.Context, dbPath string, r *http.Request, ops *panelOperationFeed) error {
+	if err := r.ParseForm(); err != nil {
+		return fmt.Errorf("invalid user action request")
+	}
+	action := strings.TrimSpace(r.FormValue("op"))
+	if action == "" {
+		return fmt.Errorf("user action is required")
+	}
+
+	store, err := openStoreWithInit(ctx, dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	switch action {
+	case "create":
+		name := strings.TrimSpace(r.FormValue("name"))
+		if name == "" {
+			return fmt.Errorf("user name is required")
+		}
+		created, err := store.Users().Create(ctx, domain.User{
+			Name:    name,
+			Enabled: panelFormBool(r.FormValue("enabled")),
+		})
+		if err != nil {
+			return fmt.Errorf("create user: %w", err)
+		}
+		ops.set("ok", fmt.Sprintf("user created: %s (%s)", created.Name, created.ID))
+		return nil
+	case "delete":
+		userID := strings.TrimSpace(r.FormValue("user_id"))
+		version := strings.TrimSpace(r.FormValue("version"))
+		if userID == "" {
+			return fmt.Errorf("user id is required")
+		}
+		users, err := store.Users().List(ctx)
+		if err != nil {
+			return fmt.Errorf("list users: %w", err)
+		}
+		var current domain.User
+		found := false
+		for _, user := range users {
+			if user.ID == userID {
+				current = user
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("user %q not found", userID)
+		}
+		if version != panelUserVersion(current) {
+			return fmt.Errorf("user %q changed since page load; refresh and retry", userID)
+		}
+		deleted, err := store.Users().Delete(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("delete user: %w", err)
+		}
+		if !deleted {
+			return fmt.Errorf("user %q not found", userID)
+		}
+		ops.set("ok", fmt.Sprintf("user deleted: %s (%s)", current.Name, current.ID))
+		return nil
+	default:
+		return fmt.Errorf("unknown user action")
+	}
+}
+
+func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Request, ops *panelOperationFeed) error {
+	if err := r.ParseForm(); err != nil {
+		return fmt.Errorf("invalid inbound action request")
+	}
+	action := strings.TrimSpace(r.FormValue("op"))
+	if action == "" {
+		return fmt.Errorf("inbound action is required")
+	}
+
+	store, err := openStoreWithInit(ctx, dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	switch action {
+	case "create":
+		inbound, err := panelInboundFromForm(r, domain.Inbound{})
+		if err != nil {
+			return err
+		}
+		created, err := store.Inbounds().Create(ctx, inbound)
+		if err != nil {
+			return fmt.Errorf("create inbound: %w", err)
+		}
+		ops.set("ok", fmt.Sprintf("inbound created: %s (%s:%d)", created.ID, created.Domain, created.Port))
+		return nil
+	case "update", "delete":
+		inboundID := strings.TrimSpace(r.FormValue("inbound_id"))
+		version := strings.TrimSpace(r.FormValue("version"))
+		if inboundID == "" {
+			return fmt.Errorf("inbound id is required")
+		}
+		inbounds, err := store.Inbounds().List(ctx)
+		if err != nil {
+			return fmt.Errorf("list inbounds: %w", err)
+		}
+		var current domain.Inbound
+		found := false
+		for _, item := range inbounds {
+			if item.ID == inboundID {
+				current = item
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("inbound %q not found", inboundID)
+		}
+		if version != panelInboundVersion(current) {
+			return fmt.Errorf("inbound %q changed since page load; refresh and retry", inboundID)
+		}
+
+		if action == "delete" {
+			deleted, err := store.Inbounds().Delete(ctx, inboundID)
+			if err != nil {
+				return fmt.Errorf("delete inbound: %w", err)
+			}
+			if !deleted {
+				return fmt.Errorf("inbound %q not found", inboundID)
+			}
+			ops.set("ok", fmt.Sprintf("inbound deleted: %s", inboundID))
+			return nil
+		}
+
+		updated, err := panelInboundFromForm(r, current)
+		if err != nil {
+			return err
+		}
+		updated.ID = current.ID
+		updated.CreatedAt = current.CreatedAt
+		updated.RealityEnabled = current.RealityEnabled
+		updated.RealityPublicKey = current.RealityPublicKey
+		updated.RealityPrivateKey = current.RealityPrivateKey
+		updated.RealityShortID = current.RealityShortID
+		updated.RealityFingerprint = current.RealityFingerprint
+		updated.RealitySpiderX = current.RealitySpiderX
+		updated.RealityServer = current.RealityServer
+		updated.RealityServerPort = current.RealityServerPort
+		updated.VLESSFlow = current.VLESSFlow
+		updated.TLSCertPath = current.TLSCertPath
+		updated.TLSKeyPath = current.TLSKeyPath
+		if updated.RealityEnabled {
+			if strings.ToLower(string(updated.Type)) != string(domain.ProtocolVLESS) || strings.ToLower(strings.TrimSpace(updated.Transport)) != "tcp" || strings.ToLower(string(updated.Engine)) != string(domain.EngineXray) {
+				return fmt.Errorf("inbound has reality enabled; keep type=vless transport=tcp engine=xray")
+			}
+		}
+		stored, err := store.Inbounds().Update(ctx, updated)
+		if err != nil {
+			return fmt.Errorf("update inbound: %w", err)
+		}
+		ops.set("ok", fmt.Sprintf("inbound updated: %s (%s:%d)", stored.ID, stored.Domain, stored.Port))
+		return nil
+	default:
+		return fmt.Errorf("unknown inbound action")
+	}
+}
+
+func panelHandleCredentialAction(ctx context.Context, dbPath string, r *http.Request, configPath, dbPathFlag *string, ops *panelOperationFeed) error {
+	action := strings.TrimSpace(r.FormValue("op"))
+	if action == "" {
+		return fmt.Errorf("credential action is required")
+	}
+
+	store, err := openStoreWithInit(ctx, dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	switch action {
+	case "attach_credential":
+		userID := strings.TrimSpace(r.FormValue("user_id"))
+		inboundID := strings.TrimSpace(r.FormValue("inbound_id"))
+		label := strings.TrimSpace(r.FormValue("label"))
+		if userID == "" || inboundID == "" {
+			return fmt.Errorf("user and inbound are required")
+		}
+
+		users, err := store.Users().List(ctx)
+		if err != nil {
+			return fmt.Errorf("list users: %w", err)
+		}
+		var user domain.User
+		foundUser := false
+		for _, u := range users {
+			if u.ID == userID {
+				user = u
+				foundUser = true
+				break
+			}
+		}
+		if !foundUser {
+			return fmt.Errorf("user %q not found", userID)
+		}
+
+		inbounds, err := store.Inbounds().List(ctx)
+		if err != nil {
+			return fmt.Errorf("list inbounds: %w", err)
+		}
+		var inbound domain.Inbound
+		foundInbound := false
+		for _, in := range inbounds {
+			if in.ID == inboundID {
+				inbound = in
+				foundInbound = true
+				break
+			}
+		}
+		if !foundInbound {
+			return fmt.Errorf("inbound %q not found", inboundID)
+		}
+
+		credentials, err := store.Credentials().List(ctx)
+		if err != nil {
+			return fmt.Errorf("list credentials: %w", err)
+		}
+		if existing, ok := findCredentialByUserAndInbound(credentials, userID, inboundID); ok {
+			ops.set("ok", fmt.Sprintf("credential already attached: %s (%s)", existing.ID, existing.Kind))
+			return nil
+		}
+
+		if label == "" {
+			label = user.Name
+		}
+		credential, err := createCredentialForInbound(inbound, userID, label)
+		if err != nil {
+			return err
+		}
+		created, err := store.Credentials().Create(ctx, credential)
+		if err != nil {
+			return fmt.Errorf("create credential: %w", err)
+		}
+
+		out, runErr := panelExecuteCommand(ctx, newSubscriptionGenerateCmd(configPath, dbPathFlag), []string{userID})
+		if runErr != nil {
+			ops.set("error", fmt.Sprintf("credential created (%s), but subscription generate failed: %s", created.ID, panelErrWithOutput(runErr, out)))
+			return nil
+		}
+		ops.set("ok", fmt.Sprintf("credential attached: %s (%s) | %s", created.ID, created.Kind, panelSummarizeOutput(out)))
+		return nil
+
+	case "delete_credential":
+		credentialID := strings.TrimSpace(r.FormValue("credential_id"))
+		userID := strings.TrimSpace(r.FormValue("user_id"))
+		version := strings.TrimSpace(r.FormValue("version"))
+		if credentialID == "" {
+			return fmt.Errorf("credential id is required")
+		}
+
+		credentials, err := store.Credentials().List(ctx)
+		if err != nil {
+			return fmt.Errorf("list credentials: %w", err)
+		}
+		var current domain.Credential
+		found := false
+		for _, cred := range credentials {
+			if cred.ID == credentialID {
+				current = cred
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("credential %q not found", credentialID)
+		}
+		if userID == "" {
+			userID = current.UserID
+		}
+		if version != panelCredentialVersion(current) {
+			return fmt.Errorf("credential %q changed since page load; refresh and retry", credentialID)
+		}
+
+		deleted, err := store.Credentials().Delete(ctx, credentialID)
+		if err != nil {
+			return fmt.Errorf("delete credential: %w", err)
+		}
+		if !deleted {
+			return fmt.Errorf("credential %q not found", credentialID)
+		}
+
+		if strings.TrimSpace(userID) == "" {
+			ops.set("ok", fmt.Sprintf("credential detached: %s", credentialID))
+			return nil
+		}
+		out, runErr := panelExecuteCommand(ctx, newSubscriptionGenerateCmd(configPath, dbPathFlag), []string{userID})
+		if runErr != nil {
+			ops.set("error", fmt.Sprintf("credential detached (%s), but subscription generate failed: %s", credentialID, panelErrWithOutput(runErr, out)))
+			return nil
+		}
+		ops.set("ok", fmt.Sprintf("credential detached: %s | %s", credentialID, panelSummarizeOutput(out)))
+		return nil
+	default:
+		return fmt.Errorf("unknown credential action")
+	}
+}
+
+func panelInboundFromForm(r *http.Request, base domain.Inbound) (domain.Inbound, error) {
+	typeRaw := strings.ToLower(strings.TrimSpace(r.FormValue("type")))
+	transport := strings.ToLower(strings.TrimSpace(r.FormValue("transport")))
+	nodeID := strings.TrimSpace(r.FormValue("node_id"))
+	domainName := strings.TrimSpace(r.FormValue("domain"))
+	sni := strings.TrimSpace(r.FormValue("sni"))
+	path := strings.TrimSpace(r.FormValue("path"))
+	engineRaw := strings.ToLower(strings.TrimSpace(r.FormValue("engine")))
+
+	if typeRaw == "" {
+		return domain.Inbound{}, fmt.Errorf("inbound type is required")
+	}
+	if transport == "" {
+		return domain.Inbound{}, fmt.Errorf("transport is required")
+	}
+	if nodeID == "" {
+		return domain.Inbound{}, fmt.Errorf("node is required")
+	}
+	if domainName == "" {
+		return domain.Inbound{}, fmt.Errorf("domain is required")
+	}
+
+	port, err := strconv.Atoi(strings.TrimSpace(r.FormValue("port")))
+	if err != nil || port < 1 || port > 65535 {
+		return domain.Inbound{}, fmt.Errorf("port must be in range 1..65535")
+	}
+	if port == 443 && !panelFormBool(r.FormValue("allow_port_443")) {
+		return domain.Inbound{}, fmt.Errorf("port 443 is reserved by default")
+	}
+
+	resolvedEngine, err := engine.Resolve(engine.ResolutionRequest{
+		Protocol:        domain.Protocol(typeRaw),
+		Transport:       transport,
+		PreferredEngine: domain.Engine(engineRaw),
+	})
+	if err != nil {
+		return domain.Inbound{}, err
+	}
+
+	base.Type = domain.Protocol(typeRaw)
+	base.Engine = resolvedEngine
+	base.NodeID = nodeID
+	base.Domain = domainName
+	base.Port = port
+	base.TLSEnabled = panelFormBool(r.FormValue("tls"))
+	base.Transport = transport
+	base.Path = path
+	base.SNI = sni
+	base.Enabled = panelFormBool(r.FormValue("enabled"))
+	return base, nil
+}
+
+func panelFormBool(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func panelUserVersion(user domain.User) string {
+	s := strings.Join([]string{
+		strings.TrimSpace(user.ID),
+		strings.TrimSpace(user.Name),
+		strconv.FormatBool(user.Enabled),
+		user.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}, "|")
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:8])
+}
+
+func panelInboundVersion(inbound domain.Inbound) string {
+	s := strings.Join([]string{
+		strings.TrimSpace(inbound.ID),
+		strings.TrimSpace(string(inbound.Type)),
+		strings.TrimSpace(string(inbound.Engine)),
+		strings.TrimSpace(inbound.NodeID),
+		strings.TrimSpace(inbound.Domain),
+		strconv.Itoa(inbound.Port),
+		strconv.FormatBool(inbound.TLSEnabled),
+		strings.TrimSpace(inbound.Transport),
+		strings.TrimSpace(inbound.Path),
+		strings.TrimSpace(inbound.SNI),
+		strconv.FormatBool(inbound.Enabled),
+		strconv.FormatBool(inbound.RealityEnabled),
+		strings.TrimSpace(inbound.RealityPublicKey),
+		strings.TrimSpace(inbound.RealityPrivateKey),
+		strings.TrimSpace(inbound.RealityShortID),
+		strings.TrimSpace(inbound.RealityFingerprint),
+		strings.TrimSpace(inbound.RealitySpiderX),
+		strings.TrimSpace(inbound.RealityServer),
+		strconv.Itoa(inbound.RealityServerPort),
+		strings.TrimSpace(inbound.VLESSFlow),
+		strings.TrimSpace(inbound.TLSCertPath),
+		strings.TrimSpace(inbound.TLSKeyPath),
+		inbound.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}, "|")
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:8])
+}
+
+func panelCredentialVersion(credential domain.Credential) string {
+	s := strings.Join([]string{
+		strings.TrimSpace(credential.ID),
+		strings.TrimSpace(credential.UserID),
+		strings.TrimSpace(credential.InboundID),
+		strings.TrimSpace(string(credential.Kind)),
+		strings.TrimSpace(credential.Secret),
+		strings.TrimSpace(credential.Metadata),
+		credential.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}, "|")
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:8])
+}
+
+func maskSecret(secret string) string {
+	s := strings.TrimSpace(secret)
+	if s == "" {
+		return "-"
+	}
+	if len(s) <= 8 {
+		return "***"
+	}
+	return s[:4] + "..." + s[len(s)-4:]
 }
 
 func runtimeUnitStates(ctx context.Context, cfg config.AppConfig) []panelUnitState {
