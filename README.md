@@ -437,7 +437,7 @@ Caddy example:
 
 ```caddyfile
 example.com {
-  handle_path /<secret-path>* {
+  handle /<secret-path>* {
     reverse_proxy 127.0.0.1:<panel-port>
   }
 }
