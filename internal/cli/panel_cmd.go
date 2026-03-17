@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -90,6 +91,16 @@ type panelSubscriptionState struct {
 	Enabled bool
 }
 
+type panelSubscriptionView struct {
+	UserID       string
+	UserName     string
+	Enabled      bool
+	AccessToken  string
+	URL          string
+	ConfigCount  int
+	ConfigLabels []string
+}
+
 type panelCounts struct {
 	UsersTotal     int
 	UsersEnabled   int
@@ -135,6 +146,7 @@ type panelPageData struct {
 	Inbounds            []panelInboundView
 	Credentials         []panelCredentialView
 	Subscriptions       []string
+	SubscriptionDetails []panelSubscriptionView
 	SubscriptionState   map[string]panelSubscriptionState
 	SuggestedPorts      map[string]int
 	SNIPresets          []string
@@ -1082,7 +1094,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         <button id="refreshSubBtn" class="btn warn">refresh all</button>
         <button id="subEnableBtn" class="btn">enable</button>
         <button id="subDisableBtn" class="btn err">disable</button>
-        <button id="subDeleteBtn" class="btn err">delete subscription</button>
       </div>
       <div class="pad" id="subInboundPick"></div>
       <div class="pad" id="subsList"></div>
@@ -1306,15 +1317,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const state = selectedSubUser ? subStates[selectedSubUser] : null;
       const enableBtn = document.getElementById("subEnableBtn");
       const disableBtn = document.getElementById("subDisableBtn");
-      const deleteBtn = document.getElementById("subDeleteBtn");
       if (enableBtn) {
         enableBtn.disabled = !!(state && state.Enabled);
       }
       if (disableBtn) {
         disableBtn.disabled = !!(!state || !state.Exists || !state.Enabled);
-      }
-      if (deleteBtn) {
-        deleteBtn.disabled = !!(!state || !state.Exists);
       }
     }
     function getSuggestedInboundPort(type, transport) {
@@ -1722,13 +1729,35 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         });
       });
 
-      const subs = Array.isArray(snapshot.Subscriptions) ? snapshot.Subscriptions : [];
-      document.getElementById("subsList").innerHTML = subs.length === 0 ? '<div class="muted">no subscriptions</div>' : subs.map((s) => (
-        '<div class="row" style="margin-bottom:8px">' +
-          '<a href="'+esc(s)+'" target="_blank" rel="noopener noreferrer">'+esc(s)+'</a>' +
-          '<button class="btn secondary" data-copy="'+esc(s)+'">copy</button>' +
-        '</div>'
-      )).join("");
+      const subDetails = Array.isArray(snapshot.SubscriptionDetails) ? snapshot.SubscriptionDetails : [];
+      document.getElementById("subsList").innerHTML = subDetails.length === 0
+        ? '<div class="muted">no subscriptions</div>'
+        : [
+            '<div class="table-wrap">',
+            '<table>',
+            '<thead><tr><th>user</th><th>status</th><th>configs</th><th>inside configs</th><th>link</th><th>actions</th></tr></thead>',
+            '<tbody>',
+            subDetails.map((s) => {
+              const link = String(s.URL || "").trim();
+              const labels = Array.isArray(s.ConfigLabels) ? s.ConfigLabels : [];
+              return (
+                '<tr>' +
+                  '<td>'+esc((s.UserName || "") + (s.UserID ? " (" + s.UserID + ")" : ""))+'</td>' +
+                  '<td>'+ (s.Enabled ? 'enabled' : 'disabled') +'</td>' +
+                  '<td>'+esc(Number(s.ConfigCount || 0))+'</td>' +
+                  '<td>'+ (labels.length > 0 ? esc(labels.join(", ")) : '<span class="muted">-</span>') +'</td>' +
+                  '<td>'+ (link ? '<a href="'+esc(link)+'" target="_blank" rel="noopener noreferrer">'+esc(link)+'</a>' : '<span class="muted">-</span>') +'</td>' +
+                  '<td class="row">' +
+                    (link ? '<button class="btn secondary" data-copy="'+esc(link)+'">copy</button>' : '') +
+                    '<button class="btn err" data-sub-delete="'+esc(link || s.AccessToken || "")+'">delete</button>' +
+                  '</td>' +
+                '</tr>'
+              );
+            }).join(""),
+            '</tbody>',
+            '</table>',
+            '</div>',
+          ].join("");
       updateSubButtons();
 
       renderSubInboundPick(inbounds);
@@ -1737,6 +1766,17 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         btn.addEventListener("click", () => {
           const txt = btn.getAttribute("data-copy") || "";
           navigator.clipboard?.writeText(txt);
+        });
+      });
+      document.querySelectorAll("[data-sub-delete]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const link = (btn.getAttribute("data-sub-delete") || "").trim();
+          if (!link) return;
+          try {
+            await postForm(cfg.subsActionPath, { op: "delete_link", subscription: link });
+          } catch (e) {
+            showOp("error", String(e));
+          }
         });
       });
     }
@@ -1907,15 +1947,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         showOp("error", String(e));
       }
     });
-    document.getElementById("subDeleteBtn").addEventListener("click", async () => {
-      const userID = (document.getElementById("subUser").value || "").trim();
-      if (!userID) return;
-      try {
-        await postForm(cfg.subsActionPath, { op: "delete_user", user_id: userID });
-      } catch (e) {
-        showOp("error", String(e));
-      }
-    });
     document.getElementById("askTrafficBtn").addEventListener("click", async () => {
       try {
         await getSnapshot();
@@ -2067,6 +2098,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						Inbounds:            snapshot.inbounds,
 						Credentials:         snapshot.credentials,
 						Subscriptions:       snapshot.subscriptionLinks,
+						SubscriptionDetails: snapshot.subscriptionViews,
 						DashboardActionPath: dashboardActionPath,
 						UsersActionPath:     usersActionPath,
 						NodesActionPath:     nodesActionPath,
@@ -2141,6 +2173,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					Inbounds:            snapshot.inbounds,
 					Credentials:         snapshot.credentials,
 					Subscriptions:       snapshot.subscriptionLinks,
+					SubscriptionDetails: snapshot.subscriptionViews,
 					DashboardActionPath: dashboardActionPath,
 					SettingsActionPath:  settingsActionPath,
 					UsersActionPath:     usersActionPath,
@@ -2351,6 +2384,72 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					} else {
 						ops.set("ok", "subscriptions refreshed: "+panelSummarizeOutput(out))
 					}
+				case "delete_link":
+					rawLink := strings.TrimSpace(r.FormValue("subscription"))
+					token := panelSubscriptionTokenFromLink(rawLink)
+					if token == "" {
+						ops.set("error", "subscription link is invalid")
+						break
+					}
+					store, storeErr := openStoreWithInit(r.Context(), resolvedDB)
+					if storeErr != nil {
+						ops.set("error", storeErr.Error())
+						break
+					}
+					users, usersErr := store.Users().List(r.Context())
+					if usersErr != nil {
+						_ = store.Close()
+						ops.set("error", fmt.Sprintf("list users: %v", usersErr))
+						break
+					}
+					subscriptionDir, dirErr := resolveSubscriptionDir(configPathValue)
+					if dirErr != nil {
+						_ = store.Close()
+						ops.set("error", fmt.Sprintf("resolve subscription dir: %v", dirErr))
+						break
+					}
+					foundUserID := ""
+					var foundSub domain.Subscription
+					for _, user := range users {
+						sub, subErr := store.Subscriptions().GetByUserID(r.Context(), user.ID)
+						if subErr != nil {
+							continue
+						}
+						if strings.TrimSpace(sub.AccessToken) == token {
+							foundUserID = user.ID
+							foundSub = sub
+							break
+						}
+					}
+					removed := 0
+					if foundUserID != "" {
+						rmCount, rmErr := cleanupUserSubscriptionFiles(foundUserID, subscriptionDir, strings.TrimSpace(foundSub.OutputPath), strings.TrimSpace(foundSub.AccessToken))
+						if rmErr != nil {
+							_ = store.Close()
+							ops.set("error", fmt.Sprintf("cleanup subscription files: %v", rmErr))
+							break
+						}
+						removed = rmCount
+						deleted, delErr := store.Subscriptions().DeleteByUserID(r.Context(), foundUserID)
+						_ = store.Close()
+						if delErr != nil {
+							ops.set("error", fmt.Sprintf("delete subscription: %v", delErr))
+							break
+						}
+						if deleted {
+							ops.set("ok", fmt.Sprintf("subscription deleted (%s), removed files: %d", token, removed))
+						} else {
+							ops.set("ok", fmt.Sprintf("subscription files cleaned (%s), removed files: %d", token, removed))
+						}
+						break
+					}
+					rmCount, rmErr := cleanupSubscriptionTokenFiles(subscriptionDir, token)
+					_ = store.Close()
+					if rmErr != nil {
+						ops.set("error", fmt.Sprintf("cleanup subscription token files: %v", rmErr))
+						break
+					}
+					ops.set("ok", fmt.Sprintf("subscription token files removed (%s): %d", token, rmCount))
 				case "delete_user":
 					userID := strings.TrimSpace(r.FormValue("user_id"))
 					if userID == "" {
@@ -2532,6 +2631,7 @@ type panelSnapshot struct {
 	inbounds          []panelInboundView
 	credentials       []panelCredentialView
 	subscriptionLinks []string
+	subscriptionViews []panelSubscriptionView
 	subscriptionState map[string]panelSubscriptionState
 	suggestedPorts    map[string]int
 	sniPresets        []string
@@ -2653,6 +2753,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	}
 
 	credentialRows := make([]panelCredentialView, 0, len(credentials))
+	configLabelsByUser := make(map[string][]string, len(users))
 	for _, cred := range credentials {
 		userName := cred.UserID
 		if u, ok := userByID[cred.UserID]; ok && strings.TrimSpace(u.Name) != "" {
@@ -2683,8 +2784,53 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			ClientError: clientErr,
 			Version:     panelCredentialVersion(cred),
 		})
+		configLabel := strings.TrimSpace(credentialLabel(cred))
+		if configLabel == "" {
+			configLabel = strings.TrimSpace(inboundType + " " + inboundAddr)
+		}
+		if configLabel != "" {
+			configLabelsByUser[cred.UserID] = append(configLabelsByUser[cred.UserID], configLabel)
+		}
 	}
 	sort.Slice(credentialRows, func(i, j int) bool { return credentialRows[i].ID < credentialRows[j].ID })
+	for userID, labels := range configLabelsByUser {
+		configLabelsByUser[userID] = compactUnique(labels)
+		sort.Strings(configLabelsByUser[userID])
+	}
+
+	subViews := make([]panelSubscriptionView, 0, len(users))
+	for _, user := range users {
+		sub, subErr := store.Subscriptions().GetByUserID(ctx, user.ID)
+		if subErr != nil {
+			continue
+		}
+		token := strings.TrimSpace(sub.AccessToken)
+		publicURL := ""
+		if token != "" {
+			publicURL = buildSubscriptionPublicURL(cfg, token)
+			if publicURL == "" {
+				publicURL = "http://<server-ip-or-domain>/sub/" + token
+			}
+		}
+		labels := configLabelsByUser[user.ID]
+		subViews = append(subViews, panelSubscriptionView{
+			UserID:       user.ID,
+			UserName:     strings.TrimSpace(user.Name),
+			Enabled:      sub.Enabled,
+			AccessToken:  token,
+			URL:          publicURL,
+			ConfigCount:  len(labels),
+			ConfigLabels: labels,
+		})
+	}
+	sort.Slice(subViews, func(i, j int) bool {
+		left := strings.TrimSpace(subViews[i].UserName)
+		right := strings.TrimSpace(subViews[j].UserName)
+		if left == right {
+			return subViews[i].UserID < subViews[j].UserID
+		}
+		return left < right
+	})
 
 	subLinks, err := listPanelSubscriptionLinks(cfg)
 	if err != nil {
@@ -2705,6 +2851,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		inbounds:          inboundRows,
 		credentials:       credentialRows,
 		subscriptionLinks: subLinks,
+		subscriptionViews: subViews,
 		subscriptionState: subscriptions,
 		suggestedPorts:    suggestedPorts,
 		sniPresets:        panelWizardSNIPresets(),
@@ -3782,6 +3929,59 @@ func listPanelSubscriptionLinks(cfg config.AppConfig) ([]string, error) {
 	}
 	sort.Strings(links)
 	return links, nil
+}
+
+func panelSubscriptionTokenFromLink(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err == nil && strings.TrimSpace(parsed.Path) != "" {
+		parts := strings.Split(strings.Trim(strings.TrimSpace(parsed.Path), "/"), "/")
+		if len(parts) > 0 {
+			last := strings.TrimSpace(parts[len(parts)-1])
+			if last != "" {
+				last = strings.TrimSuffix(last, filepath.Ext(last))
+				if last != "" {
+					return last
+				}
+			}
+		}
+	}
+	value = strings.TrimSuffix(value, filepath.Ext(value))
+	value = strings.Trim(value, "/")
+	if value == "" || strings.Contains(value, " ") {
+		return ""
+	}
+	return value
+}
+
+func cleanupSubscriptionTokenFiles(subscriptionDir, token string) (int, error) {
+	t := strings.TrimSpace(token)
+	if t == "" {
+		return 0, nil
+	}
+	publicDir := subscriptionPublicDir(subscriptionDir)
+	paths := compactUnique([]string{
+		filepath.Join(publicDir, t),
+		filepath.Join(publicDir, t+".txt"),
+	})
+	removed := 0
+	for _, p := range paths {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		err := os.Remove(p)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return removed, fmt.Errorf("remove subscription token file %q: %w", p, err)
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 func normalizePanelBasePath(raw string) string {
