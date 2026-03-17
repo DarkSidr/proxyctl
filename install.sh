@@ -1576,8 +1576,8 @@ init_sqlite() {
   log "Initialized SQLite database: ${DB_PATH}"
 }
 
-bootstrap_primary_node_if_needed() {
-  if [[ "${SELECTED_DEPLOYMENT_MODE}" != "panel+node" ]]; then
+bootstrap_default_node_if_needed() {
+  if [[ "${SELECTED_DEPLOYMENT_MODE}" != "panel+node" && "${SELECTED_DEPLOYMENT_MODE}" != "node" ]]; then
     return 0
   fi
   [[ -x "${BIN_DIR}/proxyctl" ]] || return 0
@@ -1585,7 +1585,7 @@ bootstrap_primary_node_if_needed() {
   local node_count
   node_count="$("${BIN_DIR}/proxyctl" node list --db "${DB_PATH}" 2>/dev/null | awk 'NR > 1 && NF > 0 {count++} END {print count + 0}' || true)"
   if [[ "${node_count}" -gt 0 ]]; then
-    log "Skipping primary node bootstrap: existing nodes found (${node_count})"
+    log "Skipping default node bootstrap: existing nodes found (${node_count})"
     return 0
   fi
 
@@ -1602,11 +1602,18 @@ bootstrap_primary_node_if_needed() {
     fi
   fi
 
+  local node_name="primary"
+  local node_role="primary"
+  if [[ "${SELECTED_DEPLOYMENT_MODE}" == "node" ]]; then
+    node_name="local-node"
+    node_role="node"
+  fi
+
   local out=""
-  if out="$("${BIN_DIR}/proxyctl" node add --db "${DB_PATH}" --name primary --host "${node_host}" --role primary --enabled=true 2>&1)"; then
-    log "Bootstrapped primary node: ${node_host}"
+  if out="$("${BIN_DIR}/proxyctl" node add --db "${DB_PATH}" --name "${node_name}" --host "${node_host}" --role "${node_role}" --enabled=true 2>&1)"; then
+    log "Bootstrapped ${node_role} node: ${node_host}"
   else
-    warn "Failed to bootstrap primary node automatically: ${out}"
+    warn "Failed to bootstrap default node automatically: ${out}"
   fi
 }
 
@@ -1644,11 +1651,12 @@ Next steps:
    proxyctl uninstall --yes
 EOF_STEPS
 
-  if [[ "${SELECTED_DEPLOYMENT_MODE}" == "panel+node" ]]; then
+  if [[ "${SELECTED_DEPLOYMENT_MODE}" == "panel+node" || "${SELECTED_DEPLOYMENT_MODE}" == "node" ]]; then
     cat <<'EOF_PANEL_NODE'
 
-Primary node bootstrap:
+Node bootstrap:
 - In panel+node mode installer auto-creates `primary` node when DB has no nodes yet.
+- In node mode installer auto-creates `local-node` with role `node` when DB has no nodes yet.
 - Verify: proxyctl node list
 EOF_PANEL_NODE
   fi
@@ -1704,7 +1712,7 @@ main() {
   ensure_selected_reverse_proxy_service
   ensure_panel_service
   init_sqlite
-  bootstrap_primary_node_if_needed
+  bootstrap_default_node_if_needed
 
   log "Installed ${APP_NAME} ${PROXYCTL_VERSION} layout on host"
   print_next_steps
