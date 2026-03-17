@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode"
 
 	"proxyctl/internal/domain"
 	"proxyctl/internal/renderer"
@@ -439,9 +440,46 @@ func clientLabel(credential domain.Credential, inboundID string) string {
 		_ = json.Unmarshal([]byte(credential.Metadata), &metadata)
 	}
 	if label := strings.TrimSpace(metadata.Label); label != "" {
-		return label
+		if sanitized := sanitizeClientLabel(label); sanitized != "" {
+			return sanitized
+		}
 	}
 	return "proxyctl-" + strings.TrimSpace(inboundID)
+}
+
+func sanitizeClientLabel(label string) string {
+	var b strings.Builder
+	prevUnderscore := false
+	prevSpace := false
+	for _, r := range strings.TrimSpace(label) {
+		if unicode.IsSpace(r) {
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+				prevUnderscore = false
+			}
+			continue
+		}
+		if r > unicode.MaxASCII || unicode.IsControl(r) {
+			continue
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			prevUnderscore = false
+			prevSpace = false
+			continue
+		}
+		switch r {
+		case ' ', '-', '_', '.', '|':
+			if r == '_' && prevUnderscore {
+				continue
+			}
+			b.WriteRune(r)
+			prevUnderscore = r == '_'
+			prevSpace = r == ' '
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func normalizePath(path string) string {

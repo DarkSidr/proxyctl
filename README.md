@@ -309,6 +309,11 @@ https://<public.domain>/sub/<token>
 
 This endpoint serves plain-text URI list suitable for subscription clients (for example NekoBox).
 
+Troubleshooting if client shows no configs:
+- verify that subscription URL uses `/sub/<token>` (legacy paths are not supported);
+- check endpoint manually: `curl -fsSL https://<public.domain>/sub/<token> | head`;
+- some clients are sensitive to non-ASCII names in URI fragments; prefer ASCII-only client labels.
+
 Manual and auto subscription refresh:
 
 ```bash

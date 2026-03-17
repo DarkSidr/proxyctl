@@ -283,3 +283,12 @@ func TestRenderXHTTPTLSUsesExplicitCertificatePaths(t *testing.T) {
 		t.Fatalf("expected explicit keyFile, got: %s", body)
 	}
 }
+
+func TestSanitizeClientLabelStripsUnicodeAndUnsafeChars(t *testing.T) {
+	t.Parallel()
+
+	got := sanitizeClientLabel("Kamil XHTTP 🇳🇱 | NL #1")
+	if got != "Kamil XHTTP | NL 1" {
+		t.Fatalf("sanitizeClientLabel() = %q, want %q", got, "Kamil XHTTP | NL 1")
+	}
+}
