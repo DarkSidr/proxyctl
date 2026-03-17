@@ -77,6 +77,12 @@
   - add dedicated menu item in root wizard screen for Caddy fallback/stub page;
   - allow fast open/edit/update without navigating deep into config flows;
   - keep it safe with preview/confirm before apply.
+- Add wizard settings control for auto-update timer:
+  - settings toggle to enable/disable `proxyctl-self-update.timer` without reinstall;
+  - show current timer state (`enabled/active/next run`) directly in settings screen.
+- Revisit default auto-update schedule:
+  - evaluate fixed daily window (for example 03:00 local server time) vs randomized schedule;
+  - expose schedule choice in settings for predictable maintenance windows.
 - Add strict TLS guardrails in wizard for `engine=sing-box`:
   - if `TLS = yes`, do not allow saving inbound with empty/invalid certificate paths;
   - allow explicit auto-path mode (Caddy-managed cert paths) with existence validation before apply.

@@ -1623,6 +1623,9 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 		action, err := promptChoice(in, out, "Settings", []string{
 			"show settings",
 			"show installed versions",
+			"auto-update status",
+			"enable auto-update (03:00 daily)",
+			"disable auto-update",
 			"set decoy site path",
 			"switch decoy template",
 			"back",
@@ -1646,6 +1649,18 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 			fmt.Fprintf(out, "paths.decoy_site_dir: %s\n", strings.TrimSpace(cfg.Paths.DecoySiteDir))
 		case "show installed versions":
 			printInstalledVersions(cmd.Context(), out)
+		case "auto-update status":
+			if err := printAutoUpdateStatus(cmd.Context(), out); err != nil {
+				return err
+			}
+		case "enable auto-update (03:00 daily)":
+			if err := setAutoUpdateEnabled(cmd.Context(), out, true); err != nil {
+				return err
+			}
+		case "disable auto-update":
+			if err := setAutoUpdateEnabled(cmd.Context(), out, false); err != nil {
+				return err
+			}
 		case "set decoy site path":
 			cfg, err := config.Load(configPath)
 			if err != nil {
@@ -1706,6 +1721,84 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 			return nil
 		}
 	}
+}
+
+func printAutoUpdateStatus(ctx context.Context, out io.Writer) error {
+	if _, err := lookPath("systemctl"); err != nil {
+		fmt.Fprintln(out, "auto-update status unavailable: systemctl not found")
+		return nil
+	}
+	loadState, err := runCommandOutput(ctx, "systemctl", "show", "proxyctl-self-update.timer", "--property=LoadState", "--value")
+	if err != nil {
+		return fmt.Errorf("check proxyctl-self-update.timer load state: %w", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(loadState), "not-found") {
+		fmt.Fprintln(out, "proxyctl-self-update.timer is not installed")
+		fmt.Fprintln(out, "reinstall with PROXYCTL_ENABLE_AUTO_UPDATE=1 to install timer units")
+		return nil
+	}
+
+	enabledState, err := runCommandOutput(ctx, "systemctl", "is-enabled", "proxyctl-self-update.timer")
+	if err != nil {
+		enabledState = strings.TrimSpace(enabledState)
+		if enabledState == "" {
+			enabledState = "unknown"
+		}
+	}
+	activeState, err := runCommandOutput(ctx, "systemctl", "is-active", "proxyctl-self-update.timer")
+	if err != nil {
+		activeState = strings.TrimSpace(activeState)
+		if activeState == "" {
+			activeState = "inactive"
+		}
+	}
+	nextRun, err := runCommandOutput(ctx, "systemctl", "list-timers", "proxyctl-self-update.timer", "--no-pager", "--all")
+	if err != nil {
+		nextRun = fmt.Sprintf("failed to query timer schedule: %v", err)
+	}
+	fmt.Fprintf(out, "auto-update timer enabled: %s\n", strings.TrimSpace(enabledState))
+	fmt.Fprintf(out, "auto-update timer active: %s\n", strings.TrimSpace(activeState))
+	fmt.Fprintln(out, strings.TrimSpace(nextRun))
+	return nil
+}
+
+func setAutoUpdateEnabled(ctx context.Context, out io.Writer, enabled bool) error {
+	if _, err := lookPath("systemctl"); err != nil {
+		return fmt.Errorf("systemctl not found")
+	}
+	loadState, err := runCommandOutput(ctx, "systemctl", "show", "proxyctl-self-update.timer", "--property=LoadState", "--value")
+	if err != nil {
+		return fmt.Errorf("check proxyctl-self-update.timer load state: %w", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(loadState), "not-found") {
+		return fmt.Errorf("proxyctl-self-update.timer is not installed; reinstall with PROXYCTL_ENABLE_AUTO_UPDATE=1")
+	}
+
+	if enabled {
+		overrideDir := "/etc/systemd/system/proxyctl-self-update.timer.d"
+		if err := os.MkdirAll(overrideDir, 0o755); err != nil {
+			return fmt.Errorf("create timer override directory: %w", err)
+		}
+		overridePath := filepath.Join(overrideDir, "override.conf")
+		overrideContent := "[Timer]\nOnCalendar=03:00\nPersistent=true\nRandomizedDelaySec=0\n"
+		if err := layout.WriteAtomicFile(overridePath, []byte(overrideContent), 0o644); err != nil {
+			return fmt.Errorf("write timer override: %w", err)
+		}
+		if _, err := runCommandOutput(ctx, "systemctl", "daemon-reload"); err != nil {
+			return fmt.Errorf("systemctl daemon-reload: %w", err)
+		}
+		if _, err := runCommandOutput(ctx, "systemctl", "enable", "--now", "proxyctl-self-update.timer"); err != nil {
+			return fmt.Errorf("enable auto-update timer: %w", err)
+		}
+		fmt.Fprintln(out, "auto-update enabled: proxyctl-self-update.timer at 03:00 daily")
+		return printAutoUpdateStatus(ctx, out)
+	}
+
+	if _, err := runCommandOutput(ctx, "systemctl", "disable", "--now", "proxyctl-self-update.timer"); err != nil {
+		return fmt.Errorf("disable auto-update timer: %w", err)
+	}
+	fmt.Fprintln(out, "auto-update disabled: proxyctl-self-update.timer")
+	return printAutoUpdateStatus(ctx, out)
 }
 
 type componentVersion struct {
