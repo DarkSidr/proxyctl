@@ -1094,6 +1094,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         const b = path.slice(0, -4);
         return b || "/";
       }
+      if (path !== "/") {
+        return path;
+      }
       return String(cfgRaw.basePath || "/");
     }
     const cfg = (() => {
@@ -1186,7 +1189,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         headers: { "Accept": "application/json" },
         body: new URLSearchParams(form),
       });
-      if (!res.ok) throw new Error("action request failed");
+      if (!res.ok) {
+        const body = await res.text();
+        const msg = (body || "").trim();
+        throw new Error("action request failed (" + res.status + ")" + (msg ? ": " + msg : ""));
+      }
       const out = await res.json();
       showOp(out.status, out.message);
       await getSnapshot();
