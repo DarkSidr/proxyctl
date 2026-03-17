@@ -59,6 +59,7 @@ type panelCredentialView struct {
 	ID          string
 	UserID      string
 	UserName    string
+	ClientLabel string
 	InboundID   string
 	InboundType string
 	InboundAddr string
@@ -600,15 +601,13 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
       <h2>credentials</h2>
       <div class="table-wrap">
       <table>
-        <thead><tr><th>id</th><th>user</th><th>inbound</th><th>kind</th><th>secret</th><th>ready config (uri)</th><th>actions</th></tr></thead>
+        <thead><tr><th>user</th><th>client label</th><th>inbound</th><th>ready config (uri)</th><th>actions</th></tr></thead>
         <tbody>
           {{range .Credentials}}
           <tr>
-            <td>{{.ID}}</td>
             <td>{{.UserName}}<br><span class="muted">{{.UserID}}</span></td>
+            <td>{{if .ClientLabel}}{{.ClientLabel}}{{else}}<span class="muted">-</span>{{end}}</td>
             <td>{{.InboundType}} {{.InboundAddr}}<br><span class="muted">{{.InboundID}}</span></td>
-            <td>{{.Kind}}</td>
-            <td>{{.SecretMask}}</td>
             <td>
               {{if .ClientURI}}
               <div class="copy-row">
@@ -630,7 +629,7 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
             </td>
           </tr>
           {{else}}
-          <tr><td colspan="7" class="muted">no credentials</td></tr>
+          <tr><td colspan="5" class="muted">no credentials</td></tr>
           {{end}}
         </tbody>
       </table>
@@ -1145,6 +1144,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			ID:          cred.ID,
 			UserID:      cred.UserID,
 			UserName:    userName,
+			ClientLabel: credentialLabel(cred),
 			InboundID:   cred.InboundID,
 			InboundType: inboundType,
 			InboundAddr: inboundAddr,
