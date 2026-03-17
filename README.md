@@ -187,6 +187,7 @@ proxyctl uninstall --yes
 ```
 
 `proxyctl uninstall --yes` now also removes proxyctl-generated SSH keys from `/root/.ssh` (keys with `proxyctl-auto-` comment), proxyctl log directory, and common Caddy certificate/cache paths (`/caddy`, `/var/lib/caddy`, `/var/log/caddy`, `/etc/ssl/caddy`).
+It also performs a final sweep for leftover SQLite files (`proxyctl.db`, `proxyctl.db-*`) and prints post-clean verification status for proxyctl data paths.
 
 Optional runtime package purge too:
 

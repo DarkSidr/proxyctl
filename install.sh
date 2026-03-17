@@ -1242,6 +1242,22 @@ if [[ "${REMOVE_RUNTIME_PACKAGES}" -eq 1 ]]; then
   fi
 fi
 
+rm -f /var/lib/proxy-orchestrator/proxyctl.db /var/lib/proxy-orchestrator/proxyctl.db-* 2>/dev/null || true
+rm -f /var/lib/proxy-orchestrator/*.db /var/lib/proxy-orchestrator/*.db-* 2>/dev/null || true
+rm -rf /etc/proxy-orchestrator /var/lib/proxy-orchestrator /var/backups/proxy-orchestrator /usr/share/proxy-orchestrator /var/log/proxy-orchestrator || true
+
+leftover=0
+for path in /etc/proxy-orchestrator /var/lib/proxy-orchestrator /var/backups/proxy-orchestrator /usr/share/proxy-orchestrator /var/log/proxy-orchestrator; do
+  if [[ -e "${path}" ]]; then
+    leftover=1
+    log "WARNING: residual path remains: ${path}"
+    ls -la "${path}" 2>/dev/null || true
+  fi
+done
+if [[ "${leftover}" -eq 0 ]]; then
+  log "Post-clean verification: no proxyctl data paths remain"
+fi
+
 log "proxyctl purge completed"
 EOT
 )")"

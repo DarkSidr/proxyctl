@@ -75,6 +75,7 @@ disable_units() {
     proxyctl-xray.service
     proxyctl-caddy.service
     proxyctl-nginx.service
+    proxyctl-panel.service
     proxyctl-self-update.service
     proxyctl-self-update.timer
   )
@@ -128,6 +129,33 @@ remove_files() {
     /var/log/proxy-orchestrator
 }
 
+final_sweep_and_report() {
+  local cleanup_targets=(
+    /etc/proxy-orchestrator
+    /var/lib/proxy-orchestrator
+    /var/backups/proxy-orchestrator
+    /usr/share/proxy-orchestrator
+    /var/log/proxy-orchestrator
+  )
+
+  rm -f /var/lib/proxy-orchestrator/proxyctl.db /var/lib/proxy-orchestrator/proxyctl.db-* 2>/dev/null || true
+  rm -f /var/lib/proxy-orchestrator/*.db /var/lib/proxy-orchestrator/*.db-* 2>/dev/null || true
+  rm -rf "${cleanup_targets[@]}" || true
+
+  local leftover=0 target
+  for target in "${cleanup_targets[@]}"; do
+    if [[ -e "${target}" ]]; then
+      leftover=1
+      log "WARNING: residual path remains: ${target}"
+      ls -la "${target}" 2>/dev/null || true
+    fi
+  done
+
+  if [[ "${leftover}" -eq 0 ]]; then
+    log "Post-clean verification: no proxyctl data paths remain"
+  fi
+}
+
 remove_proxyctl_ssh_keys() {
   local ssh_dir="/root/.ssh"
   if [[ ! -d "${ssh_dir}" ]]; then
@@ -178,6 +206,7 @@ main() {
   remove_proxyctl_ssh_keys
   remove_proxyctl_certificates_and_cache
   remove_runtime_packages
+  final_sweep_and_report
 
   log "proxyctl purge completed"
 }

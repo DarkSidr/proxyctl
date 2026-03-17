@@ -135,6 +135,8 @@ This purge also removes:
 - proxyctl-generated SSH keys in `/root/.ssh` (keys with `proxyctl-auto-` comment);
 - `/var/log/proxy-orchestrator`;
 - common Caddy certificate/cache paths: `/caddy`, `/var/lib/caddy`, `/var/log/caddy`, `/etc/ssl/caddy`.
+- leftover SQLite state files in `/var/lib/proxy-orchestrator` (`proxyctl.db`, `proxyctl.db-*`) via final cleanup sweep.
+- post-clean verification report for proxyctl data directories.
 
 Optional removal of runtime packages:
 
