@@ -139,10 +139,12 @@ type panelPageData struct {
 	SuggestedPorts      map[string]int
 	SNIPresets          []string
 	Dashboard           panelDashboardView
+	ContactEmail        string
 	OperationStatus     string
 	OperationMessage    string
 	OperationAt         string
 	DashboardActionPath string
+	SettingsActionPath  string
 	UsersActionPath     string
 	NodesActionPath     string
 	InboundsActionPath  string
@@ -842,10 +844,12 @@ type panelAppData struct {
 	LogoutPath          string
 	SnapshotPath        string
 	DashboardActionPath string
+	SettingsActionPath  string
 	UsersActionPath     string
 	NodesActionPath     string
 	InboundsActionPath  string
 	SubsActionPath      string
+	ContactEmail        string
 }
 
 var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html>
@@ -944,6 +948,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       <button type="button" class="tab" data-tab="users">users</button>
       <button type="button" class="tab" data-tab="credentials">credentials</button>
       <button type="button" class="tab" data-tab="subscriptions">subscriptions</button>
+      <button type="button" class="tab" data-tab="settings">settings</button>
     </div>
 
     <section class="sec" data-tab-section="runtime">
@@ -1080,6 +1085,15 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       <div class="pad" id="subInboundPick"></div>
       <div class="pad" id="subsList"></div>
     </section>
+
+    <section class="sec" data-tab-section="settings">
+      <h2>settings</h2>
+      <div class="pad row">
+        <input id="acmeEmail" type="email" placeholder="acme contact email (optional)" value="{{.ContactEmail}}">
+        <button id="saveAcmeBtn" class="btn">save ACME email</button>
+      </div>
+      <div class="pad muted">used by caddy tls/acme and new node bootstrap flows</div>
+    </section>
   </div>
   <script>
     const cfgRaw = {
@@ -1087,6 +1101,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       logoutPath: {{printf "%q" .LogoutPath}},
       snapshotPath: {{printf "%q" .SnapshotPath}},
       dashboardActionPath: {{printf "%q" .DashboardActionPath}},
+      settingsActionPath: {{printf "%q" .SettingsActionPath}},
       usersActionPath: {{printf "%q" .UsersActionPath}},
       nodesActionPath: {{printf "%q" .NodesActionPath}},
       inboundsActionPath: {{printf "%q" .InboundsActionPath}},
@@ -1124,6 +1139,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         logoutPath: joinPath(basePath, "logout"),
         snapshotPath: joinPath(basePath, "api/snapshot"),
         dashboardActionPath: joinPath(basePath, "actions"),
+        settingsActionPath: joinPath(basePath, "settings/action"),
         usersActionPath: joinPath(basePath, "users/action"),
         nodesActionPath: joinPath(basePath, "nodes/action"),
         inboundsActionPath: joinPath(basePath, "inbounds/action"),
@@ -1137,6 +1153,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     let inboundSniOptions = [];
     let liveTimer = null;
     let liveBusy = false;
+    const STORAGE_KEY_LIVE_INTERVAL = "proxyctl.app.liveIntervalMs";
+    const STORAGE_KEY_LIVE_ENABLED = "proxyctl.app.liveEnabled";
 
     function esc(v) {
       return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -1230,6 +1248,19 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         if (document.hidden) return;
         pollSnapshotSilently();
       }, intervalMs);
+    }
+    function restoreLivePrefs() {
+      const modeEl = document.getElementById("liveMode");
+      const intEl = document.getElementById("liveInterval");
+      if (!modeEl || !intEl) return;
+      const storedMode = localStorage.getItem(STORAGE_KEY_LIVE_ENABLED);
+      if (storedMode === "1" || storedMode === "0") {
+        modeEl.checked = storedMode === "1";
+      }
+      const storedInt = localStorage.getItem(STORAGE_KEY_LIVE_INTERVAL);
+      if (storedInt && Array.from(intEl.options).some((o) => o.value === storedInt)) {
+        intEl.value = storedInt;
+      }
     }
     async function postForm(path, form) {
       const res = await fetch(path, {
@@ -1813,12 +1844,24 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
     });
     document.getElementById("liveMode").addEventListener("change", () => {
+      localStorage.setItem(STORAGE_KEY_LIVE_ENABLED, document.getElementById("liveMode").checked ? "1" : "0");
       if (document.getElementById("liveMode").checked) {
         pollSnapshotSilently();
       }
       startLivePolling();
     });
-    document.getElementById("liveInterval").addEventListener("change", () => startLivePolling());
+    document.getElementById("liveInterval").addEventListener("change", () => {
+      localStorage.setItem(STORAGE_KEY_LIVE_INTERVAL, String(document.getElementById("liveInterval").value || "5000"));
+      startLivePolling();
+    });
+    document.getElementById("saveAcmeBtn").addEventListener("click", async () => {
+      const email = (document.getElementById("acmeEmail").value || "").trim();
+      try {
+        await postForm(cfg.settingsActionPath, { op: "set_acme_email", email });
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && document.getElementById("liveMode")?.checked) {
         pollSnapshotSilently();
@@ -1842,6 +1885,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab") || "runtime"));
     });
     setTab("runtime");
+    restoreLivePrefs();
     startLivePolling();
 
     getSnapshot().catch((e) => showOp("error", String(e)));
@@ -1909,6 +1953,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			subsPath := panelJoin(basePath, "legacy/subscriptions")
 			apiSnapshotPath := panelJoin(basePath, "api/snapshot")
 			dashboardActionPath := panelJoin(basePath, "actions")
+			settingsActionPath := panelJoin(basePath, "settings/action")
 			usersActionPath := panelJoin(basePath, "users/action")
 			nodesActionPath := panelJoin(basePath, "nodes/action")
 			inboundsActionPath := panelJoin(basePath, "inbounds/action")
@@ -1951,6 +1996,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						SuggestedPorts:      snapshot.suggestedPorts,
 						SNIPresets:          snapshot.sniPresets,
 						Dashboard:           snapshot.dashboard,
+						ContactEmail:        strings.TrimSpace(cfg.Public.ContactEmail),
 					}
 					data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 					w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1977,10 +2023,12 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					LogoutPath:          logoutPath,
 					SnapshotPath:        apiSnapshotPath,
 					DashboardActionPath: dashboardActionPath,
+					SettingsActionPath:  settingsActionPath,
 					UsersActionPath:     usersActionPath,
 					NodesActionPath:     nodesActionPath,
 					InboundsActionPath:  inboundsActionPath,
 					SubsActionPath:      subsActionPath,
+					ContactEmail:        strings.TrimSpace(cfg.Public.ContactEmail),
 				})
 			})
 			if appAliasPath != appPath {
@@ -2013,6 +2061,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					Credentials:         snapshot.credentials,
 					Subscriptions:       snapshot.subscriptionLinks,
 					DashboardActionPath: dashboardActionPath,
+					SettingsActionPath:  settingsActionPath,
 					UsersActionPath:     usersActionPath,
 					NodesActionPath:     nodesActionPath,
 					InboundsActionPath:  inboundsActionPath,
@@ -2022,6 +2071,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					SuggestedPorts:      snapshot.suggestedPorts,
 					SNIPresets:          snapshot.sniPresets,
 					Dashboard:           snapshot.dashboard,
+					ContactEmail:        strings.TrimSpace(cfg.Public.ContactEmail),
 				}
 				data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 				panelWriteJSON(w, http.StatusOK, data)
@@ -2063,6 +2113,16 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					ops.set("error", "unknown dashboard action")
 				}
 				panelRespondAction(w, r, legacyDashboardPath, ops)
+			})
+			panelMux.HandleFunc(settingsActionPath, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				if err := panelHandleSettingsAction(r, &configPathValue, ops); err != nil {
+					ops.set("error", err.Error())
+				}
+				panelRespondAction(w, r, appPath, ops)
 			})
 			panelMux.HandleFunc(usersActionPath, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -3235,6 +3295,34 @@ func panelHandleCredentialAction(ctx context.Context, dbPath string, r *http.Req
 		return nil
 	default:
 		return fmt.Errorf("unknown credential action")
+	}
+}
+
+func panelHandleSettingsAction(r *http.Request, configPath *string, ops *panelOperationFeed) error {
+	if err := r.ParseForm(); err != nil {
+		return fmt.Errorf("invalid settings action request")
+	}
+	action := strings.TrimSpace(r.FormValue("op"))
+	if action == "" {
+		return fmt.Errorf("settings action is required")
+	}
+	switch action {
+	case "set_acme_email":
+		if configPath == nil || strings.TrimSpace(*configPath) == "" {
+			return fmt.Errorf("config path is required")
+		}
+		email := strings.TrimSpace(r.FormValue("email"))
+		if err := setConfigContactEmail(strings.TrimSpace(*configPath), email); err != nil {
+			return err
+		}
+		if email == "" {
+			ops.set("ok", "acme contact email cleared")
+		} else {
+			ops.set("ok", "acme contact email saved: "+email)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown settings action")
 	}
 }
 
