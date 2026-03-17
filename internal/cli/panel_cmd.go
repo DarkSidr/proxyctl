@@ -913,7 +913,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </section>
   </div>
   <script>
-    const cfg = {
+    const cfgRaw = {
       basePath: {{printf "%q" .BasePath}},
       logoutPath: {{printf "%q" .LogoutPath}},
       snapshotPath: {{printf "%q" .SnapshotPath}},
@@ -922,6 +922,32 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       inboundsActionPath: {{printf "%q" .InboundsActionPath}},
       subsActionPath: {{printf "%q" .SubsActionPath}},
     };
+    function joinPath(base, suffix) {
+      const b = String(base || "/").replace(/\/+$/, "") || "/";
+      const s = String(suffix || "").replace(/^\/+/, "");
+      if (!s) return b;
+      return b === "/" ? "/" + s : b + "/" + s;
+    }
+    function detectBasePath() {
+      const path = String(window.location.pathname || "/").replace(/\/+$/, "") || "/";
+      if (path.endsWith("/app")) {
+        const b = path.slice(0, -4);
+        return b || "/";
+      }
+      return String(cfgRaw.basePath || "/");
+    }
+    const cfg = (() => {
+      const basePath = detectBasePath();
+      return {
+        basePath,
+        logoutPath: joinPath(basePath, "logout"),
+        snapshotPath: joinPath(basePath, "api/snapshot"),
+        dashboardActionPath: joinPath(basePath, "actions"),
+        usersActionPath: joinPath(basePath, "users/action"),
+        inboundsActionPath: joinPath(basePath, "inbounds/action"),
+        subsActionPath: joinPath(basePath, "subscriptions/action"),
+      };
+    })();
 
     let snapshot = null;
 
