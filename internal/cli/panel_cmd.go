@@ -952,6 +952,16 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         <button class="btn" data-runtime="render">render</button>
         <button class="btn warn" data-runtime="validate">validate</button>
         <button class="btn err" data-runtime="apply">apply</button>
+        <button id="askTrafficBtn" class="btn secondary">ask traffic now</button>
+        <label class="row" style="gap:6px">
+          <input id="liveMode" type="checkbox" checked>
+          <span class="label">live</span>
+        </label>
+        <select id="liveInterval">
+          <option value="3000">3s</option>
+          <option value="5000" selected>5s</option>
+          <option value="10000">10s</option>
+        </select>
       </div>
       <div class="pad">
         <div class="grid" id="dashCards"></div>
@@ -1125,6 +1135,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     let opTimer = null;
     let selectedSubInboundByUser = {};
     let inboundSniOptions = [];
+    let liveTimer = null;
+    let liveBusy = false;
 
     function esc(v) {
       return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -1190,6 +1202,34 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
       snapshot = await res.json();
       render();
+    }
+    async function pollSnapshotSilently() {
+      if (liveBusy) return;
+      liveBusy = true;
+      try {
+        await getSnapshot();
+      } catch (e) {
+        showOp("error", String(e));
+      } finally {
+        liveBusy = false;
+      }
+    }
+    function stopLivePolling() {
+      if (liveTimer) {
+        clearInterval(liveTimer);
+        liveTimer = null;
+      }
+    }
+    function startLivePolling() {
+      stopLivePolling();
+      const enabled = !!document.getElementById("liveMode")?.checked;
+      if (!enabled) return;
+      const intervalRaw = Number(document.getElementById("liveInterval")?.value || 5000);
+      const intervalMs = Number.isFinite(intervalRaw) && intervalRaw >= 1000 ? intervalRaw : 5000;
+      liveTimer = setInterval(() => {
+        if (document.hidden) return;
+        pollSnapshotSilently();
+      }, intervalMs);
     }
     async function postForm(path, form) {
       const res = await fetch(path, {
@@ -1768,6 +1808,26 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         showOp("error", String(e));
       }
     });
+    document.getElementById("askTrafficBtn").addEventListener("click", async () => {
+      try {
+        await getSnapshot();
+        showOp("ok", "traffic and runtime stats refreshed");
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("liveMode").addEventListener("change", () => {
+      if (document.getElementById("liveMode").checked) {
+        pollSnapshotSilently();
+      }
+      startLivePolling();
+    });
+    document.getElementById("liveInterval").addEventListener("change", () => startLivePolling());
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && document.getElementById("liveMode")?.checked) {
+        pollSnapshotSilently();
+      }
+    });
     document.getElementById("inType").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
     document.getElementById("inTransport").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
     document.getElementById("inSniMode").addEventListener("change", () => updateInboundSniInputState());
@@ -1786,6 +1846,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab") || "runtime"));
     });
     setTab("runtime");
+    startLivePolling();
 
     getSnapshot().catch((e) => showOp("error", String(e)));
   </script>
