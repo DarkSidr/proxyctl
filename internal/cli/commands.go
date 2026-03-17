@@ -492,6 +492,15 @@ func newNodeAddCmd(dbPath *string) *cobra.Command {
 				return err
 			}
 			defer store.Close()
+			if domain.NodeRole(role) == domain.NodeRolePrimary {
+				existingPrimary, exists, err := findExistingPrimaryNode(cmd.Context(), store, "")
+				if err != nil {
+					return err
+				}
+				if exists {
+					return fmt.Errorf("primary node already exists: id=%s name=%s host=%s; only one primary node is allowed", existingPrimary.ID, existingPrimary.Name, existingPrimary.Host)
+				}
+			}
 
 			created, err := store.Nodes().Create(cmd.Context(), domain.Node{
 				Name:    name,
@@ -2398,6 +2407,15 @@ func runWizardNodeAdd(cmd *cobra.Command, dbPath string) error {
 		return err
 	}
 	defer store.Close()
+	if domain.NodeRole(strings.TrimSpace(role)) == domain.NodeRolePrimary {
+		existingPrimary, exists, err := findExistingPrimaryNode(cmd.Context(), store, "")
+		if err != nil {
+			return err
+		}
+		if exists {
+			return fmt.Errorf("primary node already exists: id=%s name=%s host=%s; only one primary node is allowed", existingPrimary.ID, existingPrimary.Name, existingPrimary.Host)
+		}
+	}
 
 	created, err := store.Nodes().Create(cmd.Context(), domain.Node{
 		Name:    strings.TrimSpace(name),
@@ -2623,6 +2641,15 @@ func runWizardEditNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPa
 		return domain.Node{}, err
 	}
 	defer store.Close()
+	if domain.NodeRole(strings.TrimSpace(role)) == domain.NodeRolePrimary {
+		existingPrimary, exists, err := findExistingPrimaryNode(cmd.Context(), store, node.ID)
+		if err != nil {
+			return domain.Node{}, err
+		}
+		if exists {
+			return domain.Node{}, fmt.Errorf("primary node already exists: id=%s name=%s host=%s; only one primary node is allowed", existingPrimary.ID, existingPrimary.Name, existingPrimary.Host)
+		}
+	}
 
 	updated, err := store.Nodes().Update(cmd.Context(), domain.Node{
 		ID:      node.ID,
@@ -2675,6 +2702,23 @@ func runWizardSetNodeEnabled(cmd *cobra.Command, out io.Writer, dbPath string, n
 	}
 	fmt.Fprintf(out, "node state updated: id=%s enabled=%t\n", updated.ID, updated.Enabled)
 	return updated, nil
+}
+
+func findExistingPrimaryNode(ctx context.Context, store *sqlite.Store, excludeNodeID string) (domain.Node, bool, error) {
+	nodes, err := store.Nodes().List(ctx)
+	if err != nil {
+		return domain.Node{}, false, fmt.Errorf("list nodes: %w", err)
+	}
+	excludeNodeID = strings.TrimSpace(excludeNodeID)
+	for _, item := range nodes {
+		if item.ID == excludeNodeID {
+			continue
+		}
+		if item.Role == domain.NodeRolePrimary {
+			return item, true, nil
+		}
+	}
+	return domain.Node{}, false, nil
 }
 
 func runWizardDeleteNode(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string, node domain.Node) (bool, error) {

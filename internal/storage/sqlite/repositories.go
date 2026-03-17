@@ -86,6 +86,22 @@ func (r *userRepository) Delete(ctx context.Context, userID string) (bool, error
 }
 
 func (r *nodeRepository) Create(ctx context.Context, node domain.Node) (domain.Node, error) {
+	node.Name = strings.TrimSpace(node.Name)
+	node.Host = strings.TrimSpace(node.Host)
+	if node.Name == "" {
+		return domain.Node{}, fmt.Errorf("node name is required")
+	}
+	if node.Host == "" {
+		return domain.Node{}, fmt.Errorf("node host is required")
+	}
+	if strings.TrimSpace(string(node.Role)) == "" {
+		node.Role = domain.NodeRolePrimary
+	}
+	switch node.Role {
+	case domain.NodeRolePrimary, domain.NodeRoleNode:
+	default:
+		return domain.Node{}, fmt.Errorf("node role must be one of: %s, %s", domain.NodeRolePrimary, domain.NodeRoleNode)
+	}
 	if node.ID == "" {
 		node.ID = newID()
 	}
@@ -104,6 +120,9 @@ func (r *nodeRepository) Create(ctx context.Context, node domain.Node) (domain.N
 		node.CreatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
+		if isPrimaryNodeConstraintError(err) {
+			return domain.Node{}, fmt.Errorf("insert node: only one primary node is allowed; update existing primary to role=node first")
+		}
 		return domain.Node{}, fmt.Errorf("insert node: %w", err)
 	}
 	return node, nil
@@ -167,6 +186,9 @@ func (r *nodeRepository) Update(ctx context.Context, node domain.Node) (domain.N
 		node.ID,
 	)
 	if err != nil {
+		if isPrimaryNodeConstraintError(err) {
+			return domain.Node{}, fmt.Errorf("update node: only one primary node is allowed; update existing primary to role=node first")
+		}
 		return domain.Node{}, fmt.Errorf("update node: %w", err)
 	}
 	affected, err := result.RowsAffected()
@@ -194,6 +216,13 @@ func (r *nodeRepository) Update(ctx context.Context, node domain.Node) (domain.N
 		return domain.Node{}, fmt.Errorf("parse node created_at: %w", err)
 	}
 	return node, nil
+}
+
+func isPrimaryNodeConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "only one primary node is allowed")
 }
 
 func (r *nodeRepository) Delete(ctx context.Context, nodeID string) (bool, error) {

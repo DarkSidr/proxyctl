@@ -82,4 +82,24 @@ var schemaMigrations = []string{
 	`ALTER TABLE subscriptions ADD COLUMN access_token TEXT`,
 	`ALTER TABLE subscriptions ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_access_token ON subscriptions(access_token)`,
+	`CREATE TRIGGER IF NOT EXISTS trg_nodes_single_primary_insert
+		BEFORE INSERT ON nodes
+		FOR EACH ROW
+		WHEN lower(trim(NEW.role)) = 'primary'
+		BEGIN
+			SELECT RAISE(ABORT, 'only one primary node is allowed')
+			WHERE EXISTS (
+				SELECT 1 FROM nodes WHERE lower(trim(role)) = 'primary'
+			);
+		END`,
+	`CREATE TRIGGER IF NOT EXISTS trg_nodes_single_primary_update
+		BEFORE UPDATE ON nodes
+		FOR EACH ROW
+		WHEN lower(trim(NEW.role)) = 'primary'
+		BEGIN
+			SELECT RAISE(ABORT, 'only one primary node is allowed')
+			WHERE EXISTS (
+				SELECT 1 FROM nodes WHERE lower(trim(role)) = 'primary' AND id <> OLD.id
+			);
+		END`,
 }

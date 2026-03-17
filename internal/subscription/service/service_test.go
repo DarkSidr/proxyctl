@@ -25,7 +25,7 @@ func TestGenerateBuildsSubscriptionFromMultipleInbounds(t *testing.T) {
 	_ = mustCreateUser(t, ctx, store, "bob")
 
 	node1 := mustCreateNode(t, ctx, store, domain.Node{ID: "node-1", Name: "eu-1", Host: "eu.example.com", Role: domain.NodeRolePrimary, Enabled: true})
-	node2 := mustCreateNode(t, ctx, store, domain.Node{ID: "node-2", Name: "us-1", Host: "us.example.com", Role: domain.NodeRolePrimary, Enabled: true})
+	node2 := mustCreateNode(t, ctx, store, domain.Node{ID: "node-2", Name: "us-1", Host: "us.example.com", Role: domain.NodeRoleNode, Enabled: true})
 
 	inVLESS := mustCreateInbound(t, ctx, store, domain.Inbound{ID: "in-vless", Type: domain.ProtocolVLESS, Engine: domain.EngineSingBox, NodeID: node1.ID, Domain: "eu.example.com", Port: 443, TLSEnabled: true, Transport: "ws", Path: "/ws", Enabled: true})
 	inHY2 := mustCreateInbound(t, ctx, store, domain.Inbound{ID: "in-hy2", Type: domain.ProtocolHysteria2, Engine: domain.EngineSingBox, NodeID: node1.ID, Domain: "hy2.example.com", Port: 8443, TLSEnabled: true, Transport: "udp", Enabled: true})
