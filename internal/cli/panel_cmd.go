@@ -320,6 +320,12 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
       padding: 6px 8px;
       font-size: 0.78rem;
     }
+    .copy-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
     @media (max-width: 960px) {
       .top { flex-direction: column; align-items: flex-start; }
       th, td { padding: 8px; font-size: 0.8rem; }
@@ -605,7 +611,10 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
             <td>{{.SecretMask}}</td>
             <td>
               {{if .ClientURI}}
-              <input class="uri" type="text" readonly value="{{.ClientURI}}">
+              <div class="copy-row">
+                <input class="uri" type="text" readonly value="{{.ClientURI}}">
+                <button class="btn" type="button" data-copy-text="{{.ClientURI}}" onclick="copyPanelText(this)">copy</button>
+              </div>
               {{else}}
               <span class="muted">unavailable: {{.ClientError}}</span>
               {{end}}
@@ -633,7 +642,12 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
       <div class="links">
         <ul>
           {{range .Subscriptions}}
-          <li><a href="{{.}}" target="_blank" rel="noopener noreferrer">{{.}}</a></li>
+          <li>
+            <div class="copy-row">
+              <a href="{{.}}" target="_blank" rel="noopener noreferrer">{{.}}</a>
+              <button class="btn" type="button" data-copy-text="{{.}}" onclick="copyPanelText(this)">copy</button>
+            </div>
+          </li>
           {{else}}
           <li class="muted">no public subscription links found</li>
           {{end}}
@@ -642,6 +656,42 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
     </section>
     {{end}}
   </div>
+  <script>
+    function copyPanelText(btn) {
+      if (!btn) return;
+      var text = (btn.getAttribute('data-copy-text') || '').trim();
+      if (!text) return;
+      var done = function() {
+        var prev = btn.textContent;
+        btn.textContent = 'copied';
+        setTimeout(function() {
+          btn.textContent = prev;
+        }, 900);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(function() {
+          fallbackCopy(text, done);
+        });
+        return;
+      }
+      fallbackCopy(text, done);
+    }
+    function fallbackCopy(text, onDone) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'absolute';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        if (typeof onDone === 'function') onDone();
+      } catch (e) {
+      }
+      document.body.removeChild(ta);
+    }
+  </script>
 </body>
 </html>`))
 
