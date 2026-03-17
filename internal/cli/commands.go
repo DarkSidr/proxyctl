@@ -46,6 +46,7 @@ import (
 const defaultUpdateInstallURL = "https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh"
 const defaultLatestReleaseAPIURL = "https://api.github.com/repos/DarkSidr/proxyctl/releases/latest"
 const defaultUninstallScriptPath = "/usr/local/sbin/proxyctl-uninstall"
+const defaultPanelCredentialsFileName = "panel-admin.env"
 
 var realityServerPresets = []string{
 	"www.apple.com",
@@ -1631,6 +1632,7 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 	for {
 		action, err := promptChoice(in, out, "Settings", []string{
 			"show settings",
+			"show panel access info",
 			"show installed versions",
 			"auto-update status",
 			"enable auto-update (03:00 daily)",
@@ -1656,6 +1658,10 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 			fmt.Fprintf(out, "reverse_proxy: %s\n", cfg.ReverseProxy)
 			fmt.Fprintf(out, "public.domain: %s\n", strings.TrimSpace(cfg.Public.Domain))
 			fmt.Fprintf(out, "paths.decoy_site_dir: %s\n", strings.TrimSpace(cfg.Paths.DecoySiteDir))
+		case "show panel access info":
+			if err := printPanelAccessInfoSafe(out, configPath); err != nil {
+				return err
+			}
 		case "show installed versions":
 			printInstalledVersions(cmd.Context(), out)
 		case "auto-update status":
@@ -1730,6 +1736,97 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 			return nil
 		}
 	}
+}
+
+type panelAccessInfo struct {
+	Path     string
+	Port     string
+	Login    string
+	Password string
+}
+
+func panelCredentialsPathFromConfig(configPath string) string {
+	configDir := strings.TrimSpace(filepath.Dir(configPath))
+	if configDir == "" || configDir == "." {
+		configDir = "/etc/proxy-orchestrator"
+	}
+	return filepath.Join(configDir, defaultPanelCredentialsFileName)
+}
+
+func readPanelAccessInfo(path string) (panelAccessInfo, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return panelAccessInfo{}, err
+	}
+	info := panelAccessInfo{}
+	lines := strings.Split(string(raw), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "PANEL_PATH":
+			info.Path = strings.TrimSpace(value)
+		case "PANEL_PORT":
+			info.Port = strings.TrimSpace(value)
+		case "PANEL_LOGIN":
+			info.Login = strings.TrimSpace(value)
+		case "PANEL_PASSWORD":
+			info.Password = strings.TrimSpace(value)
+		}
+	}
+	return info, nil
+}
+
+func panelURLHint(cfg config.AppConfig, panelPath, panelPort string) string {
+	panelPath = strings.TrimSpace(panelPath)
+	panelPort = strings.TrimSpace(panelPort)
+	if panelPath == "" {
+		return ""
+	}
+	portSuffix := ""
+	if panelPort != "" {
+		portSuffix = ":" + panelPort
+	}
+	domain := strings.TrimSpace(cfg.Public.Domain)
+	if domain == "" {
+		return fmt.Sprintf("http://<server-ip-or-domain>%s%s", portSuffix, panelPath)
+	}
+	return fmt.Sprintf("http://%s%s%s", domain, portSuffix, panelPath)
+}
+
+func printPanelAccessInfoSafe(out io.Writer, configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	if cfg.DeploymentMode == config.DeploymentModeNode {
+		fmt.Fprintln(out, "panel access: deployment mode is node (panel data is not used on this host)")
+		return nil
+	}
+
+	credsPath := panelCredentialsPathFromConfig(configPath)
+	info, err := readPanelAccessInfo(credsPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(out, "panel access file not found: %s\n", credsPath)
+			fmt.Fprintln(out, "re-run installer to generate panel path/login/password placeholders")
+			return nil
+		}
+		return fmt.Errorf("read panel access file: %w", err)
+	}
+
+	fmt.Fprintf(out, "panel.path: %s\n", strings.TrimSpace(info.Path))
+	fmt.Fprintf(out, "panel.port: %s\n", strings.TrimSpace(info.Port))
+	fmt.Fprintf(out, "panel.url_hint: %s\n", panelURLHint(cfg, info.Path, info.Port))
+	fmt.Fprintf(out, "panel.credentials_file: %s\n", credsPath)
+	fmt.Fprintln(out, "panel.login/password: hidden (read manually from credentials file)")
+	return nil
 }
 
 func printAutoUpdateStatus(ctx context.Context, out io.Writer) error {

@@ -129,16 +129,22 @@ PROXYCTL_PROMPT_CONFIG=0 \
   PROXYCTL_REVERSE_PROXY=caddy \
   PROXYCTL_PUBLIC_DOMAIN=darksidr.icu \
   PROXYCTL_CONTACT_EMAIL=ops@example.com \
+  PROXYCTL_PANEL_PATH=/my-secret-panel \
+  PROXYCTL_PANEL_PORT=28443 \
+  PROXYCTL_PANEL_LOGIN=admin \
+  PROXYCTL_PANEL_PASSWORD='StrongPass123' \
   PROXYCTL_DECOY_TEMPLATE=random \
   bash <(curl -fsSL https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh)
 ```
 
 Installer creates decoy template library on VPS at `/usr/share/proxy-orchestrator/decoy-templates`.
 You can upload your own templates there using structure: `<name>/index.html` and `<name>/assets/style.css`.
+For `panel`/`panel+node` install, installer also generates panel access placeholders (3x-ui style) and stores them in `/etc/proxy-orchestrator/panel-admin.env` (path/login/password), then prints them at the end.
 
 `proxyctl wizard` now includes:
 - `settings -> set decoy site path`
 - `settings -> switch decoy template`
+- `settings -> show panel access info` (safe output without login/password)
 - `settings -> show installed versions`
 It also includes `uninstall proxyctl` for full VPS cleanup.
 
@@ -403,6 +409,106 @@ Wizard is inbound-first (similar to 3x-ui workflow):
 - `users`: list/create/open users, inspect configs, manage credentials.
 At the end of inbound creation wizard can still print a ready client URI when a user is linked.
 Inside `open credential`, you can print URI with fingerprint presets (`chrome/google`, `safari`, `firefox`, `edge`, etc.) or custom value.
+
+## Web panel MVP (phase 0)
+
+Read-only panel is available via:
+
+```bash
+proxyctl panel serve --config /etc/proxy-orchestrator/proxyctl.yaml
+```
+
+Defaults:
+- bind: `127.0.0.1:<PANEL_PORT>` from `/etc/proxy-orchestrator/panel-admin.env`
+- base path: `PANEL_PATH` from the same file
+- auth: HTTP Basic Auth with `PANEL_LOGIN`/`PANEL_PASSWORD`
+
+Current pages:
+- dashboard (`runtime units`, counters),
+- users list,
+- inbounds list,
+- subscription links list.
+
+### Hide panel behind Caddy/Nginx (recommended)
+
+Panel listener should stay local (`127.0.0.1`), and public access should go through reverse proxy.
+
+Caddy example:
+
+```caddyfile
+example.com {
+  handle_path /<secret-path>* {
+    reverse_proxy 127.0.0.1:<panel-port>
+  }
+}
+```
+
+Nginx example:
+
+```nginx
+location /<secret-path>/ {
+  proxy_pass http://127.0.0.1:<panel-port>/;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+## Web panel (3x-ui/remnawave style) - incremental plan
+
+Goal: add a lightweight visual control panel on top of existing `proxyctl` domain/app/storage layers without breaking current CLI flow.
+
+### Phase 0 (small start, 2-4 days)
+
+- Build read-only local web UI for one node:
+  - health cards (`status`, services, db path),
+  - users table,
+  - inbounds table,
+  - generated subscription links view.
+- Keep business logic in existing app/service layer; UI calls internal HTTP handlers only.
+- Access model for MVP:
+  - bind to `127.0.0.1:<port>` only,
+  - optional reverse-proxy exposure later.
+- Deliverable:
+  - `/panel` route with basic dashboard and list pages.
+
+### Phase 1 (safe write operations)
+
+- Add create/edit/delete for users and inbounds from UI.
+- Add explicit action buttons for `render`, `validate`, `apply`.
+- Add operation result feed (success/error log for latest action).
+- Add optimistic locking/version check for entities to avoid accidental overwrite.
+
+### Phase 2 (node operations + observability)
+
+- Multi-node page: node list, reachability test, sync trigger per node.
+- Runtime/logs page: tail recent service logs, filter by unit.
+- Diagnostics page: expose `doctor` checks with pass/fail badges and suggested fixes.
+
+### Phase 3 (production-grade panel)
+
+- AuthN/AuthZ:
+  - admin login,
+  - optional API tokens for automation,
+  - role split (read-only/operator/admin).
+- Audit trail for all mutating actions (who, when, before/after).
+- Safer rollout UX:
+  - "preview diff" before apply,
+  - staged apply per node,
+  - rollback shortcuts for last known good runtime artifacts.
+
+### Technical constraints and architecture notes
+
+- Do not duplicate validation logic in frontend; server remains source of truth.
+- Keep CLI and panel parity: any panel action should map to existing use-cases in `internal/app`.
+- Start with server-rendered HTML + minimal JS; SPA is optional later.
+- Prefer SQLite-first for panel metadata; postpone external DB until needed.
+
+### Definition of done for Phase 0
+
+- Read-only dashboard works on fresh install.
+- All data shown in panel is sourced via existing repositories/services (no duplicated storage model).
+- Basic smoke test is added to `TESTING.md` for panel route availability.
 
 ## Troubleshooting
 

@@ -26,6 +26,10 @@ Optional environment variables:
 - `PROXYCTL_CONTACT_EMAIL` — ACME contact email for generated Caddy global options.
 - `PROXYCTL_DECOY_TEMPLATE` — decoy site template (`random|login|pizza-club|support-desk|default`, default: `random`).
 - `PROXYCTL_DECOY_TEMPLATE_BASE_URL` — base URL for downloading decoy templates when installer runs standalone via `curl|bash`.
+- `PROXYCTL_PANEL_PATH` — custom panel URL path (if omitted, random path is generated).
+- `PROXYCTL_PANEL_PORT` — panel port override (if omitted, random port is generated).
+- `PROXYCTL_PANEL_LOGIN` — panel login override (default: `admin`).
+- `PROXYCTL_PANEL_PASSWORD` — panel password override (if omitted, random password is generated).
 - `PROXYCTL_AUTO_UPDATE_SCHEDULE` — `systemd` timer schedule (default: `daily`).
 - `PROXYCTL_AUTO_UPDATE_INSTALL_URL` — installer URL used by auto-update script.
 - `SINGBOX_BINARY_URL` — fallback URL for `sing-box` binary/archive.
@@ -45,6 +49,9 @@ Interactive behavior:
 - Decoy template can be chosen explicitly or left as `random`.
 - Installer creates decoy template library at `/usr/share/proxy-orchestrator/decoy-templates`.
 - Custom templates can be uploaded into that directory as `<name>/index.html` and `<name>/assets/style.css`.
+- For `panel`/`panel+node` mode installer also prepares panel access placeholders in `/etc/proxy-orchestrator/panel-admin.env` and prints them at the end.
+- Start read-only panel MVP: `proxyctl panel serve --config /etc/proxy-orchestrator/proxyctl.yaml`.
+- Recommended exposure model: keep panel listener on `127.0.0.1:<PANEL_PORT>` and publish only via selected reverse proxy (`caddy`/`nginx`) on 80/443.
 
 ## Idempotency rules
 - Existing `/etc/proxy-orchestrator/proxyctl.yaml` is not overwritten.
@@ -58,6 +65,7 @@ Interactive behavior:
 Wizard note:
 - `proxyctl wizard` now has `settings -> set decoy site path` to update `paths.decoy_site_dir` in config and switch decoy assets to a custom directory.
 - `proxyctl wizard` now has `settings -> switch decoy template` to activate template from `/usr/share/proxy-orchestrator/decoy-templates` (including your uploaded custom templates).
+- `proxyctl wizard` now has `settings -> show panel access info` (URL/path and credentials file path, login/password hidden in wizard output).
 - `proxyctl wizard` now has `settings -> show installed versions` to print detected versions of `proxyctl`, `sing-box`, `xray`, `caddy`, `nginx`, `sqlite3`, and `systemd`.
 - `proxyctl wizard` now has `uninstall proxyctl` for full purge flow with confirmation.
 

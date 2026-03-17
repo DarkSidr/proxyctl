@@ -19,6 +19,7 @@ readonly STATE_ROOT="/var/lib/proxy-orchestrator"
 readonly BACKUP_ROOT="/var/backups/proxy-orchestrator"
 readonly DB_PATH="${STATE_ROOT}/proxyctl.db"
 readonly CONFIG_PATH="${CONFIG_ROOT}/proxyctl.yaml"
+readonly PANEL_CREDENTIALS_PATH="${CONFIG_ROOT}/panel-admin.env"
 readonly BIN_DIR="/usr/local/bin"
 readonly SBIN_DIR="/usr/local/sbin"
 readonly SYSTEMD_DIR="/etc/systemd/system"
@@ -42,6 +43,10 @@ PROXYCTL_CONTACT_EMAIL="${PROXYCTL_CONTACT_EMAIL:-}"
 PROXYCTL_PROMPT_CONFIG="${PROXYCTL_PROMPT_CONFIG:-auto}"
 PROXYCTL_DECOY_TEMPLATE="${PROXYCTL_DECOY_TEMPLATE:-random}"
 PROXYCTL_DECOY_TEMPLATE_BASE_URL="${PROXYCTL_DECOY_TEMPLATE_BASE_URL:-https://raw.githubusercontent.com/DarkSidr/proxyctl/main/packaging/defaults/decoy-templates}"
+PROXYCTL_PANEL_PATH="${PROXYCTL_PANEL_PATH:-}"
+PROXYCTL_PANEL_LOGIN="${PROXYCTL_PANEL_LOGIN:-}"
+PROXYCTL_PANEL_PASSWORD="${PROXYCTL_PANEL_PASSWORD:-}"
+PROXYCTL_PANEL_PORT="${PROXYCTL_PANEL_PORT:-}"
 
 # Optional runtime URLs for environments where apt packages are unavailable.
 SINGBOX_BINARY_URL="${SINGBOX_BINARY_URL:-}"
@@ -55,6 +60,11 @@ SELECTED_CONTACT_EMAIL=""
 SELECTED_DECOY_TEMPLATE="random"
 DECOY_INDEX_CONTENT=""
 DECOY_STYLE_CONTENT=""
+SELECTED_PANEL_PATH=""
+SELECTED_PANEL_LOGIN=""
+SELECTED_PANEL_PASSWORD=""
+SELECTED_PANEL_PORT=""
+PANEL_URL_HINT=""
 
 log() {
   printf '[%s] %s\n' "${INSTALL_TAG}" "$*"
@@ -275,6 +285,141 @@ resolve_decoy_template_choice() {
     return 0
   fi
   printf '%s\n' "${normalized}"
+}
+
+random_alnum() {
+  local length="$1"
+  local output=""
+  while [[ ${#output} -lt ${length} ]]; do
+    output+="$(
+      LC_ALL=C tr -dc 'a-zA-Z0-9' </dev/urandom | head -c "${length}" || true
+    )"
+  done
+  printf '%s\n' "${output:0:length}"
+}
+
+random_panel_port() {
+  local min=20000
+  local max=65000
+  local range=$((max - min + 1))
+  printf '%s\n' "$((min + (RANDOM % range)))"
+}
+
+normalize_panel_path() {
+  local raw="$1"
+  local trimmed sanitized
+
+  trimmed="$(printf '%s' "${raw}" | xargs || true)"
+  sanitized="$(printf '%s' "${trimmed}" | tr -cd 'a-zA-Z0-9/_-')"
+  sanitized="${sanitized#/}"
+
+  if [[ -z "${sanitized}" ]]; then
+    printf '%s\n' ""
+    return 0
+  fi
+  if [[ "${sanitized}" =~ ^- ]]; then
+    sanitized="panel-${sanitized#-}"
+  fi
+  if [[ "${sanitized}" == "/" ]]; then
+    printf '/panel-%s\n' "$(random_alnum 8 | tr '[:upper:]' '[:lower:]')"
+    return 0
+  fi
+  printf '/%s\n' "${sanitized}"
+}
+
+read_panel_cred_field() {
+  local key="$1"
+  local file_path="$2"
+  awk -F'=' -v wanted="${key}" '$1 == wanted {print substr($0, index($0, "=") + 1); exit}' "${file_path}" 2>/dev/null || true
+}
+
+is_valid_port() {
+  local value="$1"
+  [[ "${value}" =~ ^[0-9]+$ ]] || return 1
+  ((value >= 1 && value <= 65535))
+}
+
+prompt_panel_port() {
+  local current="$1"
+  local answer=""
+  while true; do
+    answer="$(prompt_with_default "Panel port (1-65535)" "${current}")"
+    answer="$(printf '%s' "${answer}" | xargs || true)"
+    if is_valid_port "${answer}"; then
+      printf '%s\n' "${answer}"
+      return 0
+    fi
+    warn "Unsupported panel port: ${answer}. Use numeric value in range 1..65535."
+  done
+}
+
+prepare_panel_credentials() {
+  local existing_path="" existing_login="" existing_password="" existing_port="" resolved_path=""
+
+  if [[ "${SELECTED_DEPLOYMENT_MODE}" == "node" ]]; then
+    SELECTED_PANEL_PATH=""
+    SELECTED_PANEL_LOGIN=""
+    SELECTED_PANEL_PASSWORD=""
+    PANEL_URL_HINT=""
+    return 0
+  fi
+
+  if [[ -f "${PANEL_CREDENTIALS_PATH}" ]]; then
+    existing_path="$(read_panel_cred_field "PANEL_PATH" "${PANEL_CREDENTIALS_PATH}")"
+    existing_login="$(read_panel_cred_field "PANEL_LOGIN" "${PANEL_CREDENTIALS_PATH}")"
+    existing_password="$(read_panel_cred_field "PANEL_PASSWORD" "${PANEL_CREDENTIALS_PATH}")"
+    existing_port="$(read_panel_cred_field "PANEL_PORT" "${PANEL_CREDENTIALS_PATH}")"
+  fi
+
+  resolved_path="$(normalize_panel_path "${PROXYCTL_PANEL_PATH}")"
+  if [[ -z "${resolved_path}" ]]; then
+    resolved_path="$(normalize_panel_path "${existing_path}")"
+  fi
+  if [[ -z "${resolved_path}" ]]; then
+    resolved_path="/$(random_alnum 16 | tr '[:upper:]' '[:lower:]')"
+  fi
+
+  SELECTED_PANEL_PATH="${resolved_path}"
+  SELECTED_PANEL_LOGIN="${PROXYCTL_PANEL_LOGIN:-${existing_login}}"
+  SELECTED_PANEL_PASSWORD="${PROXYCTL_PANEL_PASSWORD:-${existing_password}}"
+  SELECTED_PANEL_PORT="${PROXYCTL_PANEL_PORT:-${existing_port}}"
+
+  if [[ -z "${SELECTED_PANEL_LOGIN}" ]]; then
+    SELECTED_PANEL_LOGIN="admin"
+  fi
+  if [[ -z "${SELECTED_PANEL_PASSWORD}" ]]; then
+    SELECTED_PANEL_PASSWORD="$(random_alnum 20)"
+  fi
+  if ! is_valid_port "${SELECTED_PANEL_PORT}"; then
+    SELECTED_PANEL_PORT="$(random_panel_port)"
+  fi
+
+  if can_prompt; then
+    SELECTED_PANEL_PORT="$(prompt_panel_port "${SELECTED_PANEL_PORT}")"
+  fi
+
+  if [[ -n "${SELECTED_PUBLIC_DOMAIN}" ]]; then
+    PANEL_URL_HINT="http://${SELECTED_PUBLIC_DOMAIN}:${SELECTED_PANEL_PORT}${SELECTED_PANEL_PATH}"
+  else
+    PANEL_URL_HINT="http://<server-ip-or-domain>:${SELECTED_PANEL_PORT}${SELECTED_PANEL_PATH}"
+  fi
+}
+
+write_panel_credentials() {
+  if [[ "${SELECTED_DEPLOYMENT_MODE}" == "node" ]]; then
+    return 0
+  fi
+  local content
+  content="$(cat <<EOT
+# Generated by proxyctl installer.
+# Future web panel credentials/path placeholder (3x-ui style flow).
+PANEL_PATH=${SELECTED_PANEL_PATH}
+PANEL_LOGIN=${SELECTED_PANEL_LOGIN}
+PANEL_PASSWORD=${SELECTED_PANEL_PASSWORD}
+PANEL_PORT=${SELECTED_PANEL_PORT}
+EOT
+)"
+  write_managed_file "${PANEL_CREDENTIALS_PATH}" 0600 "${content}"
 }
 
 build_decoy_assets() {
@@ -1341,6 +1486,27 @@ Next steps:
 8. Full uninstall (purge):
    proxyctl uninstall --yes
 EOF_STEPS
+
+  if [[ "${SELECTED_DEPLOYMENT_MODE}" != "node" ]]; then
+    cat <<EOF_PANEL
+
+Panel access credentials (stored in ${PANEL_CREDENTIALS_PATH}):
+- URL path: ${SELECTED_PANEL_PATH}
+- Port: ${SELECTED_PANEL_PORT}
+- Login: ${SELECTED_PANEL_LOGIN}
+- Password: ${SELECTED_PANEL_PASSWORD}
+- URL hint: ${PANEL_URL_HINT}
+- Read again later: cat ${PANEL_CREDENTIALS_PATH}
+- Save backup copy:
+  cp ${PANEL_CREDENTIALS_PATH} ~/proxyctl-panel-credentials-\$(date -u +%Y%m%dT%H%M%SZ).env
+
+You can override these on reinstall via:
+  PROXYCTL_PANEL_PATH=/my-secret-path
+  PROXYCTL_PANEL_PORT=28443
+  PROXYCTL_PANEL_LOGIN=admin
+  PROXYCTL_PANEL_PASSWORD='<strong-password>'
+EOF_PANEL
+  fi
 }
 
 main() {
@@ -1359,6 +1525,7 @@ main() {
   install_or_verify_runtime_binary "xray" "${XRAY_BINARY_URL}" "XRAY_BINARY_URL" xray xray-core
 
   configure_install_preferences
+  prepare_panel_credentials
   ensure_directories
   install_systemd_units
   install_uninstall_script
@@ -1366,6 +1533,7 @@ main() {
   install_decoy_template_library
   install_default_config
   install_default_runtime_files
+  write_panel_credentials
   ensure_selected_reverse_proxy_service
   init_sqlite
 

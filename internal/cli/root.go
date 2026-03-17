@@ -58,6 +58,7 @@ func NewRootCmd() *cobra.Command {
 		newSubscriptionCmd(&configPath, &dbPath),
 		newLogsCmd(&configPath),
 		newDoctorCmd(&configPath, &dbPath),
+		newPanelCmd(&configPath, &dbPath),
 	)
 
 	return rootCmd
