@@ -30,6 +30,7 @@ import (
 	"proxyctl/internal/config"
 	"proxyctl/internal/domain"
 	"proxyctl/internal/engine"
+	subscriptionservice "proxyctl/internal/subscription/service"
 )
 
 type panelUnitState struct {
@@ -94,6 +95,7 @@ type panelSubscriptionState struct {
 type panelSubscriptionView struct {
 	UserID       string
 	UserName     string
+	ProfileName  string
 	Enabled      bool
 	AccessToken  string
 	URL          string
@@ -1754,7 +1756,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         : [
             '<div class="table-wrap">',
             '<table>',
-            '<thead><tr><th>user</th><th>status</th><th>configs</th><th>inside configs</th><th>link</th><th>actions</th></tr></thead>',
+            '<thead><tr><th>user</th><th>profile</th><th>status</th><th>configs</th><th>inside configs</th><th>link</th><th>actions</th></tr></thead>',
             '<tbody>',
             subDetails.map((s) => {
               const link = String(s.URL || "").trim();
@@ -1762,6 +1764,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
               return (
                 '<tr>' +
                   '<td>'+esc((s.UserName || "") + (s.UserID ? " (" + s.UserID + ")" : ""))+'</td>' +
+                  '<td>'+esc(s.ProfileName || "default")+'</td>' +
                   '<td>'+ (s.Enabled ? 'enabled' : 'disabled') +'</td>' +
                   '<td>'+esc(Number(s.ConfigCount || 0))+'</td>' +
                   '<td>'+ (labels.length > 0 ? esc(labels.join(", ")) : '<span class="muted">-</span>') +'</td>' +
@@ -2774,6 +2777,21 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 
 	credentialRows := make([]panelCredentialView, 0, len(credentials))
 	configLabelsByUser := make(map[string][]string, len(users))
+	configLabelsByUserInbound := make(map[string]map[string][]string, len(users))
+	inboundLabelByID := make(map[string]string, len(inbounds))
+	for _, inbound := range inbounds {
+		nodeName := strings.TrimSpace(nodeNameByID[inbound.NodeID])
+		if nodeName == "" {
+			nodeName = strings.TrimSpace(inbound.NodeID)
+		}
+		label := strings.TrimSpace(strings.Join([]string{
+			string(inbound.Type),
+			strings.TrimSpace(inbound.Domain) + ":" + strconv.Itoa(inbound.Port),
+			"|",
+			nodeName,
+		}, " "))
+		inboundLabelByID[inbound.ID] = label
+	}
 	for _, cred := range credentials {
 		userName := cred.UserID
 		if u, ok := userByID[cred.UserID]; ok && strings.TrimSpace(u.Name) != "" {
@@ -2810,6 +2828,12 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		}
 		if configLabel != "" {
 			configLabelsByUser[cred.UserID] = append(configLabelsByUser[cred.UserID], configLabel)
+			userInbound := configLabelsByUserInbound[cred.UserID]
+			if userInbound == nil {
+				userInbound = make(map[string][]string)
+				configLabelsByUserInbound[cred.UserID] = userInbound
+			}
+			userInbound[cred.InboundID] = append(userInbound[cred.InboundID], configLabel)
 		}
 	}
 	sort.Slice(credentialRows, func(i, j int) bool { return credentialRows[i].ID < credentialRows[j].ID })
@@ -2817,36 +2841,97 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		configLabelsByUser[userID] = compactUnique(labels)
 		sort.Strings(configLabelsByUser[userID])
 	}
+	for userID, byInbound := range configLabelsByUserInbound {
+		for inboundID, labels := range byInbound {
+			configLabelsByUserInbound[userID][inboundID] = compactUnique(labels)
+			sort.Strings(configLabelsByUserInbound[userID][inboundID])
+		}
+	}
 
-	subViews := make([]panelSubscriptionView, 0, len(users))
+	subViews := make([]panelSubscriptionView, 0, len(users)*2)
+	makeURL := func(token string) string {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return ""
+		}
+		publicURL := buildSubscriptionPublicURL(cfg, token)
+		if publicURL == "" {
+			publicURL = "http://<server-ip-or-domain>/sub/" + token
+		}
+		return publicURL
+	}
 	for _, user := range users {
 		sub, subErr := store.Subscriptions().GetByUserID(ctx, user.ID)
-		if subErr != nil {
-			continue
+		if subErr == nil {
+			token := strings.TrimSpace(sub.AccessToken)
+			labels := configLabelsByUser[user.ID]
+			subViews = append(subViews, panelSubscriptionView{
+				UserID:       user.ID,
+				UserName:     strings.TrimSpace(user.Name),
+				ProfileName:  subscriptionservice.DefaultProfileName,
+				Enabled:      sub.Enabled,
+				AccessToken:  token,
+				URL:          makeURL(token),
+				ConfigCount:  len(labels),
+				ConfigLabels: labels,
+			})
 		}
-		token := strings.TrimSpace(sub.AccessToken)
-		publicURL := ""
-		if token != "" {
-			publicURL = buildSubscriptionPublicURL(cfg, token)
-			if publicURL == "" {
-				publicURL = "http://<server-ip-or-domain>/sub/" + token
+		profilesPath := filepath.Join(strings.TrimSpace(cfg.Paths.Subscription), "profiles", strings.TrimSpace(user.ID)+".json")
+		content, readErr := os.ReadFile(profilesPath)
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				continue
 			}
+			return panelSnapshot{}, fmt.Errorf("read profiles file: %w", readErr)
 		}
-		labels := configLabelsByUser[user.ID]
-		subViews = append(subViews, panelSubscriptionView{
-			UserID:       user.ID,
-			UserName:     strings.TrimSpace(user.Name),
-			Enabled:      sub.Enabled,
-			AccessToken:  token,
-			URL:          publicURL,
-			ConfigCount:  len(labels),
-			ConfigLabels: labels,
-		})
+		var file wizardSubscriptionProfilesFile
+		if err := json.Unmarshal(content, &file); err != nil {
+			return panelSnapshot{}, fmt.Errorf("decode profiles file: %w", err)
+		}
+		for _, entry := range file.Profiles {
+			profileName := wizardNormalizeProfileName(entry.Name)
+			if profileName == "" || profileName == subscriptionservice.DefaultProfileName {
+				continue
+			}
+			labels := make([]string, 0, len(entry.InboundIDs))
+			for _, inboundID := range compactUnique(entry.InboundIDs) {
+				candidates := configLabelsByUserInbound[user.ID][inboundID]
+				if len(candidates) > 0 {
+					labels = append(labels, candidates...)
+					continue
+				}
+				if fallback := strings.TrimSpace(inboundLabelByID[inboundID]); fallback != "" {
+					labels = append(labels, fallback)
+				}
+			}
+			labels = compactUnique(labels)
+			sort.Strings(labels)
+			token := strings.TrimSpace(entry.AccessToken)
+			subViews = append(subViews, panelSubscriptionView{
+				UserID:       user.ID,
+				UserName:     strings.TrimSpace(user.Name),
+				ProfileName:  profileName,
+				Enabled:      wizardProfileEntryEnabled(entry),
+				AccessToken:  token,
+				URL:          makeURL(token),
+				ConfigCount:  len(labels),
+				ConfigLabels: labels,
+			})
+		}
 	}
 	sort.Slice(subViews, func(i, j int) bool {
 		left := strings.TrimSpace(subViews[i].UserName)
 		right := strings.TrimSpace(subViews[j].UserName)
 		if left == right {
+			if subViews[i].ProfileName != subViews[j].ProfileName {
+				if subViews[i].ProfileName == subscriptionservice.DefaultProfileName {
+					return true
+				}
+				if subViews[j].ProfileName == subscriptionservice.DefaultProfileName {
+					return false
+				}
+				return subViews[i].ProfileName < subViews[j].ProfileName
+			}
 			return subViews[i].UserID < subViews[j].UserID
 		}
 		return left < right
