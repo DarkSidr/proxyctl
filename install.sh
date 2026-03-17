@@ -1243,6 +1243,8 @@ EOT
 }
 
 ensure_selected_reverse_proxy_service() {
+  disable_stock_reverse_proxy_services
+
   if [[ "${SELECTED_REVERSE_PROXY}" != "caddy" && "${SELECTED_REVERSE_PROXY}" != "nginx" ]]; then
     warn "Unknown reverse proxy selection: ${SELECTED_REVERSE_PROXY}; skipping service management"
     return 0
@@ -1255,23 +1257,16 @@ ensure_selected_reverse_proxy_service() {
 
   local selected_unit=""
   local other_unit=""
-  local stock_other_unit=""
   if [[ "${SELECTED_REVERSE_PROXY}" == "caddy" ]]; then
     selected_unit="proxyctl-caddy.service"
     other_unit="proxyctl-nginx.service"
-    stock_other_unit="nginx.service"
   else
     selected_unit="proxyctl-nginx.service"
     other_unit="proxyctl-caddy.service"
-    stock_other_unit=""
   fi
 
   if systemctl list-unit-files "${other_unit}" >/dev/null 2>&1; then
     systemctl disable --now "${other_unit}" >/dev/null 2>&1 || true
-  fi
-
-  if [[ -n "${stock_other_unit}" ]] && systemctl list-unit-files "${stock_other_unit}" >/dev/null 2>&1; then
-    systemctl disable --now "${stock_other_unit}" >/dev/null 2>&1 || true
   fi
 
   if ! systemctl list-unit-files "${selected_unit}" >/dev/null 2>&1; then
@@ -1285,6 +1280,16 @@ ensure_selected_reverse_proxy_service() {
   else
     warn "Failed to enable/start ${selected_unit}. Check: systemctl status ${selected_unit}"
   fi
+}
+
+disable_stock_reverse_proxy_services() {
+  local stock_unit
+  for stock_unit in caddy.service nginx.service; do
+    if systemctl list-unit-files "${stock_unit}" >/dev/null 2>&1; then
+      log "Disabling stock reverse proxy unit: ${stock_unit}"
+      systemctl disable --now "${stock_unit}" >/dev/null 2>&1 || true
+    fi
+  done
 }
 
 init_sqlite() {

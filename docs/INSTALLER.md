@@ -53,7 +53,7 @@ Interactive behavior:
 - Existing default `:80` Caddyfile can be upgraded to domain-based Caddyfile when `caddy` + `PROXYCTL_PUBLIC_DOMAIN` is provided.
 - Managed systemd unit files are updated in-place with timestamped backup when content changes.
 - SQLite schema init is safe for repeated runs (`CREATE TABLE IF NOT EXISTS`).
-- Installer ensures selected reverse proxy unit is enabled/started by default, and disables conflicting proxy unit (`nginx.service` is also disabled when `caddy` is selected).
+- Installer ensures selected reverse proxy unit is enabled/started by default, disables conflicting `proxyctl-*` reverse proxy unit, and force-disables stock `caddy.service`/`nginx.service` to avoid port/admin-socket conflicts.
 
 Wizard note:
 - `proxyctl wizard` now has `settings -> set decoy site path` to update `paths.decoy_site_dir` in config and switch decoy assets to a custom directory.

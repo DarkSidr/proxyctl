@@ -284,11 +284,11 @@ func TestRenderXHTTPTLSUsesExplicitCertificatePaths(t *testing.T) {
 	}
 }
 
-func TestSanitizeClientLabelStripsUnicodeAndUnsafeChars(t *testing.T) {
+func TestSanitizeClientLabelKeepsEmojiAndSymbols(t *testing.T) {
 	t.Parallel()
 
 	got := sanitizeClientLabel("Kamil XHTTP 🇳🇱 | NL #1")
-	if got != "Kamil XHTTP | NL 1" {
-		t.Fatalf("sanitizeClientLabel() = %q, want %q", got, "Kamil XHTTP | NL 1")
+	if got != "Kamil XHTTP 🇳🇱 | NL #1" {
+		t.Fatalf("sanitizeClientLabel() = %q, want %q", got, "Kamil XHTTP 🇳🇱 | NL #1")
 	}
 }

@@ -400,35 +400,20 @@ func clientLabel(credential domain.Credential, inboundID string) string {
 
 func sanitizeClientLabel(label string) string {
 	var b strings.Builder
-	prevUnderscore := false
 	prevSpace := false
 	for _, r := range strings.TrimSpace(label) {
 		if unicode.IsSpace(r) {
 			if !prevSpace {
 				b.WriteByte(' ')
 				prevSpace = true
-				prevUnderscore = false
 			}
 			continue
 		}
-		if r > unicode.MaxASCII || unicode.IsControl(r) {
+		if unicode.IsControl(r) {
 			continue
 		}
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-			prevUnderscore = false
-			prevSpace = false
-			continue
-		}
-		switch r {
-		case ' ', '-', '_', '.', '|':
-			if r == '_' && prevUnderscore {
-				continue
-			}
-			b.WriteRune(r)
-			prevUnderscore = r == '_'
-			prevSpace = r == ' '
-		}
+		b.WriteRune(r)
+		prevSpace = false
 	}
 	return strings.TrimSpace(b.String())
 }

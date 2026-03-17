@@ -283,11 +283,11 @@ func TestRenderVLESSGRPCTLSIncludesCertificatePaths(t *testing.T) {
 	}
 }
 
-func TestSanitizeClientLabelStripsUnicodeAndUnsafeChars(t *testing.T) {
+func TestSanitizeClientLabelKeepsEmojiAndSymbols(t *testing.T) {
 	t.Parallel()
 
 	got := sanitizeClientLabel("Kamil Hysteria 2 🇸🇪 | SWE #2")
-	if got != "Kamil Hysteria 2 | SWE 2" {
-		t.Fatalf("sanitizeClientLabel() = %q, want %q", got, "Kamil Hysteria 2 | SWE 2")
+	if got != "Kamil Hysteria 2 🇸🇪 | SWE #2" {
+		t.Fatalf("sanitizeClientLabel() = %q, want %q", got, "Kamil Hysteria 2 🇸🇪 | SWE #2")
 	}
 }
