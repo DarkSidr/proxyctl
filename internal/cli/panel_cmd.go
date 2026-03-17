@@ -894,6 +894,39 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </section>
 
     <section class="sec">
+      <h2>inbounds</h2>
+      <div class="pad row">
+        <select id="inType">
+          <option value="vless">vless</option>
+          <option value="hysteria2">hysteria2</option>
+          <option value="xhttp">xhttp</option>
+        </select>
+        <select id="inTransport">
+          <option value="tcp">tcp</option>
+          <option value="ws">ws</option>
+          <option value="grpc">grpc</option>
+          <option value="udp">udp</option>
+          <option value="xhttp">xhttp</option>
+        </select>
+        <select id="inEngine">
+          <option value="">auto</option>
+          <option value="sing-box">sing-box</option>
+          <option value="xray">xray</option>
+        </select>
+        <select id="inNode"></select>
+        <input id="inDomain" type="text" placeholder="domain">
+        <input id="inPort" type="number" min="1" max="65535" placeholder="port">
+        <button id="createInboundBtn" class="btn">create inbound</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>id</th><th>type</th><th>node</th><th>domain</th><th>port</th><th>actions</th></tr></thead>
+          <tbody id="inboundsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="sec">
       <h2>users</h2>
       <div class="pad row">
         <input id="newUserName" type="text" placeholder="user name">
@@ -908,7 +941,28 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </section>
 
     <section class="sec">
+      <h2>credentials</h2>
+      <div class="pad row">
+        <select id="credUser"></select>
+        <select id="credInbound"></select>
+        <input id="credLabel" type="text" placeholder="client label (optional)">
+        <button id="attachCredBtn" class="btn">attach credential</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>user</th><th>label</th><th>inbound</th><th>uri</th><th>actions</th></tr></thead>
+          <tbody id="credsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="sec">
       <h2>subscriptions</h2>
+      <div class="pad row">
+        <select id="subUser"></select>
+        <button id="genSubBtn" class="btn">generate for user</button>
+        <button id="refreshSubBtn" class="btn warn">refresh all</button>
+      </div>
       <div class="pad" id="subsList"></div>
     </section>
   </div>
@@ -950,6 +1004,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     })();
 
     let snapshot = null;
+    let opTimer = null;
 
     function esc(v) {
       return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -957,6 +1012,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     function showOp(status, message) {
       const op = document.getElementById("op");
       if (!op) return;
+      if (opTimer) {
+        clearTimeout(opTimer);
+        opTimer = null;
+      }
       if (!message) {
         op.style.display = "none";
         op.textContent = "";
@@ -966,6 +1025,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       op.style.display = "block";
       op.textContent = message;
       op.className = "op " + (status === "ok" ? "ok" : "error");
+      opTimer = setTimeout(() => {
+        op.style.display = "none";
+      }, 4500);
     }
     async function getSnapshot() {
       const res = await fetch(cfg.snapshotPath, { headers: { "Accept": "application/json" } });
@@ -997,6 +1059,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       ].map(([k, v]) => '<div class="card"><div class="label">'+esc(k)+'</div><div class="value">'+esc(v)+'</div></div>').join("");
 
       const users = Array.isArray(snapshot.Users) ? snapshot.Users : [];
+      const nodes = Array.isArray(snapshot.Nodes) ? snapshot.Nodes : [];
+      const inbounds = Array.isArray(snapshot.Inbounds) ? snapshot.Inbounds : [];
+      const creds = Array.isArray(snapshot.Credentials) ? snapshot.Credentials : [];
       document.getElementById("usersBody").innerHTML = users.map((u) => (
         '<tr>' +
           '<td>'+esc(u.Name)+'</td>' +
@@ -1012,6 +1077,72 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
               op: "delete",
               user_id: btn.getAttribute("data-user-id"),
               version: btn.getAttribute("data-user-version"),
+            });
+          } catch (e) {
+            showOp("error", String(e));
+          }
+        });
+      });
+
+      const nodeSel = document.getElementById("inNode");
+      if (nodeSel) {
+        nodeSel.innerHTML = nodes.map((n) => '<option value="'+esc(n.ID)+'">'+esc(n.Name)+' ('+esc(n.Host)+')</option>').join("");
+      }
+      document.getElementById("inboundsBody").innerHTML = inbounds.map((i) => (
+        '<tr>' +
+          '<td class="mono muted">'+esc(i.ID)+'</td>' +
+          '<td>'+esc(i.Type)+'</td>' +
+          '<td>'+esc(i.NodeName)+'</td>' +
+          '<td>'+esc(i.Domain)+'</td>' +
+          '<td>'+esc(i.Port)+'</td>' +
+          '<td><button class="btn err" data-inbound-id="'+esc(i.ID)+'" data-inbound-version="'+esc(i.Version)+'">delete</button></td>' +
+        '</tr>'
+      )).join("");
+      document.querySelectorAll("[data-inbound-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await postForm(cfg.inboundsActionPath, {
+              op: "delete",
+              inbound_id: btn.getAttribute("data-inbound-id"),
+              version: btn.getAttribute("data-inbound-version"),
+            });
+          } catch (e) {
+            showOp("error", String(e));
+          }
+        });
+      });
+
+      const subUserSel = document.getElementById("subUser");
+      const credUserSel = document.getElementById("credUser");
+      if (subUserSel) {
+        subUserSel.innerHTML = users.map((u) => '<option value="'+esc(u.ID)+'">'+esc(u.Name)+' ('+esc(u.ID)+')</option>').join("");
+      }
+      if (credUserSel) {
+        credUserSel.innerHTML = users.map((u) => '<option value="'+esc(u.ID)+'">'+esc(u.Name)+' ('+esc(u.ID)+')</option>').join("");
+      }
+      const credInboundSel = document.getElementById("credInbound");
+      if (credInboundSel) {
+        credInboundSel.innerHTML = inbounds.map((i) => '<option value="'+esc(i.ID)+'">'+esc(i.ID)+' '+esc(i.Type)+' '+esc(i.Domain)+':'+esc(i.Port)+'</option>').join("");
+      }
+      document.getElementById("credsBody").innerHTML = creds.map((c) => (
+        '<tr>' +
+          '<td>'+esc(c.UserName)+'</td>' +
+          '<td>'+ (c.ClientLabel ? esc(c.ClientLabel) : '<span class="muted">-</span>') +'</td>' +
+          '<td>'+esc(c.InboundType)+' '+esc(c.InboundAddr)+'</td>' +
+          '<td>'+ (c.ClientURI
+            ? '<div class="row"><input class="mono" style="min-width:320px;width:100%" readonly value="'+esc(c.ClientURI)+'"><button class="btn secondary" data-copy="'+esc(c.ClientURI)+'">copy</button></div>'
+            : '<span class="muted">unavailable</span>') +'</td>' +
+          '<td><button class="btn err" data-cred-id="'+esc(c.ID)+'" data-cred-user="'+esc(c.UserID)+'" data-cred-version="'+esc(c.Version)+'">detach</button></td>' +
+        '</tr>'
+      )).join("");
+      document.querySelectorAll("[data-cred-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await postForm(cfg.subsActionPath, {
+              op: "delete_credential",
+              credential_id: btn.getAttribute("data-cred-id"),
+              user_id: btn.getAttribute("data-cred-user"),
+              version: btn.getAttribute("data-cred-version"),
             });
           } catch (e) {
             showOp("error", String(e));
@@ -1051,6 +1182,61 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       try {
         await postForm(cfg.usersActionPath, { op: "create", name, enabled: "1" });
         field.value = "";
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("createInboundBtn").addEventListener("click", async () => {
+      const type = (document.getElementById("inType").value || "").trim();
+      const transport = (document.getElementById("inTransport").value || "").trim();
+      const engine = (document.getElementById("inEngine").value || "").trim();
+      const nodeID = (document.getElementById("inNode").value || "").trim();
+      const domain = (document.getElementById("inDomain").value || "").trim();
+      const port = (document.getElementById("inPort").value || "").trim();
+      if (!type || !transport || !nodeID || !domain || !port) return;
+      try {
+        await postForm(cfg.inboundsActionPath, {
+          op: "create",
+          type,
+          transport,
+          engine,
+          node_id: nodeID,
+          domain,
+          port,
+          enabled: "1",
+        });
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("attachCredBtn").addEventListener("click", async () => {
+      const userID = (document.getElementById("credUser").value || "").trim();
+      const inboundID = (document.getElementById("credInbound").value || "").trim();
+      const label = (document.getElementById("credLabel").value || "").trim();
+      if (!userID || !inboundID) return;
+      try {
+        await postForm(cfg.subsActionPath, {
+          op: "attach_credential",
+          user_id: userID,
+          inbound_id: inboundID,
+          label,
+        });
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("genSubBtn").addEventListener("click", async () => {
+      const userID = (document.getElementById("subUser").value || "").trim();
+      if (!userID) return;
+      try {
+        await postForm(cfg.subsActionPath, { op: "generate_user", user_id: userID });
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("refreshSubBtn").addEventListener("click", async () => {
+      try {
+        await postForm(cfg.subsActionPath, { op: "refresh_all" });
       } catch (e) {
         showOp("error", String(e));
       }
