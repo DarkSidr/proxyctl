@@ -831,6 +831,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     .top { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; }
     .title { margin: 0; font-size: 1.2rem; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .tabs { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .tab { border: 1px solid var(--line); background: rgba(15, 23, 42, 0.55); color: var(--text); border-radius: 999px; padding: 6px 10px; cursor: pointer; font-size: 0.8rem; }
+    .tab.active { border-color: #06b6d4; box-shadow: inset 0 0 0 1px #06b6d4; color: #cffafe; }
     .btn {
       border: 1px solid #0891b2;
       color: #e0f2fe;
@@ -883,8 +886,15 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </div>
     <div id="op" class="op" style="display:none"></div>
     <div id="counts" class="grid"></div>
+    <div class="tabs">
+      <button type="button" class="tab active" data-tab="runtime">runtime</button>
+      <button type="button" class="tab" data-tab="inbounds">inbounds</button>
+      <button type="button" class="tab" data-tab="users">users</button>
+      <button type="button" class="tab" data-tab="credentials">credentials</button>
+      <button type="button" class="tab" data-tab="subscriptions">subscriptions</button>
+    </div>
 
-    <section class="sec">
+    <section class="sec" data-tab-section="runtime">
       <h2>runtime actions</h2>
       <div class="pad row">
         <button class="btn" data-runtime="render">render</button>
@@ -893,7 +903,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       </div>
     </section>
 
-    <section class="sec">
+    <section class="sec" data-tab-section="inbounds">
       <h2>inbounds</h2>
       <div class="pad row">
         <select id="inType">
@@ -916,6 +926,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         <select id="inNode"></select>
         <input id="inDomain" type="text" placeholder="domain">
         <input id="inPort" type="number" min="1" max="65535" placeholder="port">
+        <input id="inPath" type="text" placeholder="path (optional)">
+        <input id="inSni" type="text" placeholder="sni (optional)">
         <button id="createInboundBtn" class="btn">create inbound</button>
       </div>
       <div class="table-wrap">
@@ -926,7 +938,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       </div>
     </section>
 
-    <section class="sec">
+    <section class="sec" data-tab-section="users">
       <h2>users</h2>
       <div class="pad row">
         <input id="newUserName" type="text" placeholder="user name">
@@ -940,7 +952,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       </div>
     </section>
 
-    <section class="sec">
+    <section class="sec" data-tab-section="credentials">
       <h2>credentials</h2>
       <div class="pad row">
         <select id="credUser"></select>
@@ -956,7 +968,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       </div>
     </section>
 
-    <section class="sec">
+    <section class="sec" data-tab-section="subscriptions">
       <h2>subscriptions</h2>
       <div class="pad row">
         <select id="subUser"></select>
@@ -1008,6 +1020,16 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
     function esc(v) {
       return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+    function setTab(name) {
+      document.querySelectorAll("[data-tab]").forEach((btn) => {
+        const active = btn.getAttribute("data-tab") === name;
+        btn.classList.toggle("active", active);
+      });
+      document.querySelectorAll("[data-tab-section]").forEach((sec) => {
+        const show = sec.getAttribute("data-tab-section") === name;
+        sec.style.display = show ? "" : "none";
+      });
     }
     function showOp(status, message) {
       const op = document.getElementById("op");
@@ -1193,6 +1215,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const nodeID = (document.getElementById("inNode").value || "").trim();
       const domain = (document.getElementById("inDomain").value || "").trim();
       const port = (document.getElementById("inPort").value || "").trim();
+      const path = (document.getElementById("inPath").value || "").trim();
+      const sni = (document.getElementById("inSni").value || "").trim();
       if (!type || !transport || !nodeID || !domain || !port) return;
       try {
         await postForm(cfg.inboundsActionPath, {
@@ -1203,6 +1227,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           node_id: nodeID,
           domain,
           port,
+          path,
+          sni,
           enabled: "1",
         });
       } catch (e) {
@@ -1241,6 +1267,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         showOp("error", String(e));
       }
     });
+    document.querySelectorAll("[data-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab") || "runtime"));
+    });
+    setTab("runtime");
 
     getSnapshot().catch((e) => showOp("error", String(e)));
   </script>
@@ -2005,6 +2035,26 @@ func panelHandleCredentialAction(ctx context.Context, dbPath string, r *http.Req
 			return fmt.Errorf("list credentials: %w", err)
 		}
 		if existing, ok := findCredentialByUserAndInbound(credentials, userID, inboundID); ok {
+			if label != "" {
+				updated, updateErr := store.Credentials().Update(ctx, domain.Credential{
+					ID:        existing.ID,
+					UserID:    existing.UserID,
+					InboundID: existing.InboundID,
+					Kind:      existing.Kind,
+					Secret:    existing.Secret,
+					Metadata:  setCredentialLabelMetadata(existing.Metadata, label),
+				})
+				if updateErr != nil {
+					return fmt.Errorf("update credential label: %w", updateErr)
+				}
+				out, runErr := panelExecuteCommand(ctx, newSubscriptionGenerateCmd(configPath, dbPathFlag), []string{userID})
+				if runErr != nil {
+					ops.set("error", fmt.Sprintf("credential label updated (%s), but subscription generate failed: %s", updated.ID, panelErrWithOutput(runErr, out)))
+					return nil
+				}
+				ops.set("ok", fmt.Sprintf("credential label updated: %s | %s", updated.ID, panelSummarizeOutput(out)))
+				return nil
+			}
 			ops.set("ok", fmt.Sprintf("credential already attached: %s (%s)", existing.ID, existing.Kind))
 			return nil
 		}
