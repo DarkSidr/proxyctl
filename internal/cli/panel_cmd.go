@@ -1082,22 +1082,30 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       inboundsActionPath: {{printf "%q" .InboundsActionPath}},
       subsActionPath: {{printf "%q" .SubsActionPath}},
     };
+    function normalizeBasePath(raw) {
+      let s = String(raw || "/").trim();
+      s = s.replace(/^"+|"+$/g, "").replace(/^'+|'+$/g, "");
+      if (!s) return "/";
+      if (!s.startsWith("/")) s = "/" + s;
+      s = s.replace(/\/{2,}/g, "/").replace(/\/+$/, "");
+      return s || "/";
+    }
     function joinPath(base, suffix) {
-      const b = String(base || "/").replace(/\/+$/, "") || "/";
+      const b = normalizeBasePath(base);
       const s = String(suffix || "").replace(/^\/+/, "");
       if (!s) return b;
       return b === "/" ? "/" + s : b + "/" + s;
     }
     function detectBasePath() {
-      const path = String(window.location.pathname || "/").replace(/\/+$/, "") || "/";
+      const path = normalizeBasePath(window.location.pathname || "/");
       if (path.endsWith("/app")) {
         const b = path.slice(0, -4);
-        return b || "/";
+        return normalizeBasePath(b || "/");
       }
       if (path !== "/") {
-        return path;
+        return normalizeBasePath(path);
       }
-      return String(cfgRaw.basePath || "/");
+      return normalizeBasePath(cfgRaw.basePath || "/");
     }
     const cfg = (() => {
       const basePath = detectBasePath();
