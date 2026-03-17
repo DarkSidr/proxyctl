@@ -1063,6 +1063,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
     let snapshot = null;
     let opTimer = null;
+    let selectedSubInboundByUser = {};
 
     function esc(v) {
       return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -1129,6 +1130,54 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (disableBtn) {
         disableBtn.disabled = !!(!state || !state.Exists || !state.Enabled);
       }
+    }
+    function currentSubUserID() {
+      const subUserSel = document.getElementById("subUser");
+      return subUserSel ? (subUserSel.value || "").trim() : "";
+    }
+    function renderSubInboundPick(inbounds) {
+      const pick = document.getElementById("subInboundPick");
+      if (!pick) return;
+      const userID = currentSubUserID();
+      const selected = new Set(Array.isArray(selectedSubInboundByUser[userID]) ? selectedSubInboundByUser[userID] : []);
+      pick.innerHTML = [
+        '<div class="label" style="margin-bottom:8px">selected profile inbounds</div>',
+        '<div class="table-wrap">',
+        '<table>',
+        '<thead><tr><th></th><th>label</th><th>node</th><th>domain</th><th>port</th><th>type</th><th>transport</th><th>path</th><th>sni</th><th>enabled</th></tr></thead>',
+        '<tbody>',
+        inbounds.map((i) => {
+          const checked = selected.has(String(i.ID)) ? ' checked' : '';
+          const label = [String(i.Type || "").trim(), String(i.Domain || "").trim() + ":" + String(i.Port || "")].join(" ").trim();
+          return (
+            '<tr>' +
+              '<td><input type="checkbox" data-sub-inbound-id="'+esc(i.ID)+'"'+checked+'></td>' +
+              '<td>'+esc(label)+'</td>' +
+              '<td>'+esc(i.NodeName || i.NodeID || "")+'</td>' +
+              '<td>'+esc(i.Domain || "")+'</td>' +
+              '<td>'+esc(i.Port)+'</td>' +
+              '<td>'+esc(i.Type || "")+'</td>' +
+              '<td>'+esc(i.Transport || "")+'</td>' +
+              '<td>'+esc(i.Path || "")+'</td>' +
+              '<td>'+esc(i.SNI || "")+'</td>' +
+              '<td>'+ (i.Enabled ? "yes" : "no") +'</td>' +
+            '</tr>'
+          );
+        }).join(""),
+        '</tbody>',
+        '</table>',
+        '</div>',
+      ].join("");
+      pick.querySelectorAll("[data-sub-inbound-id]").forEach((box) => {
+        box.addEventListener("change", () => {
+          const ids = Array.from(pick.querySelectorAll("[data-sub-inbound-id]:checked"))
+            .map((el) => (el.getAttribute("data-sub-inbound-id") || "").trim())
+            .filter(Boolean);
+          if (userID) {
+            selectedSubInboundByUser[userID] = ids;
+          }
+        });
+      });
     }
     function render() {
       if (!snapshot) return;
@@ -1318,20 +1367,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       )).join("");
       updateSubButtons();
 
-      const pick = document.getElementById("subInboundPick");
-      if (pick) {
-        pick.innerHTML = [
-          '<div class="label" style="margin-bottom:8px">selected profile inbounds</div>',
-          '<div class="row">',
-          inbounds.map((i) => (
-            '<label class="row" style="gap:6px;margin-right:10px">' +
-              '<input type="checkbox" data-sub-inbound-id="'+esc(i.ID)+'">' +
-              '<span>'+esc(i.Type)+' '+esc(i.Domain)+':'+esc(i.Port)+'</span>' +
-            '</label>'
-          )).join(""),
-          '</div>',
-        ].join("");
-      }
+      renderSubInboundPick(inbounds);
 
       document.querySelectorAll("[data-copy]").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -1473,7 +1509,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         showOp("error", String(e));
       }
     });
-    document.getElementById("subUser").addEventListener("change", () => updateSubButtons());
+    document.getElementById("subUser").addEventListener("change", () => {
+      updateSubButtons();
+      const inbounds = (snapshot && Array.isArray(snapshot.Inbounds)) ? snapshot.Inbounds : [];
+      renderSubInboundPick(inbounds);
+    });
     document.querySelectorAll("[data-tab]").forEach((btn) => {
       btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab") || "runtime"));
     });
