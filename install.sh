@@ -1406,6 +1406,82 @@ EOT
   activate_decoy_template "${decoy_index}" "${decoy_style}"
 }
 
+ensure_caddy_panel_route() {
+  if [[ "${SELECTED_REVERSE_PROXY}" != "caddy" ]]; then
+    return 0
+  fi
+  if [[ "${SELECTED_DEPLOYMENT_MODE}" == "node" ]]; then
+    return 0
+  fi
+  if [[ -z "${SELECTED_PUBLIC_DOMAIN}" || -z "${SELECTED_PANEL_PATH}" || -z "${SELECTED_PANEL_PORT}" ]]; then
+    return 0
+  fi
+
+  local caddy_file="${CADDY_RUNTIME_DIR}/Caddyfile"
+  if [[ ! -f "${caddy_file}" ]]; then
+    warn "Caddyfile is missing, cannot ensure panel route: ${caddy_file}"
+    return 0
+  fi
+
+  local route_marker="handle ${SELECTED_PANEL_PATH}* {"
+  if grep -Fq "${route_marker}" "${caddy_file}"; then
+    return 0
+  fi
+
+  local rendered tmp
+  tmp="$(mktemp)"
+  local awk_rc=0
+  awk \
+    -v domain="${SELECTED_PUBLIC_DOMAIN}" \
+    -v panel_path="${SELECTED_PANEL_PATH}" \
+    -v panel_port="${SELECTED_PANEL_PORT}" \
+    '
+      function trim(s) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+        return s
+      }
+      BEGIN {
+        inserted = 0
+      }
+      {
+        line = $0
+        t = trim(line)
+        print line
+        if (inserted == 0) {
+          if (index(t, domain) == 1) {
+            rest = substr(t, length(domain) + 1)
+            rest = trim(rest)
+            if (rest == "{") {
+              print "  handle " panel_path "* {"
+              print "    reverse_proxy 127.0.0.1:" panel_port
+              print "  }"
+              inserted = 1
+            }
+          }
+        }
+      }
+      END {
+        if (inserted == 0) {
+          exit 42
+        }
+      }
+    ' "${caddy_file}" >"${tmp}" || awk_rc=$?
+  if [[ "${awk_rc}" -ne 0 ]]; then
+    rm -f "${tmp}"
+    if [[ "${awk_rc}" -eq 42 ]]; then
+      warn "Could not find '${SELECTED_PUBLIC_DOMAIN} {' block in ${caddy_file}; skipping automatic panel route insertion"
+      return 0
+    fi
+    warn "Failed to patch Caddyfile with panel route"
+    return 0
+  fi
+
+  rendered="$(cat "${tmp}")"
+  rm -f "${tmp}"
+  write_managed_file "${caddy_file}" 0640 "${rendered}"
+  log "Ensured panel route in ${caddy_file}: ${SELECTED_PANEL_PATH} -> 127.0.0.1:${SELECTED_PANEL_PORT}"
+}
+
 ensure_selected_reverse_proxy_service() {
   disable_stock_reverse_proxy_services
 
@@ -1577,6 +1653,7 @@ main() {
   install_default_config
   install_default_runtime_files
   write_panel_credentials
+  ensure_caddy_panel_route
   ensure_selected_reverse_proxy_service
   ensure_panel_service
   init_sqlite

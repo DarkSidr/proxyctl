@@ -51,6 +51,8 @@ Interactive behavior:
 - Custom templates can be uploaded into that directory as `<name>/index.html` and `<name>/assets/style.css`.
 - For `panel`/`panel+node` mode installer also prepares panel access placeholders in `/etc/proxy-orchestrator/panel-admin.env` and prints them at the end.
 - For `panel`/`panel+node` mode installer also installs and enables `proxyctl-panel.service` automatically.
+- With `caddy` + non-empty domain in `panel`/`panel+node` mode installer also ensures panel route in Caddyfile:
+  - `handle <PANEL_PATH>* { reverse_proxy 127.0.0.1:<PANEL_PORT> }`
 - Manual panel start (optional): `proxyctl panel serve --config /etc/proxy-orchestrator/proxyctl.yaml`.
 - Recommended exposure model: keep panel listener on `127.0.0.1:<PANEL_PORT>` and publish only via selected reverse proxy (`caddy`/`nginx`) on 80/443.
 
@@ -63,6 +65,7 @@ Interactive behavior:
 - SQLite schema init is safe for repeated runs (`CREATE TABLE IF NOT EXISTS`).
 - Installer ensures selected reverse proxy unit is enabled/started by default, disables conflicting `proxyctl-*` reverse proxy unit, and force-disables stock `caddy.service`/`nginx.service` to avoid port/admin-socket conflicts.
 - Installer ensures `proxyctl-panel.service` is enabled/started in `panel`/`panel+node` mode, and disabled in `node` mode.
+- Installer patches existing Caddyfile to add missing panel route for the selected domain (without replacing custom Caddyfile blocks).
 
 Wizard note:
 - `proxyctl wizard` now has `settings -> set decoy site path` to update `paths.decoy_site_dir` in config and switch decoy assets to a custom directory.
