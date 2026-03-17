@@ -256,6 +256,7 @@ Notes:
 - only one `primary` node is allowed;
 - in `proxyctl wizard -> nodes -> create node`, role `primary` is shown only when no existing primary node is present.
 - after `setup ssh access`, wizard checks remote host and can install `proxyctl` there interactively (with confirmation).
+- remote auto-install uses `PROXYCTL_PUBLIC_DOMAIN=<node-host>` to bootstrap TLS-ready node setup (for example for `hysteria2`).
 
 2. Test SSH from panel host:
 

@@ -2773,7 +2773,10 @@ func runWizardMaybeInstallProxyctlOnNode(cmd *cobra.Command, in *bufio.Reader, o
 	installCmd := strings.Join([]string{
 		"set -e",
 		"if command -v proxyctl >/dev/null 2>&1; then exit 0; fi",
-		prefix + "bash -lc " + shellQuote("curl -fsSL "+defaultUpdateInstallURL+" | PROXYCTL_PROMPT_CONFIG=0 PROXYCTL_DEPLOYMENT_MODE=node bash"),
+		prefix + "bash -lc " + shellQuote(
+			"curl -fsSL "+defaultUpdateInstallURL+
+				" | PROXYCTL_PROMPT_CONFIG=0 PROXYCTL_DEPLOYMENT_MODE=node PROXYCTL_REVERSE_PROXY=caddy PROXYCTL_PUBLIC_DOMAIN="+shellQuote(host)+" bash",
+		),
 	}, "; ")
 	installArgs := append(append([]string{}, sshArgs...), target, installCmd)
 	fmt.Fprintf(out, "installing proxyctl on node=%s host=%s...\n", node.ID, host)
