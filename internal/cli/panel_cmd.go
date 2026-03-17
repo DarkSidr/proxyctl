@@ -1162,6 +1162,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
     let snapshot = null;
     let opTimer = null;
+    const STORAGE_KEY_LAST_OP_PREFIX = "proxyctl.app.lastOpSeenKey";
     let lastOpSeenKey = "";
     let selectedSubInboundByUser = {};
     let inboundSniOptions = [];
@@ -1169,6 +1170,23 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     let liveBusy = false;
     const STORAGE_KEY_LIVE_INTERVAL = "proxyctl.app.liveIntervalMs";
     const STORAGE_KEY_LIVE_ENABLED = "proxyctl.app.liveEnabled";
+    function lastOpStorageKey() {
+      return STORAGE_KEY_LAST_OP_PREFIX + ":" + String(cfg.basePath || "/");
+    }
+    function loadLastOpSeenKey() {
+      try {
+        const v = localStorage.getItem(lastOpStorageKey());
+        return String(v || "");
+      } catch (e) {
+        return "";
+      }
+    }
+    function saveLastOpSeenKey(v) {
+      try {
+        localStorage.setItem(lastOpStorageKey(), String(v || ""));
+      } catch (e) {
+      }
+    }
 
     function esc(v) {
       return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -1289,6 +1307,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
       const out = await res.json();
       lastOpSeenKey = [String(out?.status || ""), String(out?.message || ""), String(out?.at || "")].join("|");
+      saveLastOpSeenKey(lastOpSeenKey);
       showOp(out.status, out.message);
       await getSnapshot();
     }
@@ -1297,7 +1316,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const message = String(snapshot?.OperationMessage || "");
       const at = String(snapshot?.OperationAt || "");
       if (!message) {
-        lastOpSeenKey = "";
         showOp("", "");
         return;
       }
@@ -1306,6 +1324,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         return;
       }
       lastOpSeenKey = key;
+      saveLastOpSeenKey(lastOpSeenKey);
       showOp(status, message);
     }
     function updateSubButtons() {
@@ -1996,6 +2015,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     document.querySelectorAll("[data-tab]").forEach((btn) => {
       btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab") || "runtime"));
     });
+    lastOpSeenKey = loadLastOpSeenKey();
     setTab("runtime");
     restoreLivePrefs();
     startLivePolling();
