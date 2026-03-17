@@ -15,10 +15,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -94,6 +96,30 @@ type panelCounts struct {
 	InboundsActive int
 }
 
+type panelUserTrafficView struct {
+	UserID     string
+	UserName   string
+	RXBytes    uint64
+	TXBytes    uint64
+	TotalBytes uint64
+}
+
+type panelDashboardView struct {
+	ProxyctlVersion string
+	Load1           float64
+	CPUCores        int
+	MemUsedBytes    uint64
+	MemTotalBytes   uint64
+	DiskUsedBytes   uint64
+	DiskTotalBytes  uint64
+	UptimeSeconds   uint64
+	TotalRXBytes    uint64
+	TotalTXBytes    uint64
+	TotalBytes      uint64
+	UserTraffic     []panelUserTrafficView
+	TrafficSource   string
+}
+
 type panelPageData struct {
 	Title               string
 	ActiveTab           string
@@ -111,6 +137,7 @@ type panelPageData struct {
 	SubscriptionState   map[string]panelSubscriptionState
 	SuggestedPorts      map[string]int
 	SNIPresets          []string
+	Dashboard           panelDashboardView
 	OperationStatus     string
 	OperationMessage    string
 	OperationAt         string
@@ -810,6 +837,7 @@ var panelLoginTmpl = template.Must(template.New("panel-login").Parse(`<!doctype 
 
 type panelAppData struct {
 	BasePath            string
+	LegacyPath          string
 	LogoutPath          string
 	SnapshotPath        string
 	DashboardActionPath string
@@ -902,7 +930,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     <div class="top">
       <h1 class="title">proxyctl app</h1>
       <div class="actions">
-        <a class="btn secondary" href="{{.BasePath}}">legacy panel</a>
+        <a class="btn secondary" href="{{.LegacyPath}}">legacy panel</a>
         <form method="post" action="{{.LogoutPath}}"><button class="btn" type="submit">logout</button></form>
       </div>
     </div>
@@ -924,6 +952,16 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         <button class="btn warn" data-runtime="validate">validate</button>
         <button class="btn err" data-runtime="apply">apply</button>
       </div>
+      <div class="pad">
+        <div class="grid" id="dashCards"></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>user</th><th>rx</th><th>tx</th><th>total</th></tr></thead>
+          <tbody id="userTrafficBody"></tbody>
+        </table>
+      </div>
+      <div class="pad muted" id="trafficMeta"></div>
     </section>
 
     <section class="sec" data-tab-section="nodes">
@@ -1078,6 +1116,28 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
     function esc(v) {
       return String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+    function fmtBytes(bytes) {
+      const n = Number(bytes || 0);
+      if (!Number.isFinite(n) || n <= 0) return "0 B";
+      const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+      let value = n;
+      let i = 0;
+      while (value >= 1024 && i < units.length - 1) {
+        value /= 1024;
+        i++;
+      }
+      const fixed = value >= 100 || i === 0 ? 0 : (value >= 10 ? 1 : 2);
+      return value.toFixed(fixed) + " " + units[i];
+    }
+    function fmtUptime(seconds) {
+      const s = Math.max(0, Number(seconds || 0) | 0);
+      const d = Math.floor(s / 86400);
+      const h = Math.floor((s % 86400) / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      if (d > 0) return d + "d " + h + "h";
+      if (h > 0) return h + "h " + m + "m";
+      return m + "m";
     }
     function setTab(name) {
       document.querySelectorAll("[data-tab]").forEach((btn) => {
@@ -1298,6 +1358,27 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         ["inbounds", c.InboundsTotal],
         ["active inbounds", c.InboundsActive],
       ].map(([k, v]) => '<div class="card"><div class="label">'+esc(k)+'</div><div class="value">'+esc(v)+'</div></div>').join("");
+      const dash = snapshot.Dashboard || {};
+      document.getElementById("dashCards").innerHTML = [
+        ["proxyctl", dash.ProxyctlVersion || "dev"],
+        ["cpu load (1m)", dash.Load1 ?? 0],
+        ["cpu cores", dash.CPUCores ?? 0],
+        ["memory", fmtBytes(dash.MemUsedBytes) + " / " + fmtBytes(dash.MemTotalBytes)],
+        ["disk", fmtBytes(dash.DiskUsedBytes) + " / " + fmtBytes(dash.DiskTotalBytes)],
+        ["uptime", fmtUptime(dash.UptimeSeconds)],
+        ["traffic total", fmtBytes(dash.TotalBytes)],
+        ["traffic rx/tx", fmtBytes(dash.TotalRXBytes) + " / " + fmtBytes(dash.TotalTXBytes)],
+      ].map(([k, v]) => '<div class="card"><div class="label">'+esc(k)+'</div><div class="value">'+esc(v)+'</div></div>').join("");
+      const userTraffic = Array.isArray(dash.UserTraffic) ? dash.UserTraffic : [];
+      document.getElementById("userTrafficBody").innerHTML = userTraffic.map((u) => (
+        '<tr>' +
+          '<td>'+esc(u.UserName || u.UserID)+'</td>' +
+          '<td>'+esc(fmtBytes(u.RXBytes))+'</td>' +
+          '<td>'+esc(fmtBytes(u.TXBytes))+'</td>' +
+          '<td>'+esc(fmtBytes(u.TotalBytes))+'</td>' +
+        '</tr>'
+      )).join("");
+      document.getElementById("trafficMeta").textContent = "traffic source: " + (dash.TrafficSource || "none");
 
       const users = Array.isArray(snapshot.Users) ? snapshot.Users : [];
       const nodes = Array.isArray(snapshot.Nodes) ? snapshot.Nodes : [];
@@ -1738,11 +1819,12 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			}
 
 			panelMux := http.NewServeMux()
-			dashboardPath := panelJoin(basePath, "")
-			usersPath := panelJoin(basePath, "users")
-			inboundsPath := panelJoin(basePath, "inbounds")
-			subsPath := panelJoin(basePath, "subscriptions")
-			appPath := panelJoin(basePath, "app")
+			appPath := panelJoin(basePath, "")
+			appAliasPath := panelJoin(basePath, "app")
+			legacyDashboardPath := panelJoin(basePath, "legacy")
+			usersPath := panelJoin(basePath, "legacy/users")
+			inboundsPath := panelJoin(basePath, "legacy/inbounds")
+			subsPath := panelJoin(basePath, "legacy/subscriptions")
 			apiSnapshotPath := panelJoin(basePath, "api/snapshot")
 			dashboardActionPath := panelJoin(basePath, "actions")
 			usersActionPath := panelJoin(basePath, "users/action")
@@ -1752,7 +1834,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			logoutPath := panelJoin(basePath, "logout")
 			ops := &panelOperationFeed{}
 
-			handlePage := func(tab string) http.HandlerFunc {
+			handlePage := func(tab, navBasePath string) http.HandlerFunc {
 				return func(w http.ResponseWriter, r *http.Request) {
 					if r.Method != http.MethodGet {
 						http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1766,7 +1848,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					data := panelPageData{
 						Title:               "proxyctl panel",
 						ActiveTab:           tab,
-						BasePath:            basePath,
+						BasePath:            navBasePath,
 						LogoutPath:          logoutPath,
 						ListenAddr:          listenAddr,
 						GeneratedAt:         time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
@@ -1786,6 +1868,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						SubscriptionState:   snapshot.subscriptionState,
 						SuggestedPorts:      snapshot.suggestedPorts,
 						SNIPresets:          snapshot.sniPresets,
+						Dashboard:           snapshot.dashboard,
 					}
 					data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 					w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1796,15 +1879,10 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				}
 			}
 
-			panelMux.HandleFunc(dashboardPath, handlePage("dashboard"))
-			if dashboardPath != "/" {
-				panelMux.HandleFunc(panelJoin(basePath, "")+"/", func(w http.ResponseWriter, r *http.Request) {
-					http.Redirect(w, r, dashboardPath, http.StatusMovedPermanently)
-				})
-			}
-			panelMux.HandleFunc(usersPath, handlePage("users"))
-			panelMux.HandleFunc(inboundsPath, handlePage("inbounds"))
-			panelMux.HandleFunc(subsPath, handlePage("subscriptions"))
+			panelMux.HandleFunc(legacyDashboardPath, handlePage("dashboard", legacyDashboardPath))
+			panelMux.HandleFunc(usersPath, handlePage("users", legacyDashboardPath))
+			panelMux.HandleFunc(inboundsPath, handlePage("inbounds", legacyDashboardPath))
+			panelMux.HandleFunc(subsPath, handlePage("subscriptions", legacyDashboardPath))
 			panelMux.HandleFunc(appPath, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1813,6 +1891,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				_ = panelAppTmpl.Execute(w, panelAppData{
 					BasePath:            basePath,
+					LegacyPath:          legacyDashboardPath,
 					LogoutPath:          logoutPath,
 					SnapshotPath:        apiSnapshotPath,
 					DashboardActionPath: dashboardActionPath,
@@ -1822,6 +1901,11 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					SubsActionPath:      subsActionPath,
 				})
 			})
+			if appAliasPath != appPath {
+				panelMux.HandleFunc(appAliasPath, func(w http.ResponseWriter, r *http.Request) {
+					http.Redirect(w, r, appPath, http.StatusMovedPermanently)
+				})
+			}
 			panelMux.HandleFunc(apiSnapshotPath, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1855,6 +1939,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					SubscriptionState:   snapshot.subscriptionState,
 					SuggestedPorts:      snapshot.suggestedPorts,
 					SNIPresets:          snapshot.sniPresets,
+					Dashboard:           snapshot.dashboard,
 				}
 				data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 				panelWriteJSON(w, http.StatusOK, data)
@@ -1866,7 +1951,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				}
 				if err := r.ParseForm(); err != nil {
 					ops.set("error", "invalid action request")
-					http.Redirect(w, r, dashboardPath, http.StatusSeeOther)
+					http.Redirect(w, r, legacyDashboardPath, http.StatusSeeOther)
 					return
 				}
 				action := strings.TrimSpace(r.FormValue("action"))
@@ -1895,7 +1980,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				default:
 					ops.set("error", "unknown dashboard action")
 				}
-				panelRespondAction(w, r, dashboardPath, ops)
+				panelRespondAction(w, r, legacyDashboardPath, ops)
 			})
 			panelMux.HandleFunc(usersActionPath, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -1915,7 +2000,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				if err := panelHandleNodeAction(r.Context(), resolvedDB, r, ops); err != nil {
 					ops.set("error", err.Error())
 				}
-				panelRespondAction(w, r, dashboardPath, ops)
+				panelRespondAction(w, r, legacyDashboardPath, ops)
 			})
 			panelMux.HandleFunc(inboundsActionPath, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -2054,10 +2139,10 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				}
 				panelRespondAction(w, r, subsPath, ops)
 			})
-			if dashboardPath != "/" {
+			if appPath != "/" {
 				panelMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 					if r.URL.Path == "/" {
-						http.Redirect(w, r, dashboardPath, http.StatusFound)
+						http.Redirect(w, r, appPath, http.StatusFound)
 						return
 					}
 					http.NotFound(w, r)
@@ -2066,7 +2151,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 
 			var handler http.Handler = panelMux
 			if requireAuth {
-				auth := newPanelCookieAuth(panelInfo.Login, panelInfo.Password, basePath, dashboardPath, logoutPath)
+				auth := newPanelCookieAuth(panelInfo.Login, panelInfo.Password, basePath, appPath, logoutPath)
 				panelMux.HandleFunc(auth.loginPath, auth.handleLogin)
 				panelMux.HandleFunc(logoutPath, auth.handleLogout)
 				handler = auth.middleware(panelMux)
@@ -2105,6 +2190,7 @@ type panelSnapshot struct {
 	subscriptionState map[string]panelSubscriptionState
 	suggestedPorts    map[string]int
 	sniPresets        []string
+	dashboard         panelDashboardView
 }
 
 func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig) (panelSnapshot, error) {
@@ -2259,6 +2345,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	if err != nil {
 		return panelSnapshot{}, err
 	}
+	dashboard := buildPanelDashboard(cfg, userRows)
 
 	return panelSnapshot{
 		counts: panelCounts{
@@ -2276,6 +2363,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		subscriptionState: subscriptions,
 		suggestedPorts:    suggestedPorts,
 		sniPresets:        panelWizardSNIPresets(),
+		dashboard:         dashboard,
 	}, nil
 }
 
@@ -2298,6 +2386,204 @@ func panelWizardSNIPresets() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func buildPanelDashboard(cfg config.AppConfig, users []panelUserView) panelDashboardView {
+	load1, _ := panelLoadAvg1()
+	memUsed, memTotal, _ := panelMemoryUsage()
+	diskUsed, diskTotal, _ := panelDiskUsage(cfg.Paths.StateDir)
+	uptime, _ := panelUptimeSeconds()
+	totalRX, totalTX, _ := panelNetTotals()
+	userTraffic, source := panelUserTraffic(cfg.Paths.RuntimeDir, users)
+	totalUserBytes := uint64(0)
+	for _, item := range userTraffic {
+		totalUserBytes += item.TotalBytes
+	}
+	totalBytes := totalRX + totalTX
+	if totalUserBytes > 0 {
+		totalBytes = totalUserBytes
+	}
+	return panelDashboardView{
+		ProxyctlVersion: strings.TrimSpace(Version),
+		Load1:           load1,
+		CPUCores:        runtime.NumCPU(),
+		MemUsedBytes:    memUsed,
+		MemTotalBytes:   memTotal,
+		DiskUsedBytes:   diskUsed,
+		DiskTotalBytes:  diskTotal,
+		UptimeSeconds:   uptime,
+		TotalRXBytes:    totalRX,
+		TotalTXBytes:    totalTX,
+		TotalBytes:      totalBytes,
+		UserTraffic:     userTraffic,
+		TrafficSource:   source,
+	}
+}
+
+func panelLoadAvg1() (float64, error) {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("invalid /proc/loadavg")
+	}
+	return strconv.ParseFloat(fields[0], 64)
+}
+
+func panelMemoryUsage() (used uint64, total uint64, err error) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, 0, err
+	}
+	var memTotalKB, memAvailKB uint64
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "MemTotal:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				memTotalKB, _ = strconv.ParseUint(fields[1], 10, 64)
+			}
+		}
+		if strings.HasPrefix(line, "MemAvailable:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				memAvailKB, _ = strconv.ParseUint(fields[1], 10, 64)
+			}
+		}
+	}
+	total = memTotalKB * 1024
+	if memTotalKB > memAvailKB {
+		used = (memTotalKB - memAvailKB) * 1024
+	}
+	return used, total, nil
+}
+
+func panelDiskUsage(path string) (used uint64, total uint64, err error) {
+	target := strings.TrimSpace(path)
+	if target == "" {
+		target = "/"
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(target, &stat); err != nil {
+		return 0, 0, err
+	}
+	total = stat.Blocks * uint64(stat.Bsize)
+	free := stat.Bavail * uint64(stat.Bsize)
+	if total > free {
+		used = total - free
+	}
+	return used, total, nil
+}
+
+func panelUptimeSeconds() (uint64, error) {
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("invalid /proc/uptime")
+	}
+	f, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, err
+	}
+	if f < 0 {
+		return 0, nil
+	}
+	return uint64(f), nil
+}
+
+func panelNetTotals() (rx uint64, tx uint64, err error) {
+	data, err := os.ReadFile("/proc/net/dev")
+	if err != nil {
+		return 0, 0, err
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines[2:] {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, ":") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		iface := strings.TrimSpace(parts[0])
+		if iface == "lo" {
+			continue
+		}
+		fields := strings.Fields(parts[1])
+		if len(fields) < 9 {
+			continue
+		}
+		rxBytes, rxErr := strconv.ParseUint(fields[0], 10, 64)
+		txBytes, txErr := strconv.ParseUint(fields[8], 10, 64)
+		if rxErr == nil {
+			rx += rxBytes
+		}
+		if txErr == nil {
+			tx += txBytes
+		}
+	}
+	return rx, tx, nil
+}
+
+func panelUserTraffic(runtimeDir string, users []panelUserView) ([]panelUserTrafficView, string) {
+	rows := make([]panelUserTrafficView, 0, len(users))
+	for _, u := range users {
+		rows = append(rows, panelUserTrafficView{UserID: u.ID, UserName: u.Name})
+	}
+	path := filepath.Join(strings.TrimSpace(runtimeDir), "user-traffic.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return rows, "none"
+	}
+	type trafficItem struct {
+		UserID     string `json:"user_id"`
+		UserName   string `json:"user_name"`
+		RXBytes    uint64 `json:"rx_bytes"`
+		TXBytes    uint64 `json:"tx_bytes"`
+		TotalBytes uint64 `json:"total_bytes"`
+	}
+	var payload struct {
+		UsersMap  map[string]trafficItem `json:"users"`
+		UsersList []trafficItem          `json:"user_traffic"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return rows, "none"
+	}
+	byID := make(map[string]trafficItem, len(payload.UsersMap)+len(payload.UsersList))
+	for key, item := range payload.UsersMap {
+		id := strings.TrimSpace(item.UserID)
+		if id == "" {
+			id = strings.TrimSpace(key)
+		}
+		if id == "" {
+			continue
+		}
+		byID[id] = item
+	}
+	for _, item := range payload.UsersList {
+		id := strings.TrimSpace(item.UserID)
+		if id == "" {
+			continue
+		}
+		byID[id] = item
+	}
+	for i := range rows {
+		if item, ok := byID[rows[i].UserID]; ok {
+			rows[i].RXBytes = item.RXBytes
+			rows[i].TXBytes = item.TXBytes
+			rows[i].TotalBytes = item.TotalBytes
+			if rows[i].TotalBytes == 0 {
+				rows[i].TotalBytes = rows[i].RXBytes + rows[i].TXBytes
+			}
+		}
+	}
+	return rows, "user-traffic.json"
 }
 
 func panelExecuteCommand(ctx context.Context, cmd *cobra.Command, args []string) (string, error) {
