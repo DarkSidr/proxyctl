@@ -70,7 +70,7 @@ confirm_if_needed() {
 }
 
 disable_units() {
-  local units=(
+  local proxyctl_units=(
     proxyctl-sing-box.service
     proxyctl-xray.service
     proxyctl-caddy.service
@@ -78,9 +78,22 @@ disable_units() {
     proxyctl-self-update.service
     proxyctl-self-update.timer
   )
+  local runtime_units=(
+    caddy.service
+    nginx.service
+    sing-box.service
+    singbox.service
+    xray.service
+    xray-core.service
+  )
 
   local unit
-  for unit in "${units[@]}"; do
+  for unit in "${proxyctl_units[@]}"; do
+    if systemctl list-unit-files "${unit}" >/dev/null 2>&1; then
+      systemctl disable --now "${unit}" >/dev/null 2>&1 || true
+    fi
+  done
+  for unit in "${runtime_units[@]}"; do
     if systemctl list-unit-files "${unit}" >/dev/null 2>&1; then
       systemctl disable --now "${unit}" >/dev/null 2>&1 || true
     fi

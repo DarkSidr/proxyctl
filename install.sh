@@ -1031,7 +1031,23 @@ if [[ "${YES}" -ne 1 ]]; then
   fi
 fi
 
-systemctl disable --now proxyctl-sing-box.service proxyctl-xray.service proxyctl-caddy.service proxyctl-nginx.service proxyctl-self-update.service proxyctl-self-update.timer >/dev/null 2>&1 || true
+for unit in \
+  proxyctl-sing-box.service \
+  proxyctl-xray.service \
+  proxyctl-caddy.service \
+  proxyctl-nginx.service \
+  proxyctl-self-update.service \
+  proxyctl-self-update.timer \
+  caddy.service \
+  nginx.service \
+  sing-box.service \
+  singbox.service \
+  xray.service \
+  xray-core.service; do
+  if systemctl list-unit-files "${unit}" >/dev/null 2>&1; then
+    systemctl disable --now "${unit}" >/dev/null 2>&1 || true
+  fi
+done
 rm -f /etc/systemd/system/proxyctl-*.service /etc/systemd/system/proxyctl-self-update.timer
 systemctl daemon-reload || true
 systemctl reset-failed || true

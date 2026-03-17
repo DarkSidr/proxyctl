@@ -285,6 +285,9 @@ func TestWizardMainOptionsWithoutNodes(t *testing.T) {
 	if !strings.Contains(joined, "uninstall proxyctl") {
 		t.Fatalf("options should include uninstall proxyctl, got %v", options)
 	}
+	if !strings.Contains(joined, "uninstall all") {
+		t.Fatalf("options should include uninstall all, got %v", options)
+	}
 	if def != "nodes" {
 		t.Fatalf("default action = %q, want nodes", def)
 	}
@@ -304,6 +307,9 @@ func TestWizardMainOptionsWithNodes(t *testing.T) {
 	if !strings.Contains(joined, "uninstall proxyctl") {
 		t.Fatalf("options should include uninstall proxyctl, got %v", options)
 	}
+	if !strings.Contains(joined, "uninstall all") {
+		t.Fatalf("options should include uninstall all, got %v", options)
+	}
 	if def != "inbounds" {
 		t.Fatalf("default action = %q, want inbounds", def)
 	}
@@ -320,6 +326,9 @@ func TestWizardMainOptionsByModePanel(t *testing.T) {
 	if !strings.Contains(joined, "nodes") || !strings.Contains(joined, "users") {
 		t.Fatalf("panel mode should include nodes/users, got %v", options)
 	}
+	if !strings.Contains(joined, "uninstall all") {
+		t.Fatalf("panel mode should include uninstall all, got %v", options)
+	}
 	if def != "nodes" {
 		t.Fatalf("default action = %q, want nodes", def)
 	}
@@ -335,6 +344,9 @@ func TestWizardMainOptionsByModeNode(t *testing.T) {
 	}
 	if !strings.Contains(joined, "inbounds") || !strings.Contains(joined, "users") {
 		t.Fatalf("node mode should include inbounds/users, got %v", options)
+	}
+	if !strings.Contains(joined, "uninstall all") {
+		t.Fatalf("node mode should include uninstall all, got %v", options)
 	}
 	if def != "inbounds" {
 		t.Fatalf("default action = %q, want inbounds", def)

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -45,6 +46,30 @@ import (
 const defaultUpdateInstallURL = "https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh"
 const defaultLatestReleaseAPIURL = "https://api.github.com/repos/DarkSidr/proxyctl/releases/latest"
 const defaultUninstallScriptPath = "/usr/local/sbin/proxyctl-uninstall"
+
+var realityServerPresets = []string{
+	"www.apple.com",
+	"www.icloud.com",
+	"www.yahoo.com",
+	"www.amazon.com",
+	"www.amazon.sg",
+	"aws.amazon.com",
+	"www.oracle.com",
+	"www.digitalocean.com",
+	"www.aliyun.com",
+	"www.gov.hk",
+	"www.ikea.com",
+	"www.nvidia.com",
+	"www.amd.com",
+	"www.intel.com",
+	"www.tesla.com",
+	"www.sony.com",
+	"www.microsoft.com",
+	"www.google.com",
+	"www.github.com",
+	"www.aol.com",
+	"www.cloudflare.com",
+}
 
 var lookPath = exec.LookPath
 var runCommandOutput = func(ctx context.Context, name string, args ...string) (string, error) {
@@ -156,6 +181,10 @@ func newWizardCmd(configPath, dbPath *string) *cobra.Command {
 					return runProxyctlSubcommand(cmd, "wizard", "--config", *configPath, "--db", *dbPath)
 				case "uninstall proxyctl":
 					if err := runWizardUninstall(cmd, in, out); err != nil {
+						return err
+					}
+				case "uninstall all":
+					if err := runWizardUninstallAll(cmd, in, out); err != nil {
 						return err
 					}
 				default:
@@ -974,13 +1003,18 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath, linkedUserID string) (in
 					return inboundAddPromptResult{}, fmt.Errorf("generate reality short id: %w", err)
 				}
 				fmt.Fprintf(out, "Reality short id generated automatically: %s\n", realityShortID)
-				realityServer = "www.cloudflare.com"
+				realityServer, err = promptRealityServer(in, out)
+				if err != nil {
+					return inboundAddPromptResult{}, err
+				}
 				realityServerPort = 443
 				realityFingerprint = "chrome"
 				vlessFlow = "xtls-rprx-vision"
 				if strings.TrimSpace(sni) == "" {
-					sni = realityServer
-					fmt.Fprintf(out, "SNI auto-set to Reality server: %s\n", sni)
+					sni, err = promptRealitySNI(in, out, realityServer)
+					if err != nil {
+						return inboundAddPromptResult{}, err
+					}
 				}
 			} else {
 				keyMode, err := promptChoice(in, out, "Reality keys", []string{
@@ -1011,8 +1045,10 @@ func promptInboundAddWizard(cmd *cobra.Command, dbPath, linkedUserID string) (in
 					return inboundAddPromptResult{}, err
 				}
 				if strings.TrimSpace(sni) == "" {
-					sni = strings.TrimSpace(realityServer)
-					fmt.Fprintf(out, "SNI auto-set to Reality server: %s\n", sni)
+					sni, err = promptRealitySNI(in, out, realityServer)
+					if err != nil {
+						return inboundAddPromptResult{}, err
+					}
 				}
 				realityServerPort, err = promptInt(in, out, "Reality server port", 443)
 				if err != nil {
@@ -1416,6 +1452,7 @@ func wizardMainOptionsByMode(hasNodes bool, mode config.DeploymentMode) ([]strin
 			"settings",
 			"update proxyctl",
 			"uninstall proxyctl",
+			"uninstall all",
 			"exit",
 		}, "nodes"
 	case config.DeploymentModeNode:
@@ -1425,6 +1462,7 @@ func wizardMainOptionsByMode(hasNodes bool, mode config.DeploymentMode) ([]strin
 			"settings",
 			"update proxyctl",
 			"uninstall proxyctl",
+			"uninstall all",
 			"exit",
 		}, "inbounds"
 	}
@@ -1435,6 +1473,7 @@ func wizardMainOptionsByMode(hasNodes bool, mode config.DeploymentMode) ([]strin
 			"settings",
 			"update proxyctl",
 			"uninstall proxyctl",
+			"uninstall all",
 			"exit",
 		}, "nodes"
 	}
@@ -1445,6 +1484,7 @@ func wizardMainOptionsByMode(hasNodes bool, mode config.DeploymentMode) ([]strin
 		"settings",
 		"update proxyctl",
 		"uninstall proxyctl",
+		"uninstall all",
 		"exit",
 	}, "inbounds"
 }
@@ -1458,15 +1498,39 @@ func runWizardUninstall(cmd *cobra.Command, in *bufio.Reader, out io.Writer) err
 		fmt.Fprintln(out, "cancelled")
 		return nil
 	}
-	purgeRuntime, err := promptBool(in, out, "Also purge caddy/nginx apt packages (y/n)", false)
+	args := []string{"uninstall", "--yes"}
+	return runProxyctlSubcommand(cmd, args...)
+}
+
+func runWizardUninstallAll(cmd *cobra.Command, in *bufio.Reader, out io.Writer) error {
+	confirm, err := promptBool(in, out, "Permanently uninstall proxyctl, purge runtime packages and clean host data (y/n)", false)
 	if err != nil {
 		return err
 	}
-	args := []string{"uninstall", "--yes"}
-	if purgeRuntime {
-		args = append(args, "--remove-runtime-packages")
+	if !confirm {
+		fmt.Fprintln(out, "cancelled")
+		return nil
 	}
-	return runProxyctlSubcommand(cmd, args...)
+
+	if err := runProxyctlSubcommand(cmd, "uninstall", "--yes", "--remove-runtime-packages"); err != nil {
+		return err
+	}
+
+	reboot, err := promptBool(in, out, "Reboot VPS now to finalize cleanup (recommended) (y/n)", false)
+	if err != nil {
+		return err
+	}
+	if !reboot {
+		return nil
+	}
+	rebootCmd := exec.CommandContext(cmd.Context(), "systemctl", "reboot")
+	rebootCmd.Stdout = cmd.OutOrStdout()
+	rebootCmd.Stderr = cmd.ErrOrStderr()
+	rebootCmd.Stdin = cmd.InOrStdin()
+	if err := rebootCmd.Run(); err != nil {
+		return fmt.Errorf("request reboot: %w", err)
+	}
+	return nil
 }
 
 func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
@@ -4640,20 +4704,59 @@ func promptRealityFingerprint(in *bufio.Reader, out io.Writer, defaultValue stri
 }
 
 func promptRealityServer(in *bufio.Reader, out io.Writer) (string, error) {
-	preset, err := promptChoice(in, out, "Reality server (dest host)", []string{
-		"www.cloudflare.com",
-		"www.google.com",
-		"www.apple.com",
-		"www.microsoft.com",
-		"custom",
-	}, "www.cloudflare.com")
+	options := make([]string, 0, len(realityServerPresets)+2)
+	options = append(options, "random from preset list (recommended)")
+	options = append(options, realityServerPresets...)
+	options = append(options, "custom")
+
+	preset, err := promptChoice(in, out, "Reality server (dest host)", options, "random from preset list (recommended)")
 	if err != nil {
 		return "", err
 	}
-	if preset != "custom" {
+	switch preset {
+	case "random from preset list (recommended)":
+		selected, err := randomRealityServer()
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(out, "Reality server selected randomly: %s\n", selected)
+		return selected, nil
+	case "custom":
+		return promptLineRequired(in, out, "Custom reality server (dest host)")
+	default:
 		return strings.TrimSpace(preset), nil
 	}
-	return promptLineRequired(in, out, "Custom reality server (dest host)")
+}
+
+func promptRealitySNI(in *bufio.Reader, out io.Writer, defaultServer string) (string, error) {
+	mode, err := promptChoice(in, out, "Reality SNI", []string{
+		"same as Reality server (recommended)",
+		"custom",
+	}, "same as Reality server (recommended)")
+	if err != nil {
+		return "", err
+	}
+	if mode == "custom" {
+		value, err := promptLineRequired(in, out, "Custom SNI")
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(value), nil
+	}
+	value := strings.TrimSpace(defaultServer)
+	fmt.Fprintf(out, "SNI auto-set to Reality server: %s\n", value)
+	return value, nil
+}
+
+func randomRealityServer() (string, error) {
+	if len(realityServerPresets) == 0 {
+		return "", fmt.Errorf("reality server preset list is empty")
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(realityServerPresets))))
+	if err != nil {
+		return "", fmt.Errorf("pick random reality server: %w", err)
+	}
+	return realityServerPresets[n.Int64()], nil
 }
 
 func newInboundListCmd(dbPath *string) *cobra.Command {
