@@ -124,8 +124,9 @@ func TestPromptChoiceNormalizesBackAliases(t *testing.T) {
 func TestInboundAddRejectsPort443ByDefault(t *testing.T) {
 	t.Parallel()
 
+	configPath := "/tmp/proxyctl-test.yaml"
 	dbPath := "/tmp/proxyctl-test.db"
-	cmd := newInboundAddCmd(&dbPath)
+	cmd := newInboundAddCmd(&configPath, &dbPath)
 	cmd.SetArgs([]string{
 		"--type", "vless",
 		"--transport", "tcp",

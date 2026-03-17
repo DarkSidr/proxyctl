@@ -24,6 +24,9 @@
   - reset usage;
   - increase quota;
   - set unlimited.
+- Add holistic per-user traffic limit mode across all user access vectors:
+  - one shared quota for user total traffic (all attached inbounds + all subscription-delivered configs);
+  - enforce user-level block when total quota is exceeded, regardless of inbound/protocol.
 
 ### 3) Accounting and enforcement model
 - Define data source for usage accounting (xray/sing-box logs, metrics API, or local accounting layer).
@@ -39,6 +42,18 @@
   - show limits + current usage;
   - provide quick actions (`extend`, `reset`, `set unlimited`).
 - `show configs` should display user status reason: `expired` or `quota exceeded`.
+- Add direct inbound enable/disable actions in wizard and CLI:
+  - allow fast toggle without deleting inbound (`disable inbound` / `enable inbound`);
+  - show clear enabled/disabled state in lists and details.
+- Add subscription enable/disable controls:
+  - allow disabling a user subscription profile without deleting files/metadata;
+  - allow re-enable without full regenerate flow.
+- Show user traffic usage in panel/CLI screens:
+  - display total used traffic per user in user list/open user screens;
+  - display per-inbound contribution when available.
+- Include traffic usage info in subscription outputs:
+  - embed usage/remaining quota metadata in subscription JSON (and optional TXT comment/header when supported);
+  - keep format backward-compatible for clients that ignore extra metadata.
 - Improve node selection label in inbound creation wizard:
   - show node `name` + `host` + `role` (for example `primary/secondary`) instead of only ID/host.
   - keep labels unambiguous when multiple nodes share similar hosts.
@@ -73,6 +88,10 @@
   - in some selectors (for example `Select inbound`) `0` is shown but rejected as invalid value;
   - unify back/cancel behavior across all `promptChoice`-based menus so `0` always exits to parent menu;
   - add regression tests for nested menus (`users -> open user -> attach to existing inbound`, and similar flows).
+- Optimize auto-sync target scope after `apply`:
+  - in `panel+node` mode, avoid syncing all worker nodes on every apply when only part of node set changed;
+  - sync only affected `role=node` targets based on changed inbounds/credentials (node-aware diff);
+  - keep explicit full sync available as manual action.
 
 ### 5) Storage and migrations
 - Add DB fields to `users` table:

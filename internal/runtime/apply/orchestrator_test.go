@@ -223,6 +223,9 @@ func (fakeInboundsRepo) Create(context.Context, domain.Inbound) (domain.Inbound,
 func (r fakeInboundsRepo) List(context.Context) ([]domain.Inbound, error) {
 	return append([]domain.Inbound(nil), r.items...), nil
 }
+func (fakeInboundsRepo) Update(context.Context, domain.Inbound) (domain.Inbound, error) {
+	return domain.Inbound{}, nil
+}
 func (fakeInboundsRepo) Delete(context.Context, string) (bool, error) {
 	return false, nil
 }

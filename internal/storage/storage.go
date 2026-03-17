@@ -36,6 +36,7 @@ type NodeRepository interface {
 type InboundRepository interface {
 	Create(ctx context.Context, inbound domain.Inbound) (domain.Inbound, error)
 	List(ctx context.Context) ([]domain.Inbound, error)
+	Update(ctx context.Context, inbound domain.Inbound) (domain.Inbound, error)
 	Delete(ctx context.Context, inboundID string) (bool, error)
 }
 

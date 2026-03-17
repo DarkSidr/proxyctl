@@ -542,7 +542,7 @@ func newNodeListCmd(dbPath *string) *cobra.Command {
 	}
 }
 
-func newInboundCmd(dbPath *string) *cobra.Command {
+func newInboundCmd(configPath, dbPath *string) *cobra.Command {
 	cmd := newGroupCmd(
 		"inbound",
 		"Manage inbound listeners",
@@ -550,13 +550,14 @@ func newInboundCmd(dbPath *string) *cobra.Command {
 	)
 	cmd.AddCommand(
 		newInboundListCmd(dbPath),
-		newInboundAddCmd(dbPath),
-		newStubLeafCmd("disable", "Disable inbound", "Disables one inbound profile without deleting it."),
+		newInboundAddCmd(configPath, dbPath),
+		newInboundSetEnabledCmd(dbPath, false),
+		newInboundSetEnabledCmd(dbPath, true),
 	)
 	return cmd
 }
 
-func newInboundAddCmd(dbPath *string) *cobra.Command {
+func newInboundAddCmd(configPath, dbPath *string) *cobra.Command {
 	var (
 		protocol           string
 		transport          string
@@ -741,8 +742,10 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				linkedUser := domain.User{ID: strings.TrimSpace(linkUserID)}
 				defaultLabel := linkUserID
-				if linkedUser, linkedErr := findUserByID(cmd.Context(), store, linkUserID); linkedErr == nil {
+				if resolvedUser, linkedErr := findUserByID(cmd.Context(), store, linkUserID); linkedErr == nil {
+					linkedUser = resolvedUser
 					defaultLabel = linkedUser.Name
 				}
 				cred, err := createCredentialForInbound(created, linkUserID, defaultLabel)
@@ -759,6 +762,9 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 						return fmt.Errorf("build client URI: %w", err)
 					}
 					fmt.Fprintf(cmd.OutOrStdout(), "client uri: %s\n", uri)
+				}
+				if refreshErr := autoRefreshUserSubscriptions(cmd, cmd.OutOrStdout(), *configPath, *dbPath, linkedUser, "credential created"); refreshErr != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "warning: auto-refresh subscriptions failed: %v\n", refreshErr)
 				}
 			}
 			return nil
@@ -789,6 +795,61 @@ func newInboundAddCmd(dbPath *string) *cobra.Command {
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "Whether inbound is enabled")
 	cmd.Flags().BoolVar(&allowPort443, "allow-port-443", false, "Allow using TCP/UDP port 443 (reserved by default)")
 
+	return cmd
+}
+
+func newInboundSetEnabledCmd(dbPath *string, enabled bool) *cobra.Command {
+	use := "disable"
+	short := "Disable inbound"
+	if enabled {
+		use = "enable"
+		short = "Enable inbound"
+	}
+	var inboundID string
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			inboundID = strings.TrimSpace(inboundID)
+			if inboundID == "" {
+				return fmt.Errorf("--id is required")
+			}
+			store, err := openStoreWithInit(cmd.Context(), *dbPath)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+
+			inbounds, err := store.Inbounds().List(cmd.Context())
+			if err != nil {
+				return err
+			}
+			var current domain.Inbound
+			found := false
+			for _, item := range inbounds {
+				if item.ID == inboundID {
+					current = item
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("inbound %q not found", inboundID)
+			}
+			if current.Enabled == enabled {
+				fmt.Fprintf(cmd.OutOrStdout(), "inbound state unchanged: id=%s enabled=%t\n", current.ID, current.Enabled)
+				return nil
+			}
+			current.Enabled = enabled
+			updated, err := store.Inbounds().Update(cmd.Context(), current)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "inbound state updated: id=%s enabled=%t\n", updated.ID, updated.Enabled)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&inboundID, "id", "", "Inbound ID")
 	return cmd
 }
 
@@ -2723,7 +2784,7 @@ func runWizardUserMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 				return err
 			}
 		case "open credential":
-			if err := runWizardOpenCredential(cmd, in, out, dbPath, user); err != nil {
+			if err := runWizardOpenCredential(cmd, in, out, configPath, dbPath, user); err != nil {
 				return err
 			}
 		case "delete specific config":
@@ -2763,6 +2824,7 @@ type wizardSubscriptionProfileEntry struct {
 	Name        string    `json:"name"`
 	InboundIDs  []string  `json:"inbound_ids"`
 	AccessToken string    `json:"access_token"`
+	Enabled     *bool     `json:"enabled,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
@@ -2777,6 +2839,7 @@ type wizardSubscriptionItem struct {
 	Token      string
 	OutputPath string
 	Exists     bool
+	Enabled    bool
 	UpdatedAt  time.Time
 }
 
@@ -2808,7 +2871,7 @@ func runWizardSubscriptionsMenu(cmd *cobra.Command, in *bufio.Reader, out io.Wri
 				if item.IsDefault {
 					kind = "default"
 				}
-				fmt.Fprintf(out, "- %s (%s): file=%s exists=%t\n", item.Name, kind, item.OutputPath, item.Exists)
+				fmt.Fprintf(out, "- %s (%s): enabled=%t file=%s exists=%t\n", item.Name, kind, item.Enabled, item.OutputPath, item.Exists)
 				if len(item.InboundIDs) > 0 {
 					fmt.Fprintf(out, "  inbounds: %s\n", strings.Join(item.InboundIDs, ", "))
 				}
@@ -2868,6 +2931,11 @@ func runWizardOpenSubscription(cmd *cobra.Command, in *bufio.Reader, out io.Writ
 
 	for {
 		actions := []string{"show details", "regenerate"}
+		if selected.Enabled {
+			actions = append(actions, "disable subscription")
+		} else {
+			actions = append(actions, "enable subscription")
+		}
 		if !selected.IsDefault {
 			actions = append(actions, "reselect inbounds")
 		}
@@ -2881,6 +2949,7 @@ func runWizardOpenSubscription(cmd *cobra.Command, in *bufio.Reader, out io.Writ
 		case "show details":
 			fmt.Fprintf(out, "name: %s\n", selected.Name)
 			fmt.Fprintf(out, "default: %t\n", selected.IsDefault)
+			fmt.Fprintf(out, "enabled: %t\n", selected.Enabled)
 			fmt.Fprintf(out, "path: %s\n", selected.OutputPath)
 			fmt.Fprintf(out, "file_exists: %t\n", selected.Exists)
 			if len(selected.InboundIDs) > 0 {
@@ -2908,6 +2977,12 @@ func runWizardOpenSubscription(cmd *cobra.Command, in *bufio.Reader, out io.Writ
 					break
 				}
 			}
+		case "enable subscription", "disable subscription":
+			updated, toggleErr := runWizardSetSubscriptionEnabled(cmd, out, configPath, dbPath, user, selected, action == "enable subscription")
+			if toggleErr != nil {
+				return toggleErr
+			}
+			selected = updated
 		case "reselect inbounds":
 			profile, inboundIDs, pickErr := runWizardPickNamedProfileConfig(cmd, in, out, dbPath, user.ID)
 			if pickErr != nil {
@@ -3025,6 +3100,51 @@ func runWizardGenerateSubscriptionProfile(cmd *cobra.Command, _ *bufio.Reader, o
 	return nil
 }
 
+func autoRefreshUserSubscriptions(cmd *cobra.Command, out io.Writer, configPath, dbPath string, user domain.User, reason string) error {
+	items, err := listWizardUserSubscriptions(cmd, configPath, dbPath, user.ID)
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+
+	appCfg, err := loadAppConfig(configPath)
+	if err != nil {
+		return err
+	}
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	svc := subscriptionservice.New(
+		store,
+		appCfg.Paths.Subscription,
+		subscriptionPublicDir(appCfg.Paths.Subscription),
+		subscriptionDecoyDir(appCfg.Paths.DecoySiteDir),
+		singbox.New(nil),
+		xray.New(nil),
+	)
+
+	refreshed := 0
+	for _, item := range items {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		if _, err := svc.GenerateProfile(cmd.Context(), user.ID, name, nil); err != nil {
+			return fmt.Errorf("refresh profile %q: %w", name, err)
+		}
+		refreshed++
+	}
+	if refreshed > 0 {
+		fmt.Fprintf(out, "auto-refreshed subscriptions: user=%s (%s) profiles=%d reason=%s\n", user.Name, user.ID, refreshed, strings.TrimSpace(reason))
+	}
+	return nil
+}
+
 func listWizardUserSubscriptions(cmd *cobra.Command, configPath, dbPath, userID string) ([]wizardSubscriptionItem, error) {
 	appCfg, err := loadAppConfig(configPath)
 	if err != nil {
@@ -3041,6 +3161,7 @@ func listWizardUserSubscriptions(cmd *cobra.Command, configPath, dbPath, userID 
 	defaultItem := wizardSubscriptionItem{
 		Name:      subscriptionservice.DefaultProfileName,
 		IsDefault: true,
+		Enabled:   true,
 		OutputPath: filepath.Join(
 			subDir,
 			userID+".txt",
@@ -3049,6 +3170,7 @@ func listWizardUserSubscriptions(cmd *cobra.Command, configPath, dbPath, userID 
 	if sub, subErr := store.Subscriptions().GetByUserID(cmd.Context(), userID); subErr == nil {
 		defaultItem.OutputPath = strings.TrimSpace(sub.OutputPath)
 		defaultItem.Token = strings.TrimSpace(sub.AccessToken)
+		defaultItem.Enabled = sub.Enabled
 		defaultItem.UpdatedAt = sub.UpdatedAt
 	}
 	if _, statErr := os.Stat(defaultItem.OutputPath); statErr == nil {
@@ -3077,6 +3199,7 @@ func listWizardUserSubscriptions(cmd *cobra.Command, configPath, dbPath, userID 
 				InboundIDs: parseCSV(strings.Join(entry.InboundIDs, ",")),
 				Token:      strings.TrimSpace(entry.AccessToken),
 				OutputPath: outputPath,
+				Enabled:    wizardProfileEntryEnabled(entry),
 				UpdatedAt:  entry.UpdatedAt,
 			}
 			if _, statErr := os.Stat(outputPath); statErr == nil {
@@ -3095,6 +3218,136 @@ func listWizardUserSubscriptions(cmd *cobra.Command, configPath, dbPath, userID 
 		return items[i].Name < items[j].Name
 	})
 	return items, nil
+}
+
+func wizardProfileEntryEnabled(entry wizardSubscriptionProfileEntry) bool {
+	if entry.Enabled == nil {
+		return true
+	}
+	return *entry.Enabled
+}
+
+func runWizardSetSubscriptionEnabled(cmd *cobra.Command, out io.Writer, configPath, dbPath string, user domain.User, selected wizardSubscriptionItem, enabled bool) (wizardSubscriptionItem, error) {
+	subscriptionDir, err := resolveSubscriptionDir(configPath)
+	if err != nil {
+		return selected, err
+	}
+	if selected.IsDefault {
+		store, err := openStoreWithInit(cmd.Context(), dbPath)
+		if err != nil {
+			return selected, err
+		}
+		defer store.Close()
+
+		sub, err := store.Subscriptions().GetByUserID(cmd.Context(), user.ID)
+		if err != nil {
+			if enabled && strings.Contains(err.Error(), sql.ErrNoRows.Error()) {
+				if genErr := runWizardGenerateSubscriptionProfile(cmd, nil, out, configPath, dbPath, user, subscriptionservice.DefaultProfileName, nil); genErr != nil {
+					return selected, genErr
+				}
+				items, listErr := listWizardUserSubscriptions(cmd, configPath, dbPath, user.ID)
+				if listErr != nil {
+					return selected, listErr
+				}
+				for _, item := range items {
+					if item.IsDefault {
+						return item, nil
+					}
+				}
+				selected.Enabled = true
+				return selected, nil
+			}
+			return selected, err
+		}
+		sub.Enabled = enabled
+		sub.UpdatedAt = time.Now().UTC()
+		if _, err := store.Subscriptions().Upsert(cmd.Context(), sub); err != nil {
+			return selected, err
+		}
+		if !enabled {
+			if _, err := cleanupUserSubscriptionFiles(user.ID, subscriptionDir, sub.OutputPath, sub.AccessToken); err != nil {
+				return selected, err
+			}
+			fmt.Fprintf(out, "subscription disabled: profile=%s user=%s\n", selected.Name, user.ID)
+		} else {
+			if genErr := runWizardGenerateSubscriptionProfile(cmd, nil, out, configPath, dbPath, user, subscriptionservice.DefaultProfileName, nil); genErr != nil {
+				return selected, genErr
+			}
+		}
+	} else {
+		entry, err := setNamedSubscriptionProfileEnabled(user.ID, subscriptionDir, selected.Name, enabled)
+		if err != nil {
+			return selected, err
+		}
+		if !enabled {
+			if _, err := cleanupNamedSubscriptionFiles(user.ID, subscriptionDir, selected.Name, strings.TrimSpace(entry.AccessToken)); err != nil {
+				return selected, err
+			}
+			fmt.Fprintf(out, "subscription disabled: profile=%s user=%s\n", selected.Name, user.ID)
+		} else {
+			if genErr := runWizardGenerateSubscriptionProfile(cmd, nil, out, configPath, dbPath, user, selected.Name, entry.InboundIDs); genErr != nil {
+				return selected, genErr
+			}
+		}
+	}
+
+	items, listErr := listWizardUserSubscriptions(cmd, configPath, dbPath, user.ID)
+	if listErr != nil {
+		return selected, listErr
+	}
+	for _, item := range items {
+		if item.Name == selected.Name {
+			return item, nil
+		}
+	}
+	selected.Enabled = enabled
+	return selected, nil
+}
+
+func setNamedSubscriptionProfileEnabled(userID, subscriptionDir, profileName string, enabled bool) (wizardSubscriptionProfileEntry, error) {
+	profilesPath := filepath.Join(strings.TrimSpace(subscriptionDir), "profiles", strings.TrimSpace(userID)+".json")
+	content, err := os.ReadFile(profilesPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return wizardSubscriptionProfileEntry{}, fmt.Errorf("subscription profile %q not found", profileName)
+		}
+		return wizardSubscriptionProfileEntry{}, fmt.Errorf("read profiles file: %w", err)
+	}
+
+	var file wizardSubscriptionProfilesFile
+	if err := json.Unmarshal(content, &file); err != nil {
+		return wizardSubscriptionProfileEntry{}, fmt.Errorf("decode profiles file: %w", err)
+	}
+
+	target := wizardSubscriptionProfileEntry{}
+	found := false
+	for i := range file.Profiles {
+		name := wizardNormalizeProfileName(file.Profiles[i].Name)
+		if name != profileName {
+			continue
+		}
+		file.Profiles[i].Enabled = wizardBoolPtr(enabled)
+		file.Profiles[i].Name = name
+		target = file.Profiles[i]
+		found = true
+		break
+	}
+	if !found {
+		return wizardSubscriptionProfileEntry{}, fmt.Errorf("subscription profile %q not found", profileName)
+	}
+
+	encoded, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		return wizardSubscriptionProfileEntry{}, fmt.Errorf("encode profiles file: %w", err)
+	}
+	if err := layout.WriteAtomicFile(profilesPath, append(encoded, '\n'), 0o644); err != nil {
+		return wizardSubscriptionProfileEntry{}, fmt.Errorf("write profiles file: %w", err)
+	}
+	return target, nil
+}
+
+func wizardBoolPtr(v bool) *bool {
+	return &v
 }
 
 func deleteWizardSubscription(cmd *cobra.Command, configPath, dbPath, userID, profileName string) (bool, int, error) {
@@ -3443,9 +3696,14 @@ func runWizardDeleteUserSubscription(cmd *cobra.Command, in *bufio.Reader, out i
 
 func runWizardInboundMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, inbound domain.Inbound) error {
 	for {
+		toggleAction := "disable inbound"
+		if !inbound.Enabled {
+			toggleAction = "enable inbound"
+		}
 		action, err := promptChoice(in, out, fmt.Sprintf("Inbound %s (%s/%s %s:%d)", inbound.ID, inbound.Type, inbound.Transport, inbound.Domain, inbound.Port), []string{
 			"show users",
 			"attach user",
+			toggleAction,
 			"delete inbound",
 			"back",
 		}, "show users")
@@ -3466,6 +3724,12 @@ func runWizardInboundMenu(cmd *cobra.Command, in *bufio.Reader, out io.Writer, c
 			if err := runWizardAttachUserToSpecificInbound(cmd, in, out, configPath, dbPath, inbound); err != nil {
 				return err
 			}
+		case "enable inbound", "disable inbound":
+			updated, err := runWizardSetInboundEnabled(cmd, out, dbPath, inbound, action == "enable inbound")
+			if err != nil {
+				return err
+			}
+			inbound = updated
 		case "delete inbound":
 			deleted, err := runWizardDeleteInbound(cmd, in, out, dbPath, inbound)
 			if err != nil {
@@ -3516,6 +3780,22 @@ func runWizardDeleteInbound(cmd *cobra.Command, in *bufio.Reader, out io.Writer,
 	}
 	fmt.Fprintf(out, "inbound deleted: id=%s deleted=%t\n", inbound.ID, deleted)
 	return deleted, nil
+}
+
+func runWizardSetInboundEnabled(cmd *cobra.Command, out io.Writer, dbPath string, inbound domain.Inbound, enabled bool) (domain.Inbound, error) {
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return domain.Inbound{}, err
+	}
+	defer store.Close()
+
+	inbound.Enabled = enabled
+	updated, err := store.Inbounds().Update(cmd.Context(), inbound)
+	if err != nil {
+		return domain.Inbound{}, err
+	}
+	fmt.Fprintf(out, "inbound state updated: id=%s enabled=%t\n", updated.ID, updated.Enabled)
+	return updated, nil
 }
 
 func runWizardAttachUserToInbound(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
@@ -3589,6 +3869,9 @@ func runWizardAttachExistingUserToInbound(cmd *cobra.Command, in *bufio.Reader, 
 		fmt.Fprintf(out, "uri unavailable: %s\n", uriErr)
 	} else {
 		fmt.Fprintf(out, "client uri: %s\n", uri)
+	}
+	if refreshErr := autoRefreshUserSubscriptions(cmd, out, configPath, dbPath, user, "credential created"); refreshErr != nil {
+		fmt.Fprintf(out, "warning: auto-refresh subscriptions failed: %v\n", refreshErr)
 	}
 
 	applyNow, err := promptBool(in, out, "Apply runtime changes now (y/n)", true)
@@ -3740,7 +4023,7 @@ func runWizardShowUserConfigs(cmd *cobra.Command, out io.Writer, dbPath string, 
 	return nil
 }
 
-func runWizardOpenCredential(cmd *cobra.Command, in *bufio.Reader, out io.Writer, dbPath string, user domain.User) error {
+func runWizardOpenCredential(cmd *cobra.Command, in *bufio.Reader, out io.Writer, configPath, dbPath string, user domain.User) error {
 	items, err := listWizardUserConfigs(cmd, dbPath, user.ID)
 	if err != nil {
 		return err
@@ -3858,6 +4141,9 @@ func runWizardOpenCredential(cmd *cobra.Command, in *bufio.Reader, out io.Writer
 				}
 			}
 			fmt.Fprintf(out, "label updated: %s\n", strings.TrimSpace(newLabel))
+			if refreshErr := autoRefreshUserSubscriptions(cmd, out, configPath, dbPath, user, "credential label updated"); refreshErr != nil {
+				fmt.Fprintf(out, "warning: auto-refresh subscriptions failed: %v\n", refreshErr)
+			}
 		case "show full secret":
 			confirm, err := promptBool(in, out, "Print full secret to terminal (y/n)", false)
 			if err != nil {
@@ -3892,6 +4178,11 @@ func runWizardOpenCredential(cmd *cobra.Command, in *bufio.Reader, out io.Writer
 			}
 
 			fmt.Fprintf(out, "credential deleted: id=%s deleted=%t\n", selected.CredentialID, deleted)
+			if deleted {
+				if refreshErr := autoRefreshUserSubscriptions(cmd, out, configPath, dbPath, user, "credential deleted"); refreshErr != nil {
+					fmt.Fprintf(out, "warning: auto-refresh subscriptions failed: %v\n", refreshErr)
+				}
+			}
 			return nil
 		default:
 			return nil
@@ -3949,6 +4240,11 @@ func runWizardDeleteSpecificUserConfig(cmd *cobra.Command, in *bufio.Reader, out
 			return err
 		}
 		fmt.Fprintf(out, "credential deleted: id=%s deleted=%t\n", selected.CredentialID, deleted)
+		if deleted {
+			if refreshErr := autoRefreshUserSubscriptions(cmd, out, configPath, dbPath, user, "credential deleted"); refreshErr != nil {
+				fmt.Fprintf(out, "warning: auto-refresh subscriptions failed: %v\n", refreshErr)
+			}
+		}
 	case wizardUserConfigSubscription:
 		deletedSub, err := store.Subscriptions().DeleteByUserID(cmd.Context(), user.ID)
 		if err != nil {

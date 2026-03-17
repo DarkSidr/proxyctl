@@ -115,6 +115,7 @@ type Subscription struct {
 	Format      SubscriptionFormat
 	OutputPath  string
 	AccessToken string
+	Enabled     bool
 	UpdatedAt   time.Time
 }
 

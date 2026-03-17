@@ -58,6 +58,7 @@ var schemaStatements = []string{
 		format TEXT NOT NULL,
 		output_path TEXT NOT NULL,
 		access_token TEXT,
+		enabled INTEGER NOT NULL DEFAULT 1,
 		updated_at TEXT NOT NULL,
 		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 	)`,
@@ -79,5 +80,6 @@ var schemaMigrations = []string{
 	`ALTER TABLE inbounds ADD COLUMN tls_cert_path TEXT`,
 	`ALTER TABLE inbounds ADD COLUMN tls_key_path TEXT`,
 	`ALTER TABLE subscriptions ADD COLUMN access_token TEXT`,
+	`ALTER TABLE subscriptions ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_access_token ON subscriptions(access_token)`,
 }

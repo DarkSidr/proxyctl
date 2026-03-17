@@ -50,7 +50,7 @@ func NewRootCmd() *cobra.Command {
 		newStatusCmd(&configPath, &dbPath),
 		newUserCmd(&dbPath),
 		newNodeCmd(&configPath, &dbPath),
-		newInboundCmd(&dbPath),
+		newInboundCmd(&configPath, &dbPath),
 		newPreviewCmd(&configPath, &dbPath),
 		newRenderCmd(&configPath, &dbPath),
 		newValidateCmd(&configPath, &dbPath),

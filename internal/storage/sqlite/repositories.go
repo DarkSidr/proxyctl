@@ -334,6 +334,66 @@ func (r *inboundRepository) Delete(ctx context.Context, inboundID string) (bool,
 	return affected > 0, nil
 }
 
+func (r *inboundRepository) Update(ctx context.Context, inbound domain.Inbound) (domain.Inbound, error) {
+	inbound.ID = strings.TrimSpace(inbound.ID)
+	if inbound.ID == "" {
+		return domain.Inbound{}, fmt.Errorf("inbound id is required")
+	}
+
+	result, err := r.db.ExecContext(
+		ctx,
+		`UPDATE inbounds SET
+			type = ?, engine = ?, node_id = ?, domain = ?, port = ?, tls_enabled = ?, tls_cert_path = ?, tls_key_path = ?,
+			transport = ?, path = ?, sni = ?, reality_enabled = ?, reality_public_key = ?, reality_private_key = ?,
+			reality_short_id = ?, reality_fingerprint = ?, reality_spider_x = ?, reality_server = ?, reality_server_port = ?,
+			vless_flow = ?, enabled = ?
+		WHERE id = ?`,
+		inbound.Type,
+		inbound.Engine,
+		inbound.NodeID,
+		inbound.Domain,
+		inbound.Port,
+		boolToInt(inbound.TLSEnabled),
+		inbound.TLSCertPath,
+		inbound.TLSKeyPath,
+		inbound.Transport,
+		inbound.Path,
+		inbound.SNI,
+		boolToInt(inbound.RealityEnabled),
+		inbound.RealityPublicKey,
+		inbound.RealityPrivateKey,
+		inbound.RealityShortID,
+		inbound.RealityFingerprint,
+		inbound.RealitySpiderX,
+		inbound.RealityServer,
+		inbound.RealityServerPort,
+		inbound.VLESSFlow,
+		boolToInt(inbound.Enabled),
+		inbound.ID,
+	)
+	if err != nil {
+		return domain.Inbound{}, fmt.Errorf("update inbound: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return domain.Inbound{}, fmt.Errorf("update inbound rows affected: %w", err)
+	}
+	if affected == 0 {
+		return domain.Inbound{}, sql.ErrNoRows
+	}
+
+	inbounds, err := r.List(ctx)
+	if err != nil {
+		return domain.Inbound{}, err
+	}
+	for _, item := range inbounds {
+		if item.ID == inbound.ID {
+			return item, nil
+		}
+	}
+	return domain.Inbound{}, sql.ErrNoRows
+}
+
 func (r *credentialRepository) Create(ctx context.Context, credential domain.Credential) (domain.Credential, error) {
 	if credential.ID == "" {
 		credential.ID = newID()
@@ -481,18 +541,20 @@ func (r *subscriptionRepository) Upsert(ctx context.Context, subscription domain
 
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO subscriptions (id, user_id, format, output_path, access_token, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO subscriptions (id, user_id, format, output_path, access_token, enabled, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
 			format = excluded.format,
 			output_path = excluded.output_path,
 			access_token = excluded.access_token,
+			enabled = excluded.enabled,
 			updated_at = excluded.updated_at`,
 		subscription.ID,
 		subscription.UserID,
 		subscription.Format,
 		subscription.OutputPath,
 		subscription.AccessToken,
+		boolToInt(subscription.Enabled),
 		subscription.UpdatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -504,12 +566,13 @@ func (r *subscriptionRepository) Upsert(ctx context.Context, subscription domain
 func (r *subscriptionRepository) GetByUserID(ctx context.Context, userID string) (domain.Subscription, error) {
 	var (
 		subscription domain.Subscription
+		enabled      int
 		updatedAt    string
 	)
 
 	err := r.db.QueryRowContext(
 		ctx,
-		`SELECT id, user_id, format, output_path, COALESCE(access_token, ''), updated_at FROM subscriptions WHERE user_id = ?`,
+		`SELECT id, user_id, format, output_path, COALESCE(access_token, ''), enabled, updated_at FROM subscriptions WHERE user_id = ?`,
 		userID,
 	).Scan(
 		&subscription.ID,
@@ -517,6 +580,7 @@ func (r *subscriptionRepository) GetByUserID(ctx context.Context, userID string)
 		&subscription.Format,
 		&subscription.OutputPath,
 		&subscription.AccessToken,
+		&enabled,
 		&updatedAt,
 	)
 	if err != nil {
@@ -527,6 +591,7 @@ func (r *subscriptionRepository) GetByUserID(ctx context.Context, userID string)
 	if err != nil {
 		return domain.Subscription{}, fmt.Errorf("parse subscription updated_at: %w", err)
 	}
+	subscription.Enabled = intToBool(enabled)
 
 	return subscription, nil
 }

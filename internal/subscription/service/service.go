@@ -70,6 +70,7 @@ type profileEntry struct {
 	Name        string    `json:"name"`
 	InboundIDs  []string  `json:"inbound_ids"`
 	AccessToken string    `json:"access_token"`
+	Enabled     *bool     `json:"enabled,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
@@ -187,6 +188,7 @@ func (s *Service) GenerateProfile(ctx context.Context, userRef, profileName stri
 				return Generated{}, err
 			}
 		}
+		entry.Enabled = boolPtr(true)
 		entry.UpdatedAt = input.GeneratedAt
 		if err := s.saveProfile(input.User.ID, entry); err != nil {
 			return Generated{}, err
@@ -226,6 +228,7 @@ func (s *Service) GenerateProfile(ctx context.Context, userRef, profileName stri
 			Format:      domain.SubscriptionFormat(FormatTXT),
 			OutputPath:  paths.TXTPath,
 			AccessToken: token,
+			Enabled:     true,
 			UpdatedAt:   input.GeneratedAt,
 		}); err != nil {
 			return Generated{}, fmt.Errorf("persist subscription metadata: %w", err)
@@ -276,6 +279,7 @@ func (s *Service) ExportProfile(ctx context.Context, userRef, profileName string
 			Format:      domain.SubscriptionFormat(show.Format),
 			OutputPath:  show.Path,
 			AccessToken: result.AccessToken,
+			Enabled:     true,
 			UpdatedAt:   result.GeneratedAt,
 		}); err != nil {
 			return ShowResult{}, fmt.Errorf("persist subscription metadata: %w", err)
@@ -305,6 +309,9 @@ func (s *Service) ShowProfile(ctx context.Context, userRef, profileName string) 
 		if !exists {
 			return ShowResult{}, fmt.Errorf("subscription profile %q not found for user %q", profileKey, userRef)
 		}
+		if entry.Enabled != nil && !*entry.Enabled {
+			return ShowResult{}, fmt.Errorf("subscription profile %q is disabled", profileKey)
+		}
 		path := filepath.Join(strings.TrimSpace(s.dataDir), user.ID+"."+profileKey+".txt")
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
@@ -331,6 +338,9 @@ func (s *Service) ShowProfile(ctx context.Context, userRef, profileName string) 
 			return ShowResult{User: user, ProfileName: DefaultProfileName, Format: FormatTXT, Path: path, Content: content}, nil
 		}
 		return ShowResult{}, err
+	}
+	if !sub.Enabled {
+		return ShowResult{}, fmt.Errorf("subscription profile %q is disabled", DefaultProfileName)
 	}
 
 	content, err := os.ReadFile(sub.OutputPath)
@@ -693,6 +703,9 @@ func (s *Service) loadProfile(userID, profileKey string) (profileEntry, bool, er
 			item.Name = name
 			item.InboundIDs = compactUniqueStrings(item.InboundIDs)
 			item.AccessToken = strings.TrimSpace(item.AccessToken)
+			if item.Enabled == nil {
+				item.Enabled = boolPtr(true)
+			}
 			return item, true, nil
 		}
 	}
@@ -758,6 +771,10 @@ func normalizeFormat(raw string) string {
 	default:
 		return ""
 	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func errorsIsNotFound(err error) bool {
