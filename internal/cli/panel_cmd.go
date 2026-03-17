@@ -1149,6 +1149,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
     let snapshot = null;
     let opTimer = null;
+    let lastOpSeenKey = "";
     let selectedSubInboundByUser = {};
     let inboundSniOptions = [];
     let liveTimer = null;
@@ -1274,8 +1275,25 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         throw new Error("action request failed (" + res.status + ")" + (msg ? ": " + msg : ""));
       }
       const out = await res.json();
+      lastOpSeenKey = [String(out?.status || ""), String(out?.message || ""), String(out?.at || "")].join("|");
       showOp(out.status, out.message);
       await getSnapshot();
+    }
+    function syncOpFromSnapshot() {
+      const status = String(snapshot?.OperationStatus || "");
+      const message = String(snapshot?.OperationMessage || "");
+      const at = String(snapshot?.OperationAt || "");
+      if (!message) {
+        lastOpSeenKey = "";
+        showOp("", "");
+        return;
+      }
+      const key = [status, message, at].join("|");
+      if (key === lastOpSeenKey) {
+        return;
+      }
+      lastOpSeenKey = key;
+      showOp(status, message);
     }
     function updateSubButtons() {
       if (!snapshot) return;
@@ -1440,7 +1458,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     }
     function render() {
       if (!snapshot) return;
-      showOp(snapshot.OperationStatus, snapshot.OperationMessage);
+      syncOpFromSnapshot();
 
       const c = snapshot.Counts || {};
       const dash = snapshot.Dashboard || {};
