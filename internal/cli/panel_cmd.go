@@ -2157,7 +2157,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-				if err := panelHandleNodeAction(r.Context(), resolvedDB, r, ops); err != nil {
+				if err := panelHandleNodeAction(r.Context(), resolvedDB, r, &configPathValue, &dbPathValue, ops); err != nil {
 					ops.set("error", err.Error())
 				}
 				panelRespondAction(w, r, legacyDashboardPath, ops)
@@ -2167,7 +2167,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-				if err := panelHandleInboundAction(r.Context(), resolvedDB, r, ops); err != nil {
+				if err := panelHandleInboundAction(r.Context(), resolvedDB, r, &configPathValue, &dbPathValue, ops); err != nil {
 					ops.set("error", err.Error())
 				}
 				panelRespondAction(w, r, inboundsPath, ops)
@@ -2282,9 +2282,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						}
 					}
 				case "refresh_all":
-					out, runErr := panelExecuteCommandWithSetup(r.Context(), newSubscriptionRefreshCmd(&configPathValue, &dbPathValue), nil, func(cmd *cobra.Command) error {
-						return cmd.Flags().Set("all", "true")
-					})
+					out, runErr := panelRefreshAllSubscriptions(r.Context(), &configPathValue, &dbPathValue)
 					if runErr != nil {
 						ops.set("error", "subscription refresh failed: "+panelErrWithOutput(runErr, out))
 					} else {
@@ -2803,9 +2801,18 @@ func panelExecuteCommandWithSetup(ctx context.Context, cmd *cobra.Command, args 
 			return "", err
 		}
 	}
+	if args == nil {
+		args = []string{}
+	}
 	cmd.SetArgs(args)
 	err := cmd.ExecuteContext(ctx)
 	return strings.TrimSpace(out.String()), err
+}
+
+func panelRefreshAllSubscriptions(ctx context.Context, configPath, dbPath *string) (string, error) {
+	return panelExecuteCommandWithSetup(ctx, newSubscriptionRefreshCmd(configPath, dbPath), nil, func(cmd *cobra.Command) error {
+		return cmd.Flags().Set("all", "true")
+	})
 }
 
 func panelErrWithOutput(err error, out string) string {
@@ -2904,7 +2911,7 @@ func panelHandleUserAction(ctx context.Context, dbPath string, r *http.Request, 
 	}
 }
 
-func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Request, ops *panelOperationFeed) error {
+func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Request, configPath, dbPathFlag *string, ops *panelOperationFeed) error {
 	if err := r.ParseForm(); err != nil {
 		return fmt.Errorf("invalid inbound action request")
 	}
@@ -3001,7 +3008,12 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 			if !deleted {
 				return fmt.Errorf("inbound %q not found", inboundID)
 			}
-			ops.set("ok", fmt.Sprintf("inbound deleted: %s", inboundID))
+			out, refreshErr := panelRefreshAllSubscriptions(ctx, configPath, dbPathFlag)
+			if refreshErr != nil {
+				ops.set("error", fmt.Sprintf("inbound deleted (%s), but subscription refresh failed: %s", inboundID, panelErrWithOutput(refreshErr, out)))
+				return nil
+			}
+			ops.set("ok", fmt.Sprintf("inbound deleted: %s | subscriptions refreshed: %s", inboundID, panelSummarizeOutput(out)))
 			return nil
 		}
 
@@ -3038,7 +3050,7 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 	}
 }
 
-func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, ops *panelOperationFeed) error {
+func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, configPath, dbPathFlag *string, ops *panelOperationFeed) error {
 	if err := r.ParseForm(); err != nil {
 		return fmt.Errorf("invalid node action request")
 	}
@@ -3113,7 +3125,12 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			if !deleted {
 				return fmt.Errorf("node %q not found", nodeID)
 			}
-			ops.set("ok", fmt.Sprintf("node deleted: %s", nodeID))
+			out, refreshErr := panelRefreshAllSubscriptions(ctx, configPath, dbPathFlag)
+			if refreshErr != nil {
+				ops.set("error", fmt.Sprintf("node deleted (%s), but subscription refresh failed: %s", nodeID, panelErrWithOutput(refreshErr, out)))
+				return nil
+			}
+			ops.set("ok", fmt.Sprintf("node deleted: %s | subscriptions refreshed: %s", nodeID, panelSummarizeOutput(out)))
 			return nil
 		}
 		if action == "update" {
