@@ -367,6 +367,36 @@ func TestWizardMainOptionsByModeEmptyFallsBack(t *testing.T) {
 	}
 }
 
+func TestWizardNodeRoleOptionsForCreateWithoutPrimary(t *testing.T) {
+	t.Parallel()
+
+	options, def := wizardNodeRoleOptionsForCreate(false)
+	if len(options) != 2 {
+		t.Fatalf("options len = %d, want 2 (%v)", len(options), options)
+	}
+	if options[0] != string(domain.NodeRolePrimary) || options[1] != string(domain.NodeRoleNode) {
+		t.Fatalf("options = %v, want [primary node]", options)
+	}
+	if def != string(domain.NodeRolePrimary) {
+		t.Fatalf("default role = %q, want primary", def)
+	}
+}
+
+func TestWizardNodeRoleOptionsForCreateWithPrimary(t *testing.T) {
+	t.Parallel()
+
+	options, def := wizardNodeRoleOptionsForCreate(true)
+	if len(options) != 1 {
+		t.Fatalf("options len = %d, want 1 (%v)", len(options), options)
+	}
+	if options[0] != string(domain.NodeRoleNode) {
+		t.Fatalf("options = %v, want [node]", options)
+	}
+	if def != string(domain.NodeRoleNode) {
+		t.Fatalf("default role = %q, want node", def)
+	}
+}
+
 func TestCollectInstalledVersions(t *testing.T) {
 	origLookPath := lookPath
 	origRun := runCommandOutput

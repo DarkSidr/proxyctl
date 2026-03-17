@@ -2392,7 +2392,19 @@ func runWizardNodeAdd(cmd *cobra.Command, dbPath string) error {
 	if err != nil {
 		return err
 	}
-	roleOptions, defaultRole := wizardNodeRoleOptions(string(domain.NodeRolePrimary))
+
+	store, err := openStoreWithInit(cmd.Context(), dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	_, hasPrimary, err := findExistingPrimaryNode(cmd.Context(), store, "")
+	if err != nil {
+		return err
+	}
+
+	roleOptions, defaultRole := wizardNodeRoleOptionsForCreate(hasPrimary)
 	role, err := promptChoice(in, out, "Node role", roleOptions, defaultRole)
 	if err != nil {
 		return err
@@ -2401,12 +2413,6 @@ func runWizardNodeAdd(cmd *cobra.Command, dbPath string) error {
 	if err != nil {
 		return err
 	}
-
-	store, err := openStoreWithInit(cmd.Context(), dbPath)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
 	if domain.NodeRole(strings.TrimSpace(role)) == domain.NodeRolePrimary {
 		existingPrimary, exists, err := findExistingPrimaryNode(cmd.Context(), store, "")
 		if err != nil {
@@ -2681,6 +2687,13 @@ func wizardNodeRoleOptions(current string) ([]string, string) {
 	}
 	options = append(options, defaultRole)
 	return options, defaultRole
+}
+
+func wizardNodeRoleOptionsForCreate(hasPrimary bool) ([]string, string) {
+	if hasPrimary {
+		return []string{string(domain.NodeRoleNode)}, string(domain.NodeRoleNode)
+	}
+	return wizardNodeRoleOptions(string(domain.NodeRolePrimary))
 }
 
 func runWizardSetNodeEnabled(cmd *cobra.Command, out io.Writer, dbPath string, node domain.Node, enabled bool) (domain.Node, error) {

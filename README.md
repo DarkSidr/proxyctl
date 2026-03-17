@@ -243,6 +243,10 @@ proxyctl node add --name us-1 --host 198.51.100.20
 proxyctl node list
 ```
 
+Notes:
+- only one `primary` node is allowed;
+- in `proxyctl wizard -> nodes -> create node`, role `primary` is shown only when no existing primary node is present.
+
 2. Test SSH from panel host:
 
 ```bash
