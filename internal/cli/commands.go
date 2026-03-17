@@ -1897,18 +1897,26 @@ func runWizardNodeSync(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 		return err
 	}
 	enabledNodes := make([]domain.Node, 0, len(nodes))
+	enabledWorkerNodes := make([]domain.Node, 0, len(nodes))
 	for _, node := range nodes {
 		if !node.Enabled {
 			continue
 		}
 		enabledNodes = append(enabledNodes, node)
+		if node.Role == domain.NodeRoleNode {
+			enabledWorkerNodes = append(enabledWorkerNodes, node)
+		}
 	}
 	if len(enabledNodes) == 0 {
 		fmt.Fprintln(out, "no enabled nodes found")
 		return nil
 	}
+	if len(enabledWorkerNodes) == 0 {
+		fmt.Fprintln(out, "no enabled worker nodes (role=node) found")
+		return nil
+	}
 
-	scope, err := promptChoice(in, out, "Sync scope", []string{"all enabled nodes with inbounds", "select nodes", "back"}, "all enabled nodes with inbounds")
+	scope, err := promptChoice(in, out, "Sync scope", []string{"all enabled worker nodes (role=node)", "select nodes", "back"}, "all enabled worker nodes (role=node)")
 	if err != nil {
 		return err
 	}
@@ -1916,12 +1924,12 @@ func runWizardNodeSync(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 		return nil
 	}
 
-	selectedNodeIDs := []string(nil)
-	selectedNodes := make([]domain.Node, 0, len(enabledNodes))
+	selectedNodeIDs := make([]string, 0, len(enabledWorkerNodes))
+	selectedNodes := make([]domain.Node, 0, len(enabledWorkerNodes))
 	if scope == "select nodes" {
-		fmt.Fprintln(out, "available enabled nodes:")
-		defaultIndexes := make([]string, 0, len(enabledNodes))
-		for i, node := range enabledNodes {
+		fmt.Fprintln(out, "available enabled worker nodes (role=node):")
+		defaultIndexes := make([]string, 0, len(enabledWorkerNodes))
+		for i, node := range enabledWorkerNodes {
 			idx := i + 1
 			defaultIndexes = append(defaultIndexes, strconv.Itoa(idx))
 			fmt.Fprintf(out, "  %d) %s (%s, %s)\n", idx, node.ID, node.Name, node.Host)
@@ -1930,7 +1938,7 @@ func runWizardNodeSync(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 		if err != nil {
 			return err
 		}
-		selectedIdx, err := parseIndexCSV(selection, len(enabledNodes))
+		selectedIdx, err := parseIndexCSV(selection, len(enabledWorkerNodes))
 		if err != nil {
 			return err
 		}
@@ -1940,12 +1948,15 @@ func runWizardNodeSync(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 		}
 		selectedNodeIDs = make([]string, 0, len(selectedIdx))
 		for _, idx := range selectedIdx {
-			node := enabledNodes[idx-1]
+			node := enabledWorkerNodes[idx-1]
 			selectedNodeIDs = append(selectedNodeIDs, node.ID)
 			selectedNodes = append(selectedNodes, node)
 		}
 	} else {
-		selectedNodes = append(selectedNodes, enabledNodes...)
+		selectedNodes = append(selectedNodes, enabledWorkerNodes...)
+		for _, node := range enabledWorkerNodes {
+			selectedNodeIDs = append(selectedNodeIDs, node.ID)
+		}
 	}
 
 	sshUser, err := promptLine(in, out, "SSH user", "root")
@@ -2027,9 +2038,7 @@ func runWizardNodeSync(cmd *cobra.Command, in *bufio.Reader, out io.Writer, conf
 	if strings.TrimSpace(sshKey) != "" {
 		args = append(args, "--ssh-key", strings.TrimSpace(sshKey))
 	}
-	if len(selectedNodeIDs) > 0 {
-		args = append(args, "--node-ids", strings.Join(selectedNodeIDs, ","))
-	}
+	args = append(args, "--node-ids", strings.Join(selectedNodeIDs, ","))
 
 	fmt.Fprintln(out, "starting node sync...")
 	return runProxyctlSubcommand(cmd, args...)
