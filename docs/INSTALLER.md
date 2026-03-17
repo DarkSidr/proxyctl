@@ -133,6 +133,7 @@ proxyctl uninstall --yes
 
 This purge also removes:
 - proxyctl-generated SSH keys in `/root/.ssh` (keys with `proxyctl-auto-` comment);
+- best-effort cleanup of remote `proxyctl-auto-` entries from `~root/.ssh/authorized_keys` on hosts from local node DB;
 - `/var/log/proxy-orchestrator`;
 - common Caddy certificate/cache paths: `/caddy`, `/var/lib/caddy`, `/var/log/caddy`, `/etc/ssl/caddy`.
 - leftover SQLite state files in `/var/lib/proxy-orchestrator` (`proxyctl.db`, `proxyctl.db-*`) via final cleanup sweep.

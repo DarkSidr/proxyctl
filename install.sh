@@ -1220,6 +1220,21 @@ rm -f /etc/systemd/system/proxyctl-*.service /etc/systemd/system/proxyctl-self-u
 systemctl daemon-reload || true
 systemctl reset-failed || true
 
+if [[ -f /var/lib/proxy-orchestrator/proxyctl.db ]] && command -v sqlite3 >/dev/null 2>&1 && command -v ssh >/dev/null 2>&1; then
+  while IFS= read -r host; do
+    host="$(printf '%s' "${host}" | xargs || true)"
+    [[ -n "${host}" ]] || continue
+    log "Removing remote proxyctl SSH keys on host: ${host}"
+    if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "root@${host}" \
+      "if [ -f ~/.ssh/authorized_keys ]; then tmp=\$(mktemp); grep -v 'proxyctl-auto-' ~/.ssh/authorized_keys > \"\$tmp\"; cat \"\$tmp\" > ~/.ssh/authorized_keys; rm -f \"\$tmp\"; chmod 600 ~/.ssh/authorized_keys; fi" \
+      >/dev/null 2>&1; then
+      log "Remote key cleanup completed: ${host}"
+    else
+      log "WARNING: remote key cleanup failed for ${host} (password/sudo/manual access may be required)"
+    fi
+  done < <(sqlite3 /var/lib/proxy-orchestrator/proxyctl.db "SELECT DISTINCT TRIM(host) FROM nodes WHERE TRIM(host) <> '';" 2>/dev/null || true)
+fi
+
 rm -f /usr/local/bin/proxyctl /usr/local/bin/sing-box /usr/local/bin/xray /usr/local/sbin/proxyctl-self-update /usr/local/sbin/proxyctl-uninstall
 rm -rf /etc/proxy-orchestrator /var/lib/proxy-orchestrator /var/backups/proxy-orchestrator /usr/share/proxy-orchestrator /var/log/proxy-orchestrator
 

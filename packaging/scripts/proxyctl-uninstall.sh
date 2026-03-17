@@ -129,6 +129,43 @@ remove_files() {
     /var/log/proxy-orchestrator
 }
 
+remove_remote_proxyctl_ssh_keys() {
+  local db_path="/var/lib/proxy-orchestrator/proxyctl.db"
+  if [[ ! -f "${db_path}" ]]; then
+    return 0
+  fi
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    log "sqlite3 is unavailable; skipping remote SSH key cleanup"
+    return 0
+  fi
+  if ! command -v ssh >/dev/null 2>&1; then
+    log "ssh client is unavailable; skipping remote SSH key cleanup"
+    return 0
+  fi
+
+  local hosts=()
+  mapfile -t hosts < <(sqlite3 "${db_path}" "SELECT DISTINCT TRIM(host) FROM nodes WHERE TRIM(host) <> '';" 2>/dev/null || true)
+  if [[ "${#hosts[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  local host
+  for host in "${hosts[@]}"; do
+    host="$(printf '%s' "${host}" | xargs || true)"
+    if [[ -z "${host}" ]]; then
+      continue
+    fi
+    log "Removing remote proxyctl SSH keys on host: ${host}"
+    if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "root@${host}" \
+      "if [ -f ~/.ssh/authorized_keys ]; then tmp=\$(mktemp); grep -v 'proxyctl-auto-' ~/.ssh/authorized_keys > \"\$tmp\"; cat \"\$tmp\" > ~/.ssh/authorized_keys; rm -f \"\$tmp\"; chmod 600 ~/.ssh/authorized_keys; fi" \
+      >/dev/null 2>&1; then
+      log "Remote key cleanup completed: ${host}"
+    else
+      log "WARNING: remote key cleanup failed for ${host} (password/sudo/manual access may be required)"
+    fi
+  done
+}
+
 final_sweep_and_report() {
   local cleanup_targets=(
     /etc/proxy-orchestrator
@@ -202,6 +239,7 @@ main() {
 
   disable_units
   remove_units
+  remove_remote_proxyctl_ssh_keys
   remove_files
   remove_proxyctl_ssh_keys
   remove_proxyctl_certificates_and_cache
