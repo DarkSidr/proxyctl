@@ -419,6 +419,7 @@ proxyctl panel serve --config /etc/proxy-orchestrator/proxyctl.yaml
 ```
 
 On installer-based hosts (`panel` / `panel+node` deployment modes), `proxyctl-panel.service` is installed and enabled automatically.
+In `panel+node` mode installer also auto-bootstraps `primary` node when there are no nodes yet.
 With `caddy` + configured public domain, installer also auto-adds panel route to Caddyfile using `handle <PANEL_PATH>*` (no manual Caddy edit needed).
 
 Defaults:

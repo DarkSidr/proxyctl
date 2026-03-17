@@ -51,6 +51,7 @@ Interactive behavior:
 - Custom templates can be uploaded into that directory as `<name>/index.html` and `<name>/assets/style.css`.
 - For `panel`/`panel+node` mode installer also prepares panel access placeholders in `/etc/proxy-orchestrator/panel-admin.env` and prints them at the end.
 - For `panel`/`panel+node` mode installer also installs and enables `proxyctl-panel.service` automatically.
+- In `panel+node` mode installer auto-creates `primary` node when database has no nodes yet (idempotent bootstrap).
 - With `caddy` + non-empty domain in `panel`/`panel+node` mode installer also ensures panel route in Caddyfile:
   - `handle <PANEL_PATH>* { reverse_proxy 127.0.0.1:<PANEL_PORT> }`
 - Manual panel start (optional): `proxyctl panel serve --config /etc/proxy-orchestrator/proxyctl.yaml`.

@@ -1576,6 +1576,40 @@ init_sqlite() {
   log "Initialized SQLite database: ${DB_PATH}"
 }
 
+bootstrap_primary_node_if_needed() {
+  if [[ "${SELECTED_DEPLOYMENT_MODE}" != "panel+node" ]]; then
+    return 0
+  fi
+  [[ -x "${BIN_DIR}/proxyctl" ]] || return 0
+
+  local node_count
+  node_count="$("${BIN_DIR}/proxyctl" node list --db "${DB_PATH}" 2>/dev/null | awk 'NR > 1 && NF > 0 {count++} END {print count + 0}' || true)"
+  if [[ "${node_count}" -gt 0 ]]; then
+    log "Skipping primary node bootstrap: existing nodes found (${node_count})"
+    return 0
+  fi
+
+  local node_host
+  if [[ -n "${SELECTED_PUBLIC_DOMAIN}" ]]; then
+    node_host="${SELECTED_PUBLIC_DOMAIN}"
+  else
+    node_host="$(hostname -f 2>/dev/null || true)"
+    if [[ -z "${node_host}" ]]; then
+      node_host="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+    fi
+    if [[ -z "${node_host}" ]]; then
+      node_host="127.0.0.1"
+    fi
+  fi
+
+  local out=""
+  if out="$("${BIN_DIR}/proxyctl" node add --db "${DB_PATH}" --name primary --host "${node_host}" --role primary --enabled=true 2>&1)"; then
+    log "Bootstrapped primary node: ${node_host}"
+  else
+    warn "Failed to bootstrap primary node automatically: ${out}"
+  fi
+}
+
 print_next_steps() {
   cat <<'EOF_STEPS'
 
@@ -1609,6 +1643,15 @@ Next steps:
 8. Full uninstall (purge):
    proxyctl uninstall --yes
 EOF_STEPS
+
+  if [[ "${SELECTED_DEPLOYMENT_MODE}" == "panel+node" ]]; then
+    cat <<'EOF_PANEL_NODE'
+
+Primary node bootstrap:
+- In panel+node mode installer auto-creates `primary` node when DB has no nodes yet.
+- Verify: proxyctl node list
+EOF_PANEL_NODE
+  fi
 
   if [[ "${SELECTED_DEPLOYMENT_MODE}" != "node" ]]; then
     cat <<EOF_PANEL
@@ -1661,6 +1704,7 @@ main() {
   ensure_selected_reverse_proxy_service
   ensure_panel_service
   init_sqlite
+  bootstrap_primary_node_if_needed
 
   log "Installed ${APP_NAME} ${PROXYCTL_VERSION} layout on host"
   print_next_steps
