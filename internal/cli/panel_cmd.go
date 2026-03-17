@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1171,7 +1172,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     }
     async function getSnapshot() {
       const res = await fetch(cfg.snapshotPath, { headers: { "Accept": "application/json" } });
-      if (!res.ok) throw new Error("snapshot request failed");
+      if (!res.ok) {
+        const body = await res.text();
+        const msg = (body || "").trim();
+        throw new Error("snapshot request failed" + (msg ? ": " + msg : ""));
+      }
       snapshot = await res.json();
       render();
     }
@@ -2390,6 +2395,9 @@ func panelWizardSNIPresets() []string {
 
 func buildPanelDashboard(cfg config.AppConfig, users []panelUserView) panelDashboardView {
 	load1, _ := panelLoadAvg1()
+	if math.IsNaN(load1) || math.IsInf(load1, 0) {
+		load1 = 0
+	}
 	memUsed, memTotal, _ := panelMemoryUsage()
 	diskUsed, diskTotal, _ := panelDiskUsage(cfg.Paths.StateDir)
 	uptime, _ := panelUptimeSeconds()
