@@ -1418,10 +1418,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         ["enabled users", c.UsersEnabled],
         ["inbounds", c.InboundsTotal],
         ["active inbounds", c.InboundsActive],
-        ["proxyctl", dash.ProxyctlVersion || "dev"],
-        ["cpu load (1m)", dash.Load1 ?? 0],
-        ["memory", fmtBytes(dash.MemUsedBytes) + " / " + fmtBytes(dash.MemTotalBytes)],
-        ["traffic total", fmtBytes(dash.TotalBytes)],
       ].map(([k, v]) => '<div class="card"><div class="label">'+esc(k)+'</div><div class="value">'+esc(v)+'</div></div>').join("");
       const dashCardsEl = document.getElementById("dashCards");
       if (dashCardsEl) dashCardsEl.innerHTML = [
