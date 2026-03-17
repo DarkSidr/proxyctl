@@ -145,6 +145,7 @@ For `panel`/`panel+node` install, installer also generates panel access placehol
 - `settings -> set decoy site path`
 - `settings -> switch decoy template`
 - `settings -> show panel access info` (safe output without login/password)
+- `settings -> restart panel service`
 - `settings -> show installed versions`
 It also includes `uninstall proxyctl` for full VPS cleanup.
 

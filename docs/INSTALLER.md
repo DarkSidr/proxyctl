@@ -72,6 +72,7 @@ Wizard note:
 - `proxyctl wizard` now has `settings -> set decoy site path` to update `paths.decoy_site_dir` in config and switch decoy assets to a custom directory.
 - `proxyctl wizard` now has `settings -> switch decoy template` to activate template from `/usr/share/proxy-orchestrator/decoy-templates` (including your uploaded custom templates).
 - `proxyctl wizard` now has `settings -> show panel access info` (URL/path and credentials file path, login/password hidden in wizard output).
+- `proxyctl wizard` now has `settings -> restart panel service` to run `systemctl restart proxyctl-panel.service`.
 - `proxyctl wizard` now has `settings -> show installed versions` to print detected versions of `proxyctl`, `sing-box`, `xray`, `caddy`, `nginx`, `sqlite3`, and `systemd`.
 - `proxyctl wizard` now has `uninstall proxyctl` for full purge flow with confirmation.
 

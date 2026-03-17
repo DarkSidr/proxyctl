@@ -1633,6 +1633,7 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 		action, err := promptChoice(in, out, "Settings", []string{
 			"show settings",
 			"show panel access info",
+			"restart panel service",
 			"show installed versions",
 			"auto-update status",
 			"enable auto-update (03:00 daily)",
@@ -1660,6 +1661,10 @@ func runWizardSettingsMenu(cmd *cobra.Command, configPath string) error {
 			fmt.Fprintf(out, "paths.decoy_site_dir: %s\n", strings.TrimSpace(cfg.Paths.DecoySiteDir))
 		case "show panel access info":
 			if err := printPanelAccessInfoSafe(out, configPath); err != nil {
+				return err
+			}
+		case "restart panel service":
+			if err := restartPanelService(cmd.Context(), out); err != nil {
 				return err
 			}
 		case "show installed versions":
@@ -1905,6 +1910,34 @@ func setAutoUpdateEnabled(ctx context.Context, out io.Writer, enabled bool) erro
 	}
 	fmt.Fprintln(out, "auto-update disabled: proxyctl-self-update.timer")
 	return printAutoUpdateStatus(ctx, out)
+}
+
+func restartPanelService(ctx context.Context, out io.Writer) error {
+	if _, err := lookPath("systemctl"); err != nil {
+		return fmt.Errorf("systemctl not found")
+	}
+	loadState, err := runCommandOutput(ctx, "systemctl", "show", "proxyctl-panel.service", "--property=LoadState", "--value")
+	if err != nil {
+		return fmt.Errorf("check proxyctl-panel.service load state: %w", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(loadState), "not-found") {
+		fmt.Fprintln(out, "proxyctl-panel.service is not installed")
+		fmt.Fprintln(out, "reinstall proxyctl in panel/panel+node mode to install panel unit")
+		return nil
+	}
+
+	if _, err := runCommandOutput(ctx, "systemctl", "restart", "proxyctl-panel.service"); err != nil {
+		return fmt.Errorf("restart proxyctl-panel.service: %w", err)
+	}
+	activeState, err := runCommandOutput(ctx, "systemctl", "is-active", "proxyctl-panel.service")
+	if err != nil {
+		activeState = strings.TrimSpace(activeState)
+		if activeState == "" {
+			activeState = "unknown"
+		}
+	}
+	fmt.Fprintf(out, "proxyctl-panel.service restarted, active state: %s\n", strings.TrimSpace(activeState))
+	return nil
 }
 
 type componentVersion struct {
