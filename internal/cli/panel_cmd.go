@@ -1048,6 +1048,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         <input id="inSni" type="text" list="inSniList" placeholder="sni value">
         <datalist id="inSniList"></datalist>
         <button id="createInboundBtn" class="btn">create inbound</button>
+        <button id="cancelInboundEditBtn" type="button" class="btn secondary hidden">cancel edit</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -1171,6 +1172,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     let lastOpSeenKey = "";
     let selectedSubInboundBySelection = {};
     let inboundSniOptions = [];
+    let editingInboundID = "";
+    let editingInboundVersion = "";
+    let editingInboundEnabled = true;
     let liveTimer = null;
     let liveBusy = false;
     const STORAGE_KEY_LIVE_INTERVAL = "proxyctl.app.liveIntervalMs";
@@ -1367,7 +1371,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     function updateInboundSniInputState() {
       const mode = (document.getElementById("inSniMode").value || "none").trim();
       const input = document.getElementById("inSni");
+      const sniModeEl = document.getElementById("inSniMode");
       if (!input) return;
+      if (sniModeEl && sniModeEl.disabled) {
+        input.value = "";
+        input.disabled = true;
+        input.placeholder = "sni disabled";
+        return;
+      }
       if (mode === "none") {
         input.value = "";
         input.disabled = true;
@@ -1401,6 +1412,13 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
     }
     function resetInboundCreateDefaults() {
+      editingInboundID = "";
+      editingInboundVersion = "";
+      editingInboundEnabled = true;
+      const createBtn = document.getElementById("createInboundBtn");
+      if (createBtn) createBtn.textContent = "create inbound";
+      const cancelBtn = document.getElementById("cancelInboundEditBtn");
+      if (cancelBtn) cancelBtn.classList.add("hidden");
       const sniMode = document.getElementById("inSniMode");
       if (sniMode) sniMode.value = "none";
       const sni = document.getElementById("inSni");
@@ -1410,6 +1428,66 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       updateInboundDomainFromNode(true);
       updateInboundCreateFieldVisibility(true);
       updateInboundSniInputState();
+    }
+    function beginInboundEdit(inbound) {
+      if (!inbound || !inbound.ID) return;
+      editingInboundID = String(inbound.ID || "").trim();
+      editingInboundVersion = String(inbound.Version || "").trim();
+      editingInboundEnabled = !!inbound.Enabled;
+      document.getElementById("inType").value = String(inbound.Type || "vless").trim() || "vless";
+      updateInboundCreateFieldVisibility(true);
+      const transportEl = document.getElementById("inTransport");
+      if (transportEl) {
+        const nextTransport = String(inbound.Transport || "").trim().toLowerCase();
+        if (nextTransport && Array.from(transportEl.options).some((o) => o.value === nextTransport)) {
+          transportEl.value = nextTransport;
+        }
+      }
+      const engineEl = document.getElementById("inEngine");
+      if (engineEl) {
+        const nextEngine = String(inbound.Engine || "").trim();
+        if (nextEngine && Array.from(engineEl.options).some((o) => o.value === nextEngine)) {
+          engineEl.value = nextEngine;
+        } else {
+          engineEl.value = "";
+        }
+      }
+      const nodeEl = document.getElementById("inNode");
+      if (nodeEl) {
+        const nextNodeID = String(inbound.NodeID || "").trim();
+        if (nextNodeID && Array.from(nodeEl.options).some((o) => o.value === nextNodeID)) {
+          nodeEl.value = nextNodeID;
+        }
+      }
+      document.getElementById("inDomain").value = String(inbound.Domain || "").trim();
+      document.getElementById("inPort").value = String(inbound.Port || "").trim();
+      document.getElementById("inPath").value = String(inbound.Path || "").trim();
+      const sni = String(inbound.SNI || "").trim();
+      const sniModeEl = document.getElementById("inSniMode");
+      const sniEl = document.getElementById("inSni");
+      if (sniModeEl && !sniModeEl.disabled) {
+        const domain = String(inbound.Domain || "").trim();
+        if (!sni) {
+          sniModeEl.value = "none";
+          if (sniEl) sniEl.value = "";
+        } else if (domain && sni === domain) {
+          sniModeEl.value = "domain";
+          if (sniEl) sniEl.value = "";
+        } else if (inboundSniOptions.includes(sni)) {
+          sniModeEl.value = "list";
+          if (sniEl) sniEl.value = sni;
+        } else {
+          sniModeEl.value = "custom";
+          if (sniEl) sniEl.value = sni;
+        }
+      } else if (sniEl) {
+        sniEl.value = "";
+      }
+      updateInboundCreateFieldVisibility(false);
+      const createBtn = document.getElementById("createInboundBtn");
+      if (createBtn) createBtn.textContent = "save inbound";
+      const cancelBtn = document.getElementById("cancelInboundEditBtn");
+      if (cancelBtn) cancelBtn.classList.remove("hidden");
     }
     function refreshInboundSniList(nodes, inbounds) {
       const presets = (snapshot && Array.isArray(snapshot.SNIPresets)) ? snapshot.SNIPresets : [];
@@ -1444,7 +1522,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const type = (document.getElementById("inType").value || "").trim().toLowerCase();
       const transportSel = document.getElementById("inTransport");
       const pathEl = document.getElementById("inPath");
-      if (!transportSel || !pathEl) return;
+      const sniModeEl = document.getElementById("inSniMode");
+      const sniEl = document.getElementById("inSni");
+      if (!transportSel || !pathEl || !sniModeEl || !sniEl) return;
 
       if (type === "hysteria2") {
         setTransportOptions(["udp"]);
@@ -1466,6 +1546,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         if (transport === "ws") pathEl.value = "/ws";
         if (transport === "grpc") pathEl.value = "grpc";
         if (transport === "xhttp") pathEl.value = "/xhttp";
+      }
+      const sniSupported = type === "vless" || type === "hysteria2";
+      sniModeEl.classList.toggle("hidden", !sniSupported);
+      sniEl.classList.toggle("hidden", !sniSupported);
+      sniModeEl.disabled = !sniSupported;
+      if (!sniSupported) {
+        sniModeEl.value = "none";
+        sniEl.value = "";
       }
       updateInboundPortSuggestion(!!forcePort);
       updateInboundSniInputState();
@@ -1732,11 +1820,21 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           '<td>'+esc(i.Domain)+'</td>' +
           '<td>'+esc(i.Port)+'</td>' +
           '<td class="row">' +
+            '<button class="btn secondary" data-inbound-edit-id="'+esc(i.ID)+'">edit</button>' +
             '<button class="btn '+(i.Enabled ? 'warn' : '')+'" data-inbound-toggle-id="'+esc(i.ID)+'" data-inbound-toggle-version="'+esc(i.Version)+'" data-inbound-enabled="'+(i.Enabled ? '1' : '0')+'">'+(i.Enabled ? 'disable' : 'enable')+'</button>' +
             '<button class="btn err" data-inbound-id="'+esc(i.ID)+'" data-inbound-version="'+esc(i.Version)+'">delete</button>' +
           '</td>' +
         '</tr>'
       )).join("");
+      document.querySelectorAll("[data-inbound-edit-id]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const inboundID = (btn.getAttribute("data-inbound-edit-id") || "").trim();
+          if (!inboundID) return;
+          const selected = inbounds.find((item) => String(item.ID || "").trim() === inboundID);
+          if (!selected) return;
+          beginInboundEdit(selected);
+        });
+      });
       document.querySelectorAll("[data-inbound-toggle-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           try {
@@ -1933,6 +2031,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       let port = (document.getElementById("inPort").value || "").trim();
       const path = (document.getElementById("inPath").value || "").trim();
       const sniMode = (document.getElementById("inSniMode").value || "none").trim();
+      const tls = String(type || "").trim().toLowerCase() === "hysteria2" ? "1" : "0";
       let sni = "";
       if (sniMode === "domain") {
         sni = domain;
@@ -1952,8 +2051,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
       if (!type || !transport || !nodeID || !domain || !port) return;
       try {
-        await postForm(cfg.inboundsActionPath, {
-          op: "create",
+        const isEdit = !!editingInboundID;
+        const payload = {
+          op: isEdit ? "update" : "create",
           type,
           transport,
           engine,
@@ -1962,12 +2062,21 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           port,
           path,
           sni,
-          enabled: "1",
-        });
+          tls,
+          enabled: editingInboundID ? (editingInboundEnabled ? "1" : "0") : "1",
+        };
+        if (isEdit) {
+          payload.inbound_id = editingInboundID;
+          payload.version = editingInboundVersion;
+        }
+        await postForm(cfg.inboundsActionPath, payload);
         resetInboundCreateDefaults();
       } catch (e) {
         showOp("error", String(e));
       }
+    });
+    document.getElementById("cancelInboundEditBtn").addEventListener("click", () => {
+      resetInboundCreateDefaults();
     });
     document.getElementById("attachCredBtn").addEventListener("click", async () => {
       const userID = (document.getElementById("credUser").value || "").trim();
@@ -4670,6 +4779,9 @@ func panelInboundFromForm(r *http.Request, base domain.Inbound) (domain.Inbound,
 	base.Domain = domainName
 	base.Port = port
 	base.TLSEnabled = panelFormBool(r.FormValue("tls"))
+	if base.Type == domain.ProtocolHysteria2 {
+		base.TLSEnabled = true
+	}
 	base.Transport = transport
 	base.Path = path
 	base.SNI = sni
