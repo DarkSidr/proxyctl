@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -2821,20 +2822,38 @@ func expandHomePath(path string) (string, error) {
 		return "", nil
 	}
 	if value == "~" {
-		home, err := os.UserHomeDir()
+		home, err := resolveCurrentHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("resolve home dir: %w", err)
 		}
 		return home, nil
 	}
 	if strings.HasPrefix(value, "~/") {
-		home, err := os.UserHomeDir()
+		home, err := resolveCurrentHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("resolve home dir: %w", err)
 		}
 		return filepath.Join(home, value[2:]), nil
 	}
 	return value, nil
+}
+
+func resolveCurrentHomeDir() (string, error) {
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return strings.TrimSpace(home), nil
+	}
+	if envHome := strings.TrimSpace(os.Getenv("HOME")); envHome != "" {
+		return envHome, nil
+	}
+	current, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	home := strings.TrimSpace(current.HomeDir)
+	if home == "" {
+		return "", fmt.Errorf("$HOME is not defined")
+	}
+	return home, nil
 }
 
 func runWizardSSHCopyID(cmd *cobra.Command, out io.Writer, nodes []domain.Node, sshUser string, sshPort int, sshKeyPath string, strictHostKey bool) error {

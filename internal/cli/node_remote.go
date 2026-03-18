@@ -552,10 +552,34 @@ func runRemoteExecCombined(ctx context.Context, binary string, args []string, ss
 		return runExecCombined(ctx, binary, args...)
 	}
 	if _, err := lookPath("sshpass"); err != nil {
-		return nil, fmt.Errorf("ssh password auth requested, but sshpass is not installed (install: apt-get update && apt-get install -y sshpass): %w", err)
+		if installErr := ensureSSHPassInstalled(ctx); installErr != nil {
+			return nil, fmt.Errorf("ssh password auth requested, but sshpass is not installed (install: apt-get update && apt-get install -y sshpass): %w", installErr)
+		}
 	}
 	sshpassArgs := make([]string, 0, len(args)+3)
 	sshpassArgs = append(sshpassArgs, "-p", password, binary)
 	sshpassArgs = append(sshpassArgs, args...)
 	return runExecCombined(ctx, "sshpass", sshpassArgs...)
+}
+
+func ensureSSHPassInstalled(ctx context.Context) error {
+	if _, err := lookPath("sshpass"); err == nil {
+		return nil
+	}
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("sshpass missing and panel process is not running as root")
+	}
+	if _, err := lookPath("apt-get"); err != nil {
+		return fmt.Errorf("sshpass missing and apt-get is not available")
+	}
+	if out, err := runExecCombined(ctx, "apt-get", "update"); err != nil {
+		return fmt.Errorf("apt-get update failed: %w | %s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := runExecCombined(ctx, "apt-get", "install", "-y", "sshpass"); err != nil {
+		return fmt.Errorf("apt-get install sshpass failed: %w | %s", err, strings.TrimSpace(string(out)))
+	}
+	if _, err := lookPath("sshpass"); err != nil {
+		return fmt.Errorf("sshpass still not found in PATH after install")
+	}
+	return nil
 }
