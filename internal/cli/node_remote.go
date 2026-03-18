@@ -340,6 +340,66 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 	}, nil
 }
 
+func cleanupSingleNodeRuntime(ctx context.Context, node domain.Node, opts nodeSyncOptions, appCfg config.AppConfig) (nodeSyncResult, error) {
+	host := strings.TrimSpace(node.Host)
+	if host == "" {
+		return nodeSyncResult{}, fmt.Errorf("node %q has empty host", node.ID)
+	}
+
+	target := fmt.Sprintf("%s@%s", opts.sshUser, host)
+	prefix := ""
+	if opts.remoteUseSudo {
+		prefix = "sudo "
+	}
+
+	cleanupCmdParts := []string{
+		"set -e",
+		prefix + "mkdir -p " + shellQuote(opts.runtimeDir),
+		prefix + "rm -f " + shellQuote(filepath.Join(opts.runtimeDir, "sing-box.json")),
+		prefix + "rm -f " + shellQuote(filepath.Join(opts.runtimeDir, "xray.json")),
+		prefix + "rm -f " + shellQuote(filepath.Join(opts.runtimeDir, syncedInboundsFileName)),
+	}
+	cleanupCmd := strings.Join(cleanupCmdParts, "; ")
+
+	sshArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
+	sshArgs = append(sshArgs, target, cleanupCmd)
+	if out, err := runExecCombined(ctx, "ssh", sshArgs...); err != nil {
+		return nodeSyncResult{}, fmt.Errorf("cleanup runtime configs on node %q (%s): %w\n%s", node.ID, host, err, strings.TrimSpace(string(out)))
+	}
+
+	stoppedUnits := make([]string, 0, 2)
+	if opts.restart {
+		units := []string{}
+		if strings.TrimSpace(appCfg.Runtime.SingBoxUnit) != "" {
+			units = append(units, strings.TrimSpace(appCfg.Runtime.SingBoxUnit))
+		}
+		if strings.TrimSpace(appCfg.Runtime.XrayUnit) != "" {
+			units = append(units, strings.TrimSpace(appCfg.Runtime.XrayUnit))
+		}
+		sort.Strings(units)
+		for _, unit := range units {
+			stopCmd := strings.TrimSpace(prefix + "systemctl stop " + shellQuote(unit))
+			sshStopArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
+			sshStopArgs = append(sshStopArgs, target, stopCmd)
+			if out, err := runExecCombined(ctx, "ssh", sshStopArgs...); err != nil {
+				return nodeSyncResult{}, fmt.Errorf("stop unit %q on node %q (%s): %w\n%s", unit, node.ID, host, err, strings.TrimSpace(string(out)))
+			}
+			stoppedUnits = append(stoppedUnits, unit)
+		}
+	}
+
+	return nodeSyncResult{
+		NodeID: node.ID,
+		Host:   host,
+		Uploaded: []string{
+			filepath.Join(opts.runtimeDir, "sing-box.json") + " (removed)",
+			filepath.Join(opts.runtimeDir, "xray.json") + " (removed)",
+			filepath.Join(opts.runtimeDir, syncedInboundsFileName) + " (removed)",
+		},
+		Restart: stoppedUnits,
+	}, nil
+}
+
 func requiredRuntimeUnits(req renderer.BuildRequest, appCfg config.AppConfig) []string {
 	required := map[domain.Engine]bool{}
 	for _, inbound := range req.Inbounds {

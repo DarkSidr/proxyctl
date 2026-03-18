@@ -30,6 +30,7 @@ import (
 	"proxyctl/internal/config"
 	"proxyctl/internal/domain"
 	"proxyctl/internal/engine"
+	"proxyctl/internal/renderer"
 	subscriptionservice "proxyctl/internal/subscription/service"
 )
 
@@ -3281,6 +3282,238 @@ func panelSummarizeOutput(out string) string {
 	return strings.Join(parts, " | ")
 }
 
+type panelNodeSyncSettings struct {
+	enabled bool
+	opts    nodeSyncOptions
+}
+
+const (
+	panelEnvAutoNodeSyncEnabled = "PROXYCTL_PANEL_AUTO_NODE_SYNC"
+	panelEnvAutoNodeSyncUser    = "PROXYCTL_PANEL_NODE_SYNC_SSH_USER"
+	panelEnvAutoNodeSyncPort    = "PROXYCTL_PANEL_NODE_SYNC_SSH_PORT"
+	panelEnvAutoNodeSyncKey     = "PROXYCTL_PANEL_NODE_SYNC_SSH_KEY"
+	panelEnvAutoNodeSyncRuntime = "PROXYCTL_PANEL_NODE_SYNC_RUNTIME_DIR"
+	panelEnvAutoNodeSyncStrict  = "PROXYCTL_PANEL_NODE_SYNC_STRICT_HOST_KEY"
+	panelEnvAutoNodeSyncSudo    = "PROXYCTL_PANEL_NODE_SYNC_REMOTE_SUDO"
+	panelEnvAutoNodeSyncRestart = "PROXYCTL_PANEL_NODE_SYNC_RESTART"
+)
+
+func panelNodeSyncSettingsFromEnv() (panelNodeSyncSettings, error) {
+	enabled, err := panelEnvBool(panelEnvAutoNodeSyncEnabled, true)
+	if err != nil {
+		return panelNodeSyncSettings{}, err
+	}
+	sshUser := strings.TrimSpace(os.Getenv(panelEnvAutoNodeSyncUser))
+	if sshUser == "" {
+		sshUser = "root"
+	}
+	sshPort, err := panelEnvInt(panelEnvAutoNodeSyncPort, 22)
+	if err != nil {
+		return panelNodeSyncSettings{}, err
+	}
+	if sshPort < 1 || sshPort > 65535 {
+		return panelNodeSyncSettings{}, fmt.Errorf("%s must be in range 1..65535", panelEnvAutoNodeSyncPort)
+	}
+	runtimeDir := strings.TrimSpace(os.Getenv(panelEnvAutoNodeSyncRuntime))
+	if runtimeDir == "" {
+		runtimeDir = "/etc/proxy-orchestrator/runtime"
+	}
+	strictHostKey, err := panelEnvBool(panelEnvAutoNodeSyncStrict, false)
+	if err != nil {
+		return panelNodeSyncSettings{}, err
+	}
+	restart, err := panelEnvBool(panelEnvAutoNodeSyncRestart, true)
+	if err != nil {
+		return panelNodeSyncSettings{}, err
+	}
+	defaultUseSudo := sshUser != "root"
+	remoteUseSudo, err := panelEnvBool(panelEnvAutoNodeSyncSudo, defaultUseSudo)
+	if err != nil {
+		return panelNodeSyncSettings{}, err
+	}
+
+	sshKeyPath := ""
+	rawKeyPath, keyConfigured := os.LookupEnv(panelEnvAutoNodeSyncKey)
+	if !keyConfigured {
+		rawKeyPath = "~/.ssh/id_ed25519"
+	}
+	rawKeyPath = strings.TrimSpace(rawKeyPath)
+	if rawKeyPath != "" {
+		resolvedKeyPath, resolveErr := expandHomePath(rawKeyPath)
+		if resolveErr != nil {
+			return panelNodeSyncSettings{}, fmt.Errorf("resolve %s: %w", panelEnvAutoNodeSyncKey, resolveErr)
+		}
+		if keyConfigured {
+			sshKeyPath = resolvedKeyPath
+		} else if _, statErr := os.Stat(resolvedKeyPath); statErr == nil {
+			sshKeyPath = resolvedKeyPath
+		}
+	}
+
+	return panelNodeSyncSettings{
+		enabled: enabled,
+		opts: nodeSyncOptions{
+			sshUser:       sshUser,
+			sshPort:       sshPort,
+			sshKeyPath:    sshKeyPath,
+			runtimeDir:    runtimeDir,
+			restart:       restart,
+			strictHostKey: strictHostKey,
+			remoteUseSudo: remoteUseSudo,
+		},
+	}, nil
+}
+
+func panelEnvBool(key string, fallback bool) (bool, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s has invalid boolean value %q", key, raw)
+	}
+}
+
+func panelEnvInt(key string, fallback int) (int, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a valid integer: %w", key, err)
+	}
+	return value, nil
+}
+
+func panelSyncWorkerNodesByIDs(ctx context.Context, dbPath, configPath string, nodeIDs []string) (int, int, error) {
+	settings, err := panelNodeSyncSettingsFromEnv()
+	if err != nil {
+		return 0, 0, err
+	}
+	if !settings.enabled {
+		return 0, 0, nil
+	}
+	if _, err := lookPath("ssh"); err != nil {
+		return 0, 0, fmt.Errorf("ssh client is required for panel node sync: %w", err)
+	}
+
+	appCfg, err := config.Load(configPath)
+	if err != nil {
+		return 0, 0, err
+	}
+	store, err := openStoreWithInit(ctx, dbPath)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer store.Close()
+
+	nodes, err := store.Nodes().List(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list nodes: %w", err)
+	}
+	inbounds, err := store.Inbounds().List(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list inbounds: %w", err)
+	}
+	credentials, err := store.Credentials().List(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list credentials: %w", err)
+	}
+
+	filter := make(map[string]struct{}, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		id := strings.TrimSpace(nodeID)
+		if id == "" {
+			continue
+		}
+		filter[id] = struct{}{}
+	}
+
+	inboundsByNode := make(map[string][]domain.Inbound, len(nodes))
+	for _, inbound := range inbounds {
+		if !inbound.Enabled {
+			continue
+		}
+		inboundsByNode[inbound.NodeID] = append(inboundsByNode[inbound.NodeID], inbound)
+	}
+	credentialsByInbound := make(map[string][]domain.Credential, len(inbounds))
+	for _, cred := range credentials {
+		credentialsByInbound[strings.TrimSpace(cred.InboundID)] = append(credentialsByInbound[strings.TrimSpace(cred.InboundID)], cred)
+	}
+
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	synced := 0
+	cleaned := 0
+	targeted := 0
+	for _, node := range nodes {
+		if !node.Enabled || node.Role != domain.NodeRoleNode {
+			continue
+		}
+		if len(filter) > 0 {
+			if _, ok := filter[node.ID]; !ok {
+				continue
+			}
+		}
+		targeted++
+
+		nodeInbounds := append([]domain.Inbound(nil), inboundsByNode[node.ID]...)
+		sort.Slice(nodeInbounds, func(i, j int) bool { return nodeInbounds[i].ID < nodeInbounds[j].ID })
+		if len(nodeInbounds) == 0 {
+			if _, err := cleanupSingleNodeRuntime(ctx, node, settings.opts, appCfg); err != nil {
+				return synced, cleaned, err
+			}
+			cleaned++
+			continue
+		}
+		nodeCredentials := make([]domain.Credential, 0)
+		for _, inbound := range nodeInbounds {
+			nodeCredentials = append(nodeCredentials, credentialsByInbound[inbound.ID]...)
+		}
+		sort.Slice(nodeCredentials, func(i, j int) bool { return nodeCredentials[i].ID < nodeCredentials[j].ID })
+		if _, err := lookPath("scp"); err != nil {
+			return synced, cleaned, fmt.Errorf("scp client is required for panel node sync: %w", err)
+		}
+
+		if _, err := syncSingleNode(ctx, renderer.BuildRequest{
+			Node:        node,
+			Inbounds:    nodeInbounds,
+			Credentials: nodeCredentials,
+		}, settings.opts, appCfg); err != nil {
+			return synced, cleaned, err
+		}
+		synced++
+	}
+	if len(filter) > 0 && targeted == 0 {
+		return synced, cleaned, fmt.Errorf("no enabled worker nodes found for requested IDs")
+	}
+	return synced, cleaned, nil
+}
+
+func panelCleanupNodeRuntime(ctx context.Context, configPath string, node domain.Node) error {
+	settings, err := panelNodeSyncSettingsFromEnv()
+	if err != nil {
+		return err
+	}
+	if !settings.enabled {
+		return nil
+	}
+	if _, err := lookPath("ssh"); err != nil {
+		return fmt.Errorf("ssh client is required for node cleanup: %w", err)
+	}
+	appCfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	_, err = cleanupSingleNodeRuntime(ctx, node, settings.opts, appCfg)
+	return err
+}
+
 func panelHandleUserAction(ctx context.Context, dbPath string, r *http.Request, ops *panelOperationFeed) error {
 	if err := r.ParseForm(); err != nil {
 		return fmt.Errorf("invalid user action request")
@@ -3375,6 +3608,13 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 		if err != nil {
 			return fmt.Errorf("create inbound: %w", err)
 		}
+		if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{created.NodeID}); syncErr != nil {
+			ops.set("error", fmt.Sprintf("inbound created (%s), but node sync failed: %v", created.ID, syncErr))
+			return nil
+		} else if synced > 0 || cleaned > 0 {
+			ops.set("ok", fmt.Sprintf("inbound created: %s (%s:%d) | node sync: synced=%d cleaned=%d", created.ID, created.Domain, created.Port, synced, cleaned))
+			return nil
+		}
 		ops.set("ok", fmt.Sprintf("inbound created: %s (%s:%d)", created.ID, created.Domain, created.Port))
 		return nil
 	case "set_enabled":
@@ -3406,6 +3646,17 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 		stored, err := store.Inbounds().Update(ctx, current)
 		if err != nil {
 			return fmt.Errorf("set inbound enabled: %w", err)
+		}
+		if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{stored.NodeID}); syncErr != nil {
+			ops.set("error", fmt.Sprintf("inbound state updated (%s), but node sync failed: %v", stored.ID, syncErr))
+			return nil
+		} else if synced > 0 || cleaned > 0 {
+			state := "disabled"
+			if stored.Enabled {
+				state = "enabled"
+			}
+			ops.set("ok", fmt.Sprintf("inbound %s: %s | node sync: synced=%d cleaned=%d", state, stored.ID, synced, cleaned))
+			return nil
 		}
 		state := "disabled"
 		if stored.Enabled {
@@ -3447,9 +3698,22 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 			if !deleted {
 				return fmt.Errorf("inbound %q not found", inboundID)
 			}
+			synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{current.NodeID})
 			out, refreshErr := panelRefreshAllSubscriptions(ctx, configPath, dbPathFlag)
+			if syncErr != nil && refreshErr != nil {
+				ops.set("error", fmt.Sprintf("inbound deleted (%s), but node sync failed: %v; subscription refresh failed: %s", inboundID, syncErr, panelErrWithOutput(refreshErr, out)))
+				return nil
+			}
+			if syncErr != nil {
+				ops.set("error", fmt.Sprintf("inbound deleted (%s), subscriptions refreshed: %s, but node sync failed: %v", inboundID, panelSummarizeOutput(out), syncErr))
+				return nil
+			}
 			if refreshErr != nil {
 				ops.set("error", fmt.Sprintf("inbound deleted (%s), but subscription refresh failed: %s", inboundID, panelErrWithOutput(refreshErr, out)))
+				return nil
+			}
+			if synced > 0 || cleaned > 0 {
+				ops.set("ok", fmt.Sprintf("inbound deleted: %s | subscriptions refreshed: %s | node sync: synced=%d cleaned=%d", inboundID, panelSummarizeOutput(out), synced, cleaned))
 				return nil
 			}
 			ops.set("ok", fmt.Sprintf("inbound deleted: %s | subscriptions refreshed: %s", inboundID, panelSummarizeOutput(out)))
@@ -3481,6 +3745,13 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 		stored, err := store.Inbounds().Update(ctx, updated)
 		if err != nil {
 			return fmt.Errorf("update inbound: %w", err)
+		}
+		if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{stored.NodeID}); syncErr != nil {
+			ops.set("error", fmt.Sprintf("inbound updated (%s), but node sync failed: %v", stored.ID, syncErr))
+			return nil
+		} else if synced > 0 || cleaned > 0 {
+			ops.set("ok", fmt.Sprintf("inbound updated: %s (%s:%d) | node sync: synced=%d cleaned=%d", stored.ID, stored.Domain, stored.Port, synced, cleaned))
+			return nil
 		}
 		ops.set("ok", fmt.Sprintf("inbound updated: %s (%s:%d)", stored.ID, stored.Domain, stored.Port))
 		return nil
@@ -3557,6 +3828,11 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		}
 
 		if action == "delete" {
+			if current.Role == domain.NodeRoleNode {
+				if cleanupErr := panelCleanupNodeRuntime(ctx, strings.TrimSpace(*configPath), current); cleanupErr != nil {
+					return fmt.Errorf("cleanup node runtime before delete: %w", cleanupErr)
+				}
+			}
 			deleted, err := store.Nodes().Delete(ctx, nodeID)
 			if err != nil {
 				return fmt.Errorf("delete node: %w", err)
@@ -3569,10 +3845,15 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 				ops.set("error", fmt.Sprintf("node deleted (%s), but subscription refresh failed: %s", nodeID, panelErrWithOutput(refreshErr, out)))
 				return nil
 			}
+			if current.Role == domain.NodeRoleNode {
+				ops.set("ok", fmt.Sprintf("node deleted: %s | remote runtime cleaned | subscriptions refreshed: %s", nodeID, panelSummarizeOutput(out)))
+				return nil
+			}
 			ops.set("ok", fmt.Sprintf("node deleted: %s | subscriptions refreshed: %s", nodeID, panelSummarizeOutput(out)))
 			return nil
 		}
 		if action == "update" {
+			prevRole := current.Role
 			name := strings.TrimSpace(r.FormValue("name"))
 			host := strings.TrimSpace(r.FormValue("host"))
 			roleRaw := strings.ToLower(strings.TrimSpace(r.FormValue("role")))
@@ -3593,6 +3874,23 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			if err != nil {
 				return fmt.Errorf("update node: %w", err)
 			}
+			if updated.Role == domain.NodeRoleNode && updated.Enabled {
+				if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{updated.ID}); syncErr != nil {
+					ops.set("error", fmt.Sprintf("node updated (%s), but node sync failed: %v", updated.ID, syncErr))
+					return nil
+				} else if synced > 0 || cleaned > 0 {
+					ops.set("ok", fmt.Sprintf("node updated: %s (%s) | node sync: synced=%d cleaned=%d", updated.Name, updated.Host, synced, cleaned))
+					return nil
+				}
+			}
+			if prevRole == domain.NodeRoleNode && (updated.Role != domain.NodeRoleNode || !updated.Enabled) {
+				if cleanupErr := panelCleanupNodeRuntime(ctx, strings.TrimSpace(*configPath), updated); cleanupErr != nil {
+					ops.set("error", fmt.Sprintf("node updated (%s), but runtime cleanup failed: %v", updated.ID, cleanupErr))
+					return nil
+				}
+				ops.set("ok", fmt.Sprintf("node updated: %s (%s) | remote runtime cleaned", updated.Name, updated.Host))
+				return nil
+			}
 			ops.set("ok", fmt.Sprintf("node updated: %s (%s)", updated.Name, updated.Host))
 			return nil
 		}
@@ -3601,6 +3899,23 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		updated, err := store.Nodes().Update(ctx, current)
 		if err != nil {
 			return fmt.Errorf("set node enabled: %w", err)
+		}
+		if updated.Enabled && updated.Role == domain.NodeRoleNode {
+			if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{updated.ID}); syncErr != nil {
+				ops.set("error", fmt.Sprintf("node enabled (%s), but node sync failed: %v", updated.ID, syncErr))
+				return nil
+			} else if synced > 0 || cleaned > 0 {
+				ops.set("ok", fmt.Sprintf("node enabled: %s | node sync: synced=%d cleaned=%d", updated.Name, synced, cleaned))
+				return nil
+			}
+		}
+		if !updated.Enabled && updated.Role == domain.NodeRoleNode {
+			if cleanupErr := panelCleanupNodeRuntime(ctx, strings.TrimSpace(*configPath), updated); cleanupErr != nil {
+				ops.set("error", fmt.Sprintf("node disabled (%s), but runtime cleanup failed: %v", updated.ID, cleanupErr))
+				return nil
+			}
+			ops.set("ok", fmt.Sprintf("node disabled: %s | remote runtime cleaned", updated.Name))
+			return nil
 		}
 		state := "disabled"
 		if updated.Enabled {
