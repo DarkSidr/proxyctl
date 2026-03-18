@@ -4316,6 +4316,10 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			return fmt.Errorf("node %q changed since page load; refresh and retry", nodeID)
 		}
 		if action == "test" {
+			if current.Role == domain.NodeRolePrimary {
+				ops.set("ok", fmt.Sprintf("node test ok: %s (%s) | primary node: local control-plane check (ssh skipped)", current.Name, current.Host))
+				return nil
+			}
 			if testErr := panelTestNodeConnectivity(ctx, current); testErr != nil {
 				ops.set("error", fmt.Sprintf("node test failed: %s (%s) | %v", current.Name, current.Host, testErr))
 				return nil
