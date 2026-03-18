@@ -42,19 +42,28 @@ type panelUnitState struct {
 }
 
 type panelInboundView struct {
-	ID        string
-	Type      string
-	Engine    string
-	NodeID    string
-	NodeName  string
-	Domain    string
-	Port      int
-	TLS       bool
-	Enabled   bool
-	Transport string
-	Path      string
-	SNI       string
-	Version   string
+	ID                 string
+	Type               string
+	Engine             string
+	NodeID             string
+	NodeName           string
+	Domain             string
+	Port               int
+	TLS                bool
+	Enabled            bool
+	Transport          string
+	Path               string
+	SNI                string
+	RealityEnabled     bool
+	RealityPublicKey   string
+	RealityPrivateKey  string
+	RealityShortID     string
+	RealityFingerprint string
+	RealitySpiderX     string
+	RealityServer      string
+	RealityServerPort  int
+	VLESSFlow          string
+	Version            string
 }
 
 type panelUserView struct {
@@ -1036,20 +1045,49 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           <option value="sing-box">sing-box</option>
           <option value="xray">xray</option>
         </select>
+        <select id="inMode">
+          <option value="basic">mode: basic</option>
+          <option value="advanced">mode: advanced</option>
+        </select>
         <select id="inNode"></select>
         <input id="inDomain" type="text" placeholder="domain">
         <input id="inPort" type="number" min="1" max="65535" placeholder="port">
         <input id="inPath" type="text" placeholder="path (optional)">
-        <select id="inSniMode">
-          <option value="none">sni: none</option>
-          <option value="list">sni: from list</option>
-          <option value="domain">sni: same as domain</option>
-          <option value="custom">sni: custom</option>
+        <select id="inSecurityMode">
+          <option value="none">security: none</option>
+          <option value="tls">security: tls</option>
+          <option value="reality">security: reality</option>
         </select>
+        <input id="inTarget" type="text" list="inTargetList" placeholder="target">
+        <label id="inLinkWrap" class="row" style="gap:4px">
+          <input id="inLinkTargetSni" type="checkbox" checked>
+          <span class="label">target -> sni</span>
+        </label>
         <input id="inSni" type="text" list="inSniList" placeholder="sni value">
+        <datalist id="inTargetList"></datalist>
         <datalist id="inSniList"></datalist>
         <button id="createInboundBtn" class="btn">create inbound</button>
         <button id="cancelInboundEditBtn" type="button" class="btn secondary hidden">cancel edit</button>
+      </div>
+      <div id="inAdvancedBlock" class="pad row hidden">
+        <select id="inBrowserPreset">
+          <option value="">browser preset: custom</option>
+          <option value="chrome">chrome</option>
+          <option value="firefox">firefox</option>
+          <option value="safari">safari</option>
+        </select>
+        <input id="inRealityServer" type="text" placeholder="reality target host (dest)">
+        <input id="inRealityServerPort" type="number" min="1" max="65535" placeholder="reality target port">
+        <select id="inRealityFingerprint">
+          <option value="chrome">fingerprint: chrome</option>
+          <option value="firefox">fingerprint: firefox</option>
+          <option value="safari">fingerprint: safari</option>
+        </select>
+        <input id="inRealityPublicKey" type="text" placeholder="reality public key">
+        <input id="inRealityPrivateKey" type="text" placeholder="reality private key">
+        <input id="inRealityShortID" type="text" placeholder="reality short id">
+        <input id="inRealitySpiderX" type="text" placeholder="reality spiderX (optional)">
+        <input id="inVlessFlow" type="text" placeholder="vless flow (default xtls-rprx-vision)">
       </div>
       <div class="table-wrap">
         <table>
@@ -1176,6 +1214,12 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     let editingInboundID = "";
     let editingInboundVersion = "";
     let editingInboundEnabled = true;
+    let inboundSniManualOverride = false;
+    const browserPresetDefaults = {
+      chrome: { target: "www.google.com", fingerprint: "chrome" },
+      firefox: { target: "www.mozilla.org", fingerprint: "firefox" },
+      safari: { target: "www.apple.com", fingerprint: "safari" },
+    };
     let liveTimer = null;
     let liveBusy = false;
     const STORAGE_KEY_LIVE_INTERVAL = "proxyctl.app.liveIntervalMs";
@@ -1369,32 +1413,63 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         portEl.value = String(suggested);
       }
     }
+    function updateInboundTargetToSni(force) {
+      const targetEl = document.getElementById("inTarget");
+      const sniEl = document.getElementById("inSni");
+      const linkEl = document.getElementById("inLinkTargetSni");
+      if (!targetEl || !sniEl || !linkEl) return;
+      const linked = !!linkEl.checked;
+      const target = (targetEl.value || "").trim();
+      if (!linked || (!force && inboundSniManualOverride)) return;
+      sniEl.value = target;
+      if (force) inboundSniManualOverride = false;
+    }
+    function updateInboundAdvancedVisibility() {
+      const mode = (document.getElementById("inMode")?.value || "basic").trim().toLowerCase();
+      const sec = document.getElementById("inSecurityMode");
+      const adv = document.getElementById("inAdvancedBlock");
+      if (adv) adv.classList.toggle("hidden", mode !== "advanced");
+      const type = (document.getElementById("inType")?.value || "").trim().toLowerCase();
+      if (sec) {
+        if (type === "hysteria2") {
+          sec.value = "tls";
+          sec.disabled = true;
+        } else if (type === "xhttp") {
+          if (sec.value === "reality") sec.value = "tls";
+          sec.disabled = false;
+        } else {
+          sec.disabled = false;
+        }
+      }
+    }
+    function applyBrowserPreset() {
+      const preset = (document.getElementById("inBrowserPreset")?.value || "").trim().toLowerCase();
+      if (!preset || !browserPresetDefaults[preset]) return;
+      const data = browserPresetDefaults[preset];
+      const targetEl = document.getElementById("inTarget");
+      if (targetEl && !(targetEl.value || "").trim()) targetEl.value = data.target;
+      const fpEl = document.getElementById("inRealityFingerprint");
+      if (fpEl) fpEl.value = data.fingerprint;
+      const realityServerEl = document.getElementById("inRealityServer");
+      if (realityServerEl && !(realityServerEl.value || "").trim()) realityServerEl.value = data.target;
+      updateInboundTargetToSni(false);
+    }
     function updateInboundSniInputState() {
-      const mode = (document.getElementById("inSniMode").value || "none").trim();
-      const input = document.getElementById("inSni");
-      const sniModeEl = document.getElementById("inSniMode");
-      if (!input) return;
-      if (sniModeEl && sniModeEl.disabled) {
-        input.value = "";
-        input.disabled = true;
-        input.placeholder = "sni disabled";
-        return;
+      const sniEl = document.getElementById("inSni");
+      const targetEl = document.getElementById("inTarget");
+      const linkEl = document.getElementById("inLinkTargetSni");
+      if (!sniEl || !targetEl || !linkEl) return;
+      const sniSupported = !sniEl.disabled;
+      if (!sniSupported) {
+        targetEl.value = "";
+        sniEl.value = "";
+        linkEl.checked = true;
+        inboundSniManualOverride = false;
       }
-      if (mode === "none") {
-        input.value = "";
-        input.disabled = true;
-        input.placeholder = "sni disabled";
-      } else if (mode === "domain") {
-        input.value = "";
-        input.disabled = true;
-        input.placeholder = "sni = domain";
-      } else if (mode === "list") {
-        input.disabled = false;
-        input.placeholder = "pick sni from list";
-      } else {
-        input.disabled = false;
-        input.placeholder = "custom sni";
-      }
+      targetEl.disabled = !sniSupported;
+      linkEl.disabled = !sniSupported;
+      sniEl.placeholder = sniSupported ? "sni value" : "sni disabled";
+      targetEl.placeholder = sniSupported ? "target" : "target disabled";
     }
     function selectedInboundNodeHost() {
       const nodeID = (document.getElementById("inNode")?.value || "").trim();
@@ -1420,15 +1495,41 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (createBtn) createBtn.textContent = "create inbound";
       const cancelBtn = document.getElementById("cancelInboundEditBtn");
       if (cancelBtn) cancelBtn.classList.add("hidden");
-      const sniMode = document.getElementById("inSniMode");
-      if (sniMode) sniMode.value = "none";
+      const target = document.getElementById("inTarget");
+      if (target) target.value = "";
+      const link = document.getElementById("inLinkTargetSni");
+      if (link) link.checked = true;
+      inboundSniManualOverride = false;
       const sni = document.getElementById("inSni");
       if (sni) sni.value = "";
+      const mode = document.getElementById("inMode");
+      if (mode) mode.value = "basic";
+      const sec = document.getElementById("inSecurityMode");
+      if (sec) sec.value = "none";
+      const preset = document.getElementById("inBrowserPreset");
+      if (preset) preset.value = "";
+      const realityServer = document.getElementById("inRealityServer");
+      if (realityServer) realityServer.value = "";
+      const realityServerPort = document.getElementById("inRealityServerPort");
+      if (realityServerPort) realityServerPort.value = "443";
+      const realityFp = document.getElementById("inRealityFingerprint");
+      if (realityFp) realityFp.value = "chrome";
+      const realityPb = document.getElementById("inRealityPublicKey");
+      if (realityPb) realityPb.value = "";
+      const realityPr = document.getElementById("inRealityPrivateKey");
+      if (realityPr) realityPr.value = "";
+      const realitySid = document.getElementById("inRealityShortID");
+      if (realitySid) realitySid.value = "";
+      const realitySpider = document.getElementById("inRealitySpiderX");
+      if (realitySpider) realitySpider.value = "";
+      const vlessFlow = document.getElementById("inVlessFlow");
+      if (vlessFlow) vlessFlow.value = "xtls-rprx-vision";
       const path = document.getElementById("inPath");
       if (path) path.value = "";
       updateInboundDomainFromNode(true);
       updateInboundCreateFieldVisibility(true);
-      updateInboundSniInputState();
+      updateInboundTargetToSni(true);
+      updateInboundAdvancedVisibility();
     }
     function beginInboundEdit(inbound) {
       if (!inbound || !inbound.ID) return;
@@ -1464,27 +1565,42 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       document.getElementById("inPort").value = String(inbound.Port || "").trim();
       document.getElementById("inPath").value = String(inbound.Path || "").trim();
       const sni = String(inbound.SNI || "").trim();
-      const sniModeEl = document.getElementById("inSniMode");
+      const targetEl = document.getElementById("inTarget");
+      const linkEl = document.getElementById("inLinkTargetSni");
       const sniEl = document.getElementById("inSni");
-      if (sniModeEl && !sniModeEl.disabled) {
-        const domain = String(inbound.Domain || "").trim();
-        if (!sni) {
-          sniModeEl.value = "none";
-          if (sniEl) sniEl.value = "";
-        } else if (domain && sni === domain) {
-          sniModeEl.value = "domain";
-          if (sniEl) sniEl.value = "";
-        } else if (inboundSniOptions.includes(sni)) {
-          sniModeEl.value = "list";
-          if (sniEl) sniEl.value = sni;
-        } else {
-          sniModeEl.value = "custom";
-          if (sniEl) sniEl.value = sni;
-        }
-      } else if (sniEl) {
-        sniEl.value = "";
+      if (targetEl) targetEl.value = sni;
+      if (linkEl) linkEl.checked = true;
+      inboundSniManualOverride = false;
+      if (sniEl) {
+        sniEl.value = sni;
       }
+      const modeEl = document.getElementById("inMode");
+      if (modeEl) modeEl.value = inbound.RealityEnabled ? "advanced" : "basic";
+      const secEl = document.getElementById("inSecurityMode");
+      if (secEl) {
+        if (inbound.RealityEnabled) secEl.value = "reality";
+        else if (inbound.TLS) secEl.value = "tls";
+        else secEl.value = "none";
+      }
+      const realityServer = document.getElementById("inRealityServer");
+      if (realityServer) realityServer.value = String(inbound.RealityServer || "").trim();
+      const realityServerPort = document.getElementById("inRealityServerPort");
+      if (realityServerPort) realityServerPort.value = String(inbound.RealityServerPort || 443);
+      const realityFp = document.getElementById("inRealityFingerprint");
+      if (realityFp) realityFp.value = String(inbound.RealityFingerprint || "chrome").trim() || "chrome";
+      const realityPb = document.getElementById("inRealityPublicKey");
+      if (realityPb) realityPb.value = String(inbound.RealityPublicKey || "").trim();
+      const realityPr = document.getElementById("inRealityPrivateKey");
+      if (realityPr) realityPr.value = String(inbound.RealityPrivateKey || "").trim();
+      const realitySid = document.getElementById("inRealityShortID");
+      if (realitySid) realitySid.value = String(inbound.RealityShortID || "").trim();
+      const realitySpider = document.getElementById("inRealitySpiderX");
+      if (realitySpider) realitySpider.value = String(inbound.RealitySpiderX || "").trim();
+      const vlessFlow = document.getElementById("inVlessFlow");
+      if (vlessFlow) vlessFlow.value = String(inbound.VLESSFlow || "xtls-rprx-vision").trim() || "xtls-rprx-vision";
       updateInboundCreateFieldVisibility(false);
+      updateInboundTargetToSni(true);
+      updateInboundAdvancedVisibility();
       const createBtn = document.getElementById("createInboundBtn");
       if (createBtn) createBtn.textContent = "save inbound";
       const cancelBtn = document.getElementById("cancelInboundEditBtn");
@@ -1505,8 +1621,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
       inboundSniOptions = Array.from(set).sort((a, b) => a.localeCompare(b));
       const list = document.getElementById("inSniList");
-      if (!list) return;
-      list.innerHTML = inboundSniOptions.map((v) => '<option value="'+esc(v)+'"></option>').join("");
+      const targetList = document.getElementById("inTargetList");
+      const html = inboundSniOptions.map((v) => '<option value="'+esc(v)+'"></option>').join("");
+      if (list) list.innerHTML = html;
+      if (targetList) targetList.innerHTML = html;
     }
     function setTransportOptions(options) {
       const sel = document.getElementById("inTransport");
@@ -1523,19 +1641,42 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const type = (document.getElementById("inType").value || "").trim().toLowerCase();
       const transportSel = document.getElementById("inTransport");
       const pathEl = document.getElementById("inPath");
-      const sniModeEl = document.getElementById("inSniMode");
+      const engineEl = document.getElementById("inEngine");
+      const secEl = document.getElementById("inSecurityMode");
+      const targetEl = document.getElementById("inTarget");
+      const linkWrapEl = document.getElementById("inLinkWrap");
+      const linkEl = document.getElementById("inLinkTargetSni");
       const sniEl = document.getElementById("inSni");
-      if (!transportSel || !pathEl || !sniModeEl || !sniEl) return;
+      if (!transportSel || !pathEl || !engineEl || !secEl || !targetEl || !linkWrapEl || !linkEl || !sniEl) return;
+
+      if (type === "vless" && secEl.value === "reality") {
+        setTransportOptions(["tcp"]);
+        transportSel.disabled = true;
+        engineEl.value = "xray";
+        engineEl.disabled = true;
+      } else {
+        engineEl.disabled = false;
+      }
 
       if (type === "hysteria2") {
         setTransportOptions(["udp"]);
         transportSel.disabled = true;
+        secEl.value = "tls";
+        secEl.disabled = true;
       } else if (type === "xhttp") {
         setTransportOptions(["xhttp"]);
         transportSel.disabled = true;
+        if (secEl.value === "reality") secEl.value = "tls";
+        secEl.disabled = false;
       } else {
-        setTransportOptions(["tcp", "ws", "grpc"]);
-        transportSel.disabled = false;
+        if (secEl.value === "reality") {
+          setTransportOptions(["tcp"]);
+          transportSel.disabled = true;
+        } else {
+          setTransportOptions(["tcp", "ws", "grpc"]);
+          transportSel.disabled = false;
+        }
+        secEl.disabled = false;
       }
 
       const transport = (transportSel.value || "").trim().toLowerCase();
@@ -1549,15 +1690,22 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         if (transport === "xhttp") pathEl.value = "/xhttp";
       }
       const sniSupported = type === "vless" || type === "hysteria2";
-      sniModeEl.classList.toggle("hidden", !sniSupported);
+      targetEl.classList.toggle("hidden", !sniSupported);
+      linkWrapEl.classList.toggle("hidden", !sniSupported);
       sniEl.classList.toggle("hidden", !sniSupported);
-      sniModeEl.disabled = !sniSupported;
+      targetEl.disabled = !sniSupported;
+      linkEl.disabled = !sniSupported;
+      sniEl.disabled = !sniSupported;
       if (!sniSupported) {
-        sniModeEl.value = "none";
+        targetEl.value = "";
+        linkEl.checked = true;
         sniEl.value = "";
+        inboundSniManualOverride = false;
       }
       updateInboundPortSuggestion(!!forcePort);
       updateInboundSniInputState();
+      updateInboundTargetToSni(false);
+      updateInboundAdvancedVisibility();
     }
     function currentSubUserID() {
       const subUserSel = document.getElementById("subUser");
@@ -2073,24 +2221,27 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const domain = (document.getElementById("inDomain").value || "").trim();
       let port = (document.getElementById("inPort").value || "").trim();
       const path = (document.getElementById("inPath").value || "").trim();
-      const sniMode = (document.getElementById("inSniMode").value || "none").trim();
-      const tls = String(type || "").trim().toLowerCase() === "hysteria2" ? "1" : "0";
-      let sni = "";
-      if (sniMode === "domain") {
-        sni = domain;
-      } else if (sniMode === "list" || sniMode === "custom") {
-        sni = (document.getElementById("inSni").value || "").trim();
+      const target = (document.getElementById("inTarget").value || "").trim();
+      const linkTargetSni = !!document.getElementById("inLinkTargetSni")?.checked;
+      const securityMode = (document.getElementById("inSecurityMode").value || "none").trim().toLowerCase();
+      let sni = (document.getElementById("inSni").value || "").trim();
+      if (!sni && linkTargetSni && target) {
+        sni = target;
       }
+      const realityServer = (document.getElementById("inRealityServer").value || "").trim();
+      const realityServerPort = (document.getElementById("inRealityServerPort").value || "").trim();
+      const realityFingerprint = (document.getElementById("inRealityFingerprint").value || "").trim();
+      const realityPublicKey = (document.getElementById("inRealityPublicKey").value || "").trim();
+      const realityPrivateKey = (document.getElementById("inRealityPrivateKey").value || "").trim();
+      const realityShortID = (document.getElementById("inRealityShortID").value || "").trim();
+      const realitySpiderX = (document.getElementById("inRealitySpiderX").value || "").trim();
+      const vlessFlow = (document.getElementById("inVlessFlow").value || "").trim();
       if (!port) {
         const suggested = getSuggestedInboundPort(type, transport);
         if (suggested > 0) {
           port = String(suggested);
           document.getElementById("inPort").value = port;
         }
-      }
-      if (sniMode === "list" && sni && !inboundSniOptions.includes(sni)) {
-        showOp("error", "SNI from list mode: choose value from suggestions");
-        return;
       }
       if (!type || !transport || !nodeID || !domain || !port) return;
       try {
@@ -2105,7 +2256,15 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           port,
           path,
           sni,
-          tls,
+          security_mode: securityMode,
+          reality_server: realityServer,
+          reality_server_port: realityServerPort,
+          reality_fingerprint: realityFingerprint,
+          reality_public_key: realityPublicKey,
+          reality_private_key: realityPrivateKey,
+          reality_short_id: realityShortID,
+          reality_spider_x: realitySpiderX,
+          vless_flow: vlessFlow,
           enabled: editingInboundID ? (editingInboundEnabled ? "1" : "0") : "1",
         };
         if (isEdit) {
@@ -2245,16 +2404,26 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     });
     document.getElementById("inType").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
     document.getElementById("inTransport").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
-    document.getElementById("inSniMode").addEventListener("change", () => updateInboundSniInputState());
+    document.getElementById("inMode").addEventListener("change", () => updateInboundAdvancedVisibility());
+    document.getElementById("inSecurityMode").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
+    document.getElementById("inBrowserPreset").addEventListener("change", () => applyBrowserPreset());
+    document.getElementById("inTarget").addEventListener("input", () => {
+      updateInboundTargetToSni(false);
+    });
+    document.getElementById("inLinkTargetSni").addEventListener("change", () => {
+      if (document.getElementById("inLinkTargetSni").checked) {
+        inboundSniManualOverride = false;
+        updateInboundTargetToSni(true);
+      }
+    });
+    document.getElementById("inSni").addEventListener("input", () => {
+      const linked = !!document.getElementById("inLinkTargetSni")?.checked;
+      const target = (document.getElementById("inTarget")?.value || "").trim();
+      const sni = (document.getElementById("inSni")?.value || "").trim();
+      inboundSniManualOverride = linked && sni !== target;
+    });
     document.getElementById("inNode").addEventListener("change", () => {
       updateInboundDomainFromNode(true);
-      updateInboundSniInputState();
-    });
-    document.getElementById("inDomain").addEventListener("blur", () => {
-      const mode = (document.getElementById("inSniMode").value || "none").trim();
-      if (mode === "domain") {
-        updateInboundSniInputState();
-      }
     });
     document.getElementById("subUser").addEventListener("change", () => {
       render();
@@ -3187,19 +3356,28 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			nodeName = name
 		}
 		inboundRows = append(inboundRows, panelInboundView{
-			ID:        inbound.ID,
-			Type:      string(inbound.Type),
-			Engine:    string(inbound.Engine),
-			NodeID:    inbound.NodeID,
-			NodeName:  nodeName,
-			Domain:    strings.TrimSpace(inbound.Domain),
-			Port:      inbound.Port,
-			TLS:       inbound.TLSEnabled,
-			Enabled:   inbound.Enabled,
-			Transport: strings.TrimSpace(inbound.Transport),
-			Path:      strings.TrimSpace(inbound.Path),
-			SNI:       strings.TrimSpace(inbound.SNI),
-			Version:   panelInboundVersion(inbound),
+			ID:                 inbound.ID,
+			Type:               string(inbound.Type),
+			Engine:             string(inbound.Engine),
+			NodeID:             inbound.NodeID,
+			NodeName:           nodeName,
+			Domain:             strings.TrimSpace(inbound.Domain),
+			Port:               inbound.Port,
+			TLS:                inbound.TLSEnabled,
+			Enabled:            inbound.Enabled,
+			Transport:          strings.TrimSpace(inbound.Transport),
+			Path:               strings.TrimSpace(inbound.Path),
+			SNI:                strings.TrimSpace(inbound.SNI),
+			RealityEnabled:     inbound.RealityEnabled,
+			RealityPublicKey:   strings.TrimSpace(inbound.RealityPublicKey),
+			RealityPrivateKey:  strings.TrimSpace(inbound.RealityPrivateKey),
+			RealityShortID:     strings.TrimSpace(inbound.RealityShortID),
+			RealityFingerprint: strings.TrimSpace(inbound.RealityFingerprint),
+			RealitySpiderX:     strings.TrimSpace(inbound.RealitySpiderX),
+			RealityServer:      strings.TrimSpace(inbound.RealityServer),
+			RealityServerPort:  inbound.RealityServerPort,
+			VLESSFlow:          strings.TrimSpace(inbound.VLESSFlow),
+			Version:            panelInboundVersion(inbound),
 		})
 		if inbound.Enabled {
 			enabledInbounds++
@@ -4531,17 +4709,12 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 		}
 		updated.ID = current.ID
 		updated.CreatedAt = current.CreatedAt
-		updated.RealityEnabled = current.RealityEnabled
-		updated.RealityPublicKey = current.RealityPublicKey
-		updated.RealityPrivateKey = current.RealityPrivateKey
-		updated.RealityShortID = current.RealityShortID
-		updated.RealityFingerprint = current.RealityFingerprint
-		updated.RealitySpiderX = current.RealitySpiderX
-		updated.RealityServer = current.RealityServer
-		updated.RealityServerPort = current.RealityServerPort
-		updated.VLESSFlow = current.VLESSFlow
-		updated.TLSCertPath = current.TLSCertPath
-		updated.TLSKeyPath = current.TLSKeyPath
+		if strings.TrimSpace(updated.TLSCertPath) == "" {
+			updated.TLSCertPath = current.TLSCertPath
+		}
+		if strings.TrimSpace(updated.TLSKeyPath) == "" {
+			updated.TLSKeyPath = current.TLSKeyPath
+		}
 		if updated.RealityEnabled {
 			if strings.ToLower(string(updated.Type)) != string(domain.ProtocolVLESS) || strings.ToLower(strings.TrimSpace(updated.Transport)) != "tcp" || strings.ToLower(string(updated.Engine)) != string(domain.EngineXray) {
 				return fmt.Errorf("inbound has reality enabled; keep type=vless transport=tcp engine=xray")
@@ -5040,6 +5213,10 @@ func panelInboundFromForm(r *http.Request, base domain.Inbound) (domain.Inbound,
 	sni := strings.TrimSpace(r.FormValue("sni"))
 	path := strings.TrimSpace(r.FormValue("path"))
 	engineRaw := strings.ToLower(strings.TrimSpace(r.FormValue("engine")))
+	securityMode := strings.ToLower(strings.TrimSpace(r.FormValue("security_mode")))
+	if securityMode == "" {
+		securityMode = "none"
+	}
 
 	if typeRaw == "" {
 		return domain.Inbound{}, fmt.Errorf("inbound type is required")
@@ -5077,6 +5254,50 @@ func panelInboundFromForm(r *http.Request, base domain.Inbound) (domain.Inbound,
 	base.Domain = domainName
 	base.Port = port
 	base.TLSEnabled = panelFormBool(r.FormValue("tls"))
+	base.RealityEnabled = false
+	base.RealityPublicKey = ""
+	base.RealityPrivateKey = ""
+	base.RealityShortID = ""
+	base.RealityFingerprint = ""
+	base.RealitySpiderX = ""
+	base.RealityServer = ""
+	base.RealityServerPort = 0
+	base.VLESSFlow = ""
+	switch securityMode {
+	case "none":
+		base.TLSEnabled = false
+	case "tls":
+		base.TLSEnabled = true
+	case "reality":
+		if base.Type != domain.ProtocolVLESS || strings.ToLower(strings.TrimSpace(base.Transport)) != "tcp" || strings.ToLower(string(base.Engine)) != string(domain.EngineXray) {
+			return domain.Inbound{}, fmt.Errorf("reality requires type=vless transport=tcp engine=xray")
+		}
+		serverPort, portErr := strconv.Atoi(strings.TrimSpace(r.FormValue("reality_server_port")))
+		if portErr != nil || serverPort < 1 || serverPort > 65535 {
+			return domain.Inbound{}, fmt.Errorf("reality server port must be in range 1..65535")
+		}
+		base.TLSEnabled = false
+		base.RealityEnabled = true
+		base.RealityPublicKey = strings.TrimSpace(r.FormValue("reality_public_key"))
+		base.RealityPrivateKey = strings.TrimSpace(r.FormValue("reality_private_key"))
+		base.RealityShortID = strings.TrimSpace(r.FormValue("reality_short_id"))
+		base.RealityFingerprint = strings.TrimSpace(r.FormValue("reality_fingerprint"))
+		base.RealitySpiderX = strings.TrimSpace(r.FormValue("reality_spider_x"))
+		base.RealityServer = strings.TrimSpace(r.FormValue("reality_server"))
+		base.RealityServerPort = serverPort
+		base.VLESSFlow = strings.TrimSpace(r.FormValue("vless_flow"))
+		if base.RealityPublicKey == "" || base.RealityPrivateKey == "" || base.RealityServer == "" {
+			return domain.Inbound{}, fmt.Errorf("reality requires public key, private key and target host")
+		}
+		if base.RealityFingerprint == "" {
+			base.RealityFingerprint = "chrome"
+		}
+		if base.VLESSFlow == "" {
+			base.VLESSFlow = "xtls-rprx-vision"
+		}
+	default:
+		return domain.Inbound{}, fmt.Errorf("unknown security mode %q", securityMode)
+	}
 	if base.Type == domain.ProtocolHysteria2 {
 		base.TLSEnabled = true
 	}
