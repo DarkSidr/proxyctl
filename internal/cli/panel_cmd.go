@@ -1384,6 +1384,33 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         input.placeholder = "custom sni";
       }
     }
+    function selectedInboundNodeHost() {
+      const nodeID = (document.getElementById("inNode")?.value || "").trim();
+      const nodes = Array.isArray(snapshot?.Nodes) ? snapshot.Nodes : [];
+      const node = nodes.find((n) => String(n?.ID || "").trim() === nodeID);
+      return String(node?.Host || "").trim();
+    }
+    function updateInboundDomainFromNode(force) {
+      const domainEl = document.getElementById("inDomain");
+      if (!domainEl) return;
+      const host = selectedInboundNodeHost();
+      if (!host) return;
+      const current = (domainEl.value || "").trim();
+      if (force || !current) {
+        domainEl.value = host;
+      }
+    }
+    function resetInboundCreateDefaults() {
+      const sniMode = document.getElementById("inSniMode");
+      if (sniMode) sniMode.value = "none";
+      const sni = document.getElementById("inSni");
+      if (sni) sni.value = "";
+      const path = document.getElementById("inPath");
+      if (path) path.value = "";
+      updateInboundDomainFromNode(true);
+      updateInboundCreateFieldVisibility(true);
+      updateInboundSniInputState();
+    }
     function refreshInboundSniList(nodes, inbounds) {
       const presets = (snapshot && Array.isArray(snapshot.SNIPresets)) ? snapshot.SNIPresets : [];
       const set = new Set((Array.isArray(presets) ? presets : []).map((v) => String(v || "").trim()).filter(Boolean));
@@ -1616,6 +1643,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           '<td>'+ (n.Enabled ? "yes" : "no") +'</td>' +
           '<td class="row">' +
             '<button class="btn secondary" data-node-save-id="'+esc(n.ID)+'" data-node-save-version="'+esc(n.Version)+'">save</button>' +
+            '<button class="btn secondary" data-node-test-id="'+esc(n.ID)+'" data-node-test-version="'+esc(n.Version)+'">test</button>' +
             '<button class="btn '+(n.Enabled ? 'warn' : '')+'" data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
             '<button class="btn err" data-node-id="'+esc(n.ID)+'" data-node-version="'+esc(n.Version)+'">delete</button>' +
           '</td>' +
@@ -1658,6 +1686,19 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           }
         });
       });
+      document.querySelectorAll("[data-node-test-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            await postForm(cfg.nodesActionPath, {
+              op: "test",
+              node_id: btn.getAttribute("data-node-test-id"),
+              version: btn.getAttribute("data-node-test-version"),
+            });
+          } catch (e) {
+            showOp("error", String(e));
+          }
+        });
+      });
       document.querySelectorAll("[data-node-toggle-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           try {
@@ -1681,6 +1722,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         if (prev && Array.from(nodeSel.options).some((o) => o.value === prev)) {
           nodeSel.value = prev;
         }
+        updateInboundDomainFromNode(false);
       }
       document.getElementById("inboundsBody").innerHTML = inbounds.map((i) => (
         '<tr>' +
@@ -1922,6 +1964,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           sni,
           enabled: "1",
         });
+        resetInboundCreateDefaults();
       } catch (e) {
         showOp("error", String(e));
       }
@@ -2051,6 +2094,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     document.getElementById("inType").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
     document.getElementById("inTransport").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
     document.getElementById("inSniMode").addEventListener("change", () => updateInboundSniInputState());
+    document.getElementById("inNode").addEventListener("change", () => {
+      updateInboundDomainFromNode(false);
+      updateInboundSniInputState();
+    });
     document.getElementById("inDomain").addEventListener("blur", () => {
       const mode = (document.getElementById("inSniMode").value || "none").trim();
       if (mode === "domain") {
@@ -3803,6 +3850,30 @@ func panelCleanupNodeRuntime(ctx context.Context, configPath string, node domain
 	return err
 }
 
+func panelTestNodeConnectivity(ctx context.Context, node domain.Node) error {
+	settings, err := panelNodeSyncSettingsFromEnv()
+	if err != nil {
+		return err
+	}
+	if !settings.enabled {
+		return fmt.Errorf("%s=0, auto-node-sync is disabled", panelEnvAutoNodeSyncEnabled)
+	}
+	if _, err := lookPath("ssh"); err != nil {
+		return fmt.Errorf("ssh client is required: %w", err)
+	}
+	host := strings.TrimSpace(node.Host)
+	if host == "" {
+		return fmt.Errorf("node %q has empty host", node.ID)
+	}
+	target := fmt.Sprintf("%s@%s", settings.opts.sshUser, host)
+	sshArgs := buildSSHArgs(settings.opts.sshPort, settings.opts.sshKeyPath, settings.opts.strictHostKey)
+	sshArgs = append(sshArgs, target, "echo proxyctl-panel-node-test-ok")
+	if out, err := runExecCombined(ctx, "ssh", sshArgs...); err != nil {
+		return fmt.Errorf("ssh connectivity check failed for node %q (%s): %w | %s", node.ID, host, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func panelRevokeCredentialsForUser(ctx context.Context, dbPath, userID string, inboundFilter map[string]struct{}) (int, error) {
 	store, err := openStoreWithInit(ctx, dbPath)
 	if err != nil {
@@ -4017,6 +4088,10 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 			return fmt.Errorf("create inbound: %w", err)
 		}
 		if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{created.NodeID}); syncErr != nil {
+			if panelSyncErrMissingCredentials(syncErr) {
+				ops.set("ok", fmt.Sprintf("inbound created: %s (%s:%d) | warning: node sync skipped until at least one credential is attached", created.ID, created.Domain, created.Port))
+				return nil
+			}
 			ops.set("error", fmt.Sprintf("inbound created (%s), but node sync failed: %v", created.ID, syncErr))
 			return nil
 		} else if synced > 0 || cleaned > 0 {
@@ -4168,6 +4243,12 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 	}
 }
 
+func panelSyncErrMissingCredentials(err error) bool {
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "requires at least one uuid credential") ||
+		strings.Contains(msg, "requires at least one password credential")
+}
+
 func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, configPath, dbPathFlag *string, ops *panelOperationFeed) error {
 	if err := r.ParseForm(); err != nil {
 		return fmt.Errorf("invalid node action request")
@@ -4209,7 +4290,7 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		}
 		ops.set("ok", fmt.Sprintf("node created: %s (%s)", created.Name, created.Host))
 		return nil
-	case "set_enabled", "update", "delete":
+	case "test", "set_enabled", "update", "delete":
 		nodeID := strings.TrimSpace(r.FormValue("node_id"))
 		version := strings.TrimSpace(r.FormValue("version"))
 		if nodeID == "" {
@@ -4233,6 +4314,14 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		}
 		if version != panelNodeVersion(current) {
 			return fmt.Errorf("node %q changed since page load; refresh and retry", nodeID)
+		}
+		if action == "test" {
+			if testErr := panelTestNodeConnectivity(ctx, current); testErr != nil {
+				ops.set("error", fmt.Sprintf("node test failed: %s (%s) | %v", current.Name, current.Host, testErr))
+				return nil
+			}
+			ops.set("ok", fmt.Sprintf("node test ok: %s (%s)", current.Name, current.Host))
+			return nil
 		}
 
 		if action == "delete" {
