@@ -1732,6 +1732,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           '<td class="row">' +
             '<button class="btn secondary" data-node-save-id="'+esc(n.ID)+'" data-node-save-version="'+esc(n.Version)+'">save</button>' +
             '<button class="btn secondary" data-node-test-id="'+esc(n.ID)+'" data-node-test-version="'+esc(n.Version)+'">test</button>' +
+            '<button class="btn secondary" data-node-sshkey-id="'+esc(n.ID)+'" data-node-sshkey-version="'+esc(n.Version)+'">setup ssh key</button>' +
             '<button class="btn secondary" data-node-bootstrap-id="'+esc(n.ID)+'" data-node-bootstrap-version="'+esc(n.Version)+'">bootstrap</button>' +
             '<button class="btn '+(n.Enabled ? 'warn' : '')+'" data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
             '<button class="btn err" data-node-id="'+esc(n.ID)+'" data-node-version="'+esc(n.Version)+'">delete</button>' +
@@ -1801,6 +1802,26 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
               op: "bootstrap",
               node_id: nodeID,
               version: btn.getAttribute("data-node-bootstrap-version"),
+              ssh_password: sshPassword,
+            });
+          } catch (e) {
+            showOp("error", String(e));
+          }
+        });
+      });
+      document.querySelectorAll("[data-node-sshkey-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            const nodeID = (btn.getAttribute("data-node-sshkey-id") || "").trim();
+            const rowNode = nodes.find((item) => String(item?.ID || "").trim() === nodeID);
+            const nodeName = String(rowNode?.Name || nodeID || "node").trim();
+            const nodeHost = String(rowNode?.Host || "").trim();
+            const nodeLabel = nodeHost ? (nodeName + " (" + nodeHost + ")") : nodeName;
+            const sshPassword = window.prompt("Root password for SSH key setup on node: " + nodeLabel + " (optional if key auth already works):", "") || "";
+            await postForm(cfg.nodesActionPath, {
+              op: "install_ssh_key",
+              node_id: nodeID,
+              version: btn.getAttribute("data-node-sshkey-version"),
               ssh_password: sshPassword,
             });
           } catch (e) {
@@ -4079,6 +4100,85 @@ func panelEnsureProxyctlOnNode(ctx context.Context, configPath string, node doma
 	return nil
 }
 
+func panelInstallSSHKeyOnNode(ctx context.Context, node domain.Node, sshPassword string) (bool, string, error) {
+	settings, err := panelNodeSyncSettingsFromEnv()
+	if err != nil {
+		return false, "", err
+	}
+	if !settings.enabled {
+		return false, "", fmt.Errorf("%s=0, auto-node-sync is disabled", panelEnvAutoNodeSyncEnabled)
+	}
+	if _, err := lookPath("ssh"); err != nil {
+		return false, "", fmt.Errorf("ssh client is required for ssh key setup: %w", err)
+	}
+	host := strings.TrimSpace(node.Host)
+	if host == "" {
+		return false, "", fmt.Errorf("node %q has empty host", node.ID)
+	}
+
+	keyPath := strings.TrimSpace(settings.opts.sshKeyPath)
+	generated := false
+	if keyPath == "" {
+		var genErr error
+		keyPath, generated, genErr = ensureWizardSSHKey(ctx, "~/.ssh/id_ed25519")
+		if genErr != nil {
+			return false, "", fmt.Errorf("prepare ssh key: %w", genErr)
+		}
+	} else {
+		resolved, resolveErr := expandHomePath(keyPath)
+		if resolveErr != nil {
+			return false, "", fmt.Errorf("resolve ssh key path: %w", resolveErr)
+		}
+		keyPath = strings.TrimSpace(resolved)
+		if keyPath == "" {
+			return false, "", fmt.Errorf("ssh key path is empty")
+		}
+		if _, statErr := os.Stat(keyPath); statErr != nil {
+			var genErr error
+			keyPath, generated, genErr = ensureWizardSSHKey(ctx, keyPath)
+			if genErr != nil {
+				return false, "", fmt.Errorf("prepare configured ssh key %s: %w", keyPath, genErr)
+			}
+		} else if _, pubErr := os.Stat(keyPath + ".pub"); pubErr != nil {
+			var genErr error
+			keyPath, generated, genErr = ensureWizardSSHKey(ctx, keyPath)
+			if genErr != nil {
+				return false, "", fmt.Errorf("prepare ssh public key %s.pub: %w", keyPath, genErr)
+			}
+		}
+	}
+
+	pubPath := strings.TrimSpace(keyPath) + ".pub"
+	pubRaw, readErr := os.ReadFile(pubPath)
+	if readErr != nil {
+		return generated, keyPath, fmt.Errorf("read ssh public key %s: %w", pubPath, readErr)
+	}
+	pubKey := strings.TrimSpace(string(pubRaw))
+	if pubKey == "" {
+		return generated, keyPath, fmt.Errorf("ssh public key %s is empty", pubPath)
+	}
+
+	target := fmt.Sprintf("%s@%s", settings.opts.sshUser, host)
+	installKeyCmd := strings.Join([]string{
+		"set -e",
+		"umask 077",
+		"mkdir -p ~/.ssh",
+		"touch ~/.ssh/authorized_keys",
+		"grep -qxF " + shellQuote(pubKey) + " ~/.ssh/authorized_keys || echo " + shellQuote(pubKey) + " >> ~/.ssh/authorized_keys",
+		"chmod 700 ~/.ssh",
+		"chmod 600 ~/.ssh/authorized_keys",
+	}, "; ")
+	sshArgs := buildSSHArgs(settings.opts.sshPort, keyPath, settings.opts.strictHostKey)
+	sshArgs = append(sshArgs, target, installKeyCmd)
+	if out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, strings.TrimSpace(sshPassword)); err != nil {
+		if strings.TrimSpace(sshPassword) == "" {
+			return generated, keyPath, fmt.Errorf("install ssh key on node %q (%s): %w | %s | hint: pass root password in 'setup ssh key' modal for first-time setup", node.ID, host, err, strings.TrimSpace(string(out)))
+		}
+		return generated, keyPath, fmt.Errorf("install ssh key on node %q (%s): %w | %s", node.ID, host, err, strings.TrimSpace(string(out)))
+	}
+	return generated, keyPath, nil
+}
+
 func panelRevokeCredentialsForUser(ctx context.Context, dbPath, userID string, inboundFilter map[string]struct{}) (int, error) {
 	store, err := openStoreWithInit(ctx, dbPath)
 	if err != nil {
@@ -4510,7 +4610,7 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		}
 		ops.set("ok", fmt.Sprintf("node created: %s (%s)", created.Name, created.Host))
 		return nil
-	case "bootstrap", "test", "set_enabled", "update", "delete":
+	case "install_ssh_key", "bootstrap", "test", "set_enabled", "update", "delete":
 		nodeID := strings.TrimSpace(r.FormValue("node_id"))
 		version := strings.TrimSpace(r.FormValue("version"))
 		if nodeID == "" {
@@ -4534,6 +4634,24 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		}
 		if version != panelNodeVersion(current) {
 			return fmt.Errorf("node %q changed since page load; refresh and retry", nodeID)
+		}
+		if action == "install_ssh_key" {
+			if current.Role == domain.NodeRolePrimary {
+				ops.set("ok", fmt.Sprintf("ssh key setup skipped: %s (%s) is primary", current.Name, current.Host))
+				return nil
+			}
+			sshPassword := strings.TrimSpace(r.FormValue("ssh_password"))
+			generated, keyPath, keyErr := panelInstallSSHKeyOnNode(ctx, current, sshPassword)
+			if keyErr != nil {
+				ops.set("error", fmt.Sprintf("ssh key setup failed: %s (%s) | %v", current.Name, current.Host, keyErr))
+				return nil
+			}
+			extra := ""
+			if generated {
+				extra = " | ssh key generated: " + keyPath
+			}
+			ops.set("ok", fmt.Sprintf("ssh key setup ok: %s (%s)%s", current.Name, current.Host, extra))
+			return nil
 		}
 		if action == "bootstrap" {
 			if current.Role == domain.NodeRolePrimary {
