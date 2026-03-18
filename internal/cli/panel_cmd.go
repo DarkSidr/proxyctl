@@ -102,6 +102,7 @@ type panelSubscriptionView struct {
 	URL          string
 	ConfigCount  int
 	ConfigLabels []string
+	InboundIDs   []string
 }
 
 type panelCounts struct {
@@ -1091,6 +1092,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       <div class="pad row">
         <select id="subUser"></select>
         <button id="genSubBtn" class="btn">generate for user</button>
+        <select id="subProfileSel"></select>
         <input id="subProfile" type="text" placeholder="profile for selected (default: panel)">
         <button id="genSelectedSubBtn" class="btn secondary">generate selected</button>
         <button id="detachSelectedCredsBtn" class="btn secondary">detach selected creds</button>
@@ -1167,7 +1169,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     let opTimer = null;
     const STORAGE_KEY_LAST_OP_PREFIX = "proxyctl.app.lastOpSeenKey";
     let lastOpSeenKey = "";
-    let selectedSubInboundByUser = {};
+    let selectedSubInboundBySelection = {};
     let inboundSniOptions = [];
     let liveTimer = null;
     let liveBusy = false;
@@ -1334,16 +1336,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (!snapshot) return;
       const subUserSel = document.getElementById("subUser");
       if (!subUserSel) return;
-      const subStates = snapshot.SubscriptionState || {};
-      const selectedSubUser = (subUserSel.value || "").trim();
-      const state = selectedSubUser ? subStates[selectedSubUser] : null;
+      const selected = selectedSubscriptionDetail();
       const enableBtn = document.getElementById("subEnableBtn");
       const disableBtn = document.getElementById("subDisableBtn");
       if (enableBtn) {
-        enableBtn.disabled = !!(state && state.Enabled);
+        enableBtn.disabled = !!(selected && selected.Enabled);
       }
       if (disableBtn) {
-        disableBtn.disabled = !!(!state || !state.Exists || !state.Enabled);
+        disableBtn.disabled = !!(!selected || !selected.Enabled);
       }
     }
     function getSuggestedInboundPort(type, transport) {
@@ -1447,11 +1447,33 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const subUserSel = document.getElementById("subUser");
       return subUserSel ? (subUserSel.value || "").trim() : "";
     }
+    function currentSubProfileName() {
+      const sel = document.getElementById("subProfileSel");
+      if (sel && (sel.value || "").trim()) return (sel.value || "").trim();
+      const input = document.getElementById("subProfile");
+      return input ? (input.value || "").trim() : "";
+    }
+    function currentSubSelectionKey() {
+      const userID = currentSubUserID();
+      const profile = currentSubProfileName() || "default";
+      return userID + "::" + profile;
+    }
+    function selectedSubscriptionDetail() {
+      const subDetails = Array.isArray(snapshot?.SubscriptionDetails) ? snapshot.SubscriptionDetails : [];
+      const userID = currentSubUserID();
+      const profile = currentSubProfileName() || "default";
+      return subDetails.find((s) => String(s.UserID || "").trim() === userID && String(s.ProfileName || "").trim() === profile) || null;
+    }
     function renderSubInboundPick(inbounds) {
       const pick = document.getElementById("subInboundPick");
       if (!pick) return;
-      const userID = currentSubUserID();
-      const selected = new Set(Array.isArray(selectedSubInboundByUser[userID]) ? selectedSubInboundByUser[userID] : []);
+      const key = currentSubSelectionKey();
+      const selected = new Set(Array.isArray(selectedSubInboundBySelection[key]) ? selectedSubInboundBySelection[key] : []);
+      if (selected.size === 0) {
+        const selectedDetail = selectedSubscriptionDetail();
+        const defaults = Array.isArray(selectedDetail?.InboundIDs) ? selectedDetail.InboundIDs : [];
+        for (const id of defaults) selected.add(String(id || "").trim());
+      }
       pick.innerHTML = [
         '<div class="label" style="margin-bottom:8px">selected profile inbounds</div>',
         '<div class="table-wrap">',
@@ -1493,8 +1515,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           const ids = Array.from(pick.querySelectorAll("[data-sub-inbound-id]:checked"))
             .map((el) => (el.getAttribute("data-sub-inbound-id") || "").trim())
             .filter(Boolean);
-          if (userID) {
-            selectedSubInboundByUser[userID] = ids;
+          if (key) {
+            selectedSubInboundBySelection[key] = ids;
           }
           syncAllBox();
         });
@@ -1510,8 +1532,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
                 .map((el) => (el.getAttribute("data-sub-inbound-id") || "").trim())
                 .filter(Boolean)
             : [];
-          if (userID) {
-            selectedSubInboundByUser[userID] = ids;
+          if (key) {
+            selectedSubInboundBySelection[key] = ids;
           }
           syncAllBox();
         });
@@ -1561,6 +1583,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const nodes = Array.isArray(snapshot.Nodes) ? snapshot.Nodes : [];
       const inbounds = Array.isArray(snapshot.Inbounds) ? snapshot.Inbounds : [];
       const creds = Array.isArray(snapshot.Credentials) ? snapshot.Credentials : [];
+      const subDetails = Array.isArray(snapshot.SubscriptionDetails) ? snapshot.SubscriptionDetails : [];
       refreshInboundSniList(nodes, inbounds);
       updateInboundCreateFieldVisibility(false);
       document.getElementById("usersBody").innerHTML = users.map((u) => (
@@ -1702,6 +1725,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       });
 
       const subUserSel = document.getElementById("subUser");
+      const subProfileSel = document.getElementById("subProfileSel");
       const credUserSel = document.getElementById("credUser");
       if (subUserSel) {
         const prev = subUserSel.value || "";
@@ -1709,6 +1733,27 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         if (prev && Array.from(subUserSel.options).some((o) => o.value === prev)) {
           subUserSel.value = prev;
         }
+      }
+      if (subProfileSel) {
+        const selectedUser = subUserSel ? (subUserSel.value || "").trim() : "";
+        const userProfiles = subDetails
+          .filter((s) => String(s.UserID || "").trim() === selectedUser)
+          .map((s) => String(s.ProfileName || "").trim())
+          .filter((v) => !!v);
+        const uniqueProfiles = Array.from(new Set(userProfiles));
+        uniqueProfiles.sort((a, b) => (a === "default" ? -1 : b === "default" ? 1 : a.localeCompare(b)));
+        const prevProfile = subProfileSel.value || "";
+        subProfileSel.innerHTML = uniqueProfiles.map((p) => '<option value="'+esc(p)+'">'+esc(p)+'</option>').join("");
+        if (prevProfile && Array.from(subProfileSel.options).some((o) => o.value === prevProfile)) {
+          subProfileSel.value = prevProfile;
+        } else if (uniqueProfiles.length > 0) {
+          subProfileSel.value = uniqueProfiles[0];
+        }
+      }
+      const selectedProfileName = currentSubProfileName();
+      const subProfileInput = document.getElementById("subProfile");
+      if (subProfileInput) {
+        subProfileInput.value = selectedProfileName;
       }
       if (credUserSel) {
         const prev = credUserSel.value || "";
@@ -1751,7 +1796,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         });
       });
 
-      const subDetails = Array.isArray(snapshot.SubscriptionDetails) ? snapshot.SubscriptionDetails : [];
       document.getElementById("subsList").innerHTML = subDetails.length === 0
         ? '<div class="muted">no subscriptions</div>'
         : [
@@ -1954,18 +1998,20 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     });
     document.getElementById("subEnableBtn").addEventListener("click", async () => {
       const userID = (document.getElementById("subUser").value || "").trim();
+      const profile = currentSubProfileName();
       if (!userID) return;
       try {
-        await postForm(cfg.subsActionPath, { op: "set_enabled", user_id: userID, enabled: "1" });
+        await postForm(cfg.subsActionPath, { op: "set_enabled", user_id: userID, profile, enabled: "1" });
       } catch (e) {
         showOp("error", String(e));
       }
     });
     document.getElementById("subDisableBtn").addEventListener("click", async () => {
       const userID = (document.getElementById("subUser").value || "").trim();
+      const profile = currentSubProfileName();
       if (!userID) return;
       try {
-        await postForm(cfg.subsActionPath, { op: "set_enabled", user_id: userID, enabled: "0" });
+        await postForm(cfg.subsActionPath, { op: "set_enabled", user_id: userID, profile, enabled: "0" });
       } catch (e) {
         showOp("error", String(e));
       }
@@ -2012,6 +2058,17 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
     });
     document.getElementById("subUser").addEventListener("change", () => {
+      render();
+    });
+    document.getElementById("subProfileSel").addEventListener("change", () => {
+      const selected = (document.getElementById("subProfileSel").value || "").trim();
+      const input = document.getElementById("subProfile");
+      if (input) input.value = selected;
+      updateSubButtons();
+      const inbounds = (snapshot && Array.isArray(snapshot.Inbounds)) ? snapshot.Inbounds : [];
+      renderSubInboundPick(inbounds);
+    });
+    document.getElementById("subProfile").addEventListener("change", () => {
       updateSubButtons();
       const inbounds = (snapshot && Array.isArray(snapshot.Inbounds)) ? snapshot.Inbounds : [];
       renderSubInboundPick(inbounds);
@@ -2347,10 +2404,74 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						ops.set("error", "user id is required")
 						break
 					}
+					profile := wizardNormalizeProfileName(r.FormValue("profile"))
+					if profile == "" {
+						profile = subscriptionservice.DefaultProfileName
+					}
 					enabled := panelFormBool(r.FormValue("enabled"))
 					store, storeErr := openStoreWithInit(r.Context(), resolvedDB)
 					if storeErr != nil {
 						ops.set("error", storeErr.Error())
+						break
+					}
+					if profile != subscriptionservice.DefaultProfileName {
+						subscriptionDir, dirErr := resolveSubscriptionDir(configPathValue)
+						if dirErr != nil {
+							_ = store.Close()
+							ops.set("error", fmt.Sprintf("resolve subscription dir: %v", dirErr))
+							break
+						}
+						entry, setErr := setNamedSubscriptionProfileEnabled(userID, subscriptionDir, profile, enabled)
+						_ = store.Close()
+						if setErr != nil {
+							ops.set("error", fmt.Sprintf("update named subscription profile: %v", setErr))
+							break
+						}
+						if enabled {
+							inboundIDs := compactUnique(entry.InboundIDs)
+							if len(inboundIDs) == 0 {
+								ops.set("error", fmt.Sprintf("named subscription %s enabled, but profile has no inbounds", profile))
+								break
+							}
+							out, runErr := panelExecuteCommandWithSetup(r.Context(), newSubscriptionGenerateCmd(&configPathValue, &dbPathValue), []string{userID}, func(cmd *cobra.Command) error {
+								if err := cmd.Flags().Set("profile", profile); err != nil {
+									return err
+								}
+								return cmd.Flags().Set("inbounds", strings.Join(inboundIDs, ","))
+							})
+							if runErr != nil {
+								ops.set("error", fmt.Sprintf("named subscription enabled (%s), but generate failed: %s", profile, panelErrWithOutput(runErr, out)))
+								break
+							}
+							ops.set("ok", fmt.Sprintf("named subscription enabled: profile=%s | %s", profile, panelSummarizeOutput(out)))
+							break
+						}
+						appCfg, _ := loadAppConfig(configPathValue)
+						decoySiteDir := strings.TrimSpace(appCfg.Paths.DecoySiteDir)
+						removed, rmErr := cleanupNamedSubscriptionFilesWithMirror(userID, subscriptionDir, decoySiteDir, profile, strings.TrimSpace(entry.AccessToken))
+						if rmErr != nil {
+							ops.set("error", fmt.Sprintf("named subscription disabled (%s), but cleanup failed: %v", profile, rmErr))
+							break
+						}
+						inboundSet := make(map[string]struct{}, len(entry.InboundIDs))
+						for _, inboundID := range compactUnique(entry.InboundIDs) {
+							id := strings.TrimSpace(inboundID)
+							if id == "" {
+								continue
+							}
+							inboundSet[id] = struct{}{}
+						}
+						revoked, revokeErr := panelRevokeCredentialsForUser(r.Context(), resolvedDB, userID, inboundSet)
+						if revokeErr != nil {
+							ops.set("error", fmt.Sprintf("named subscription disabled (%s), removed files=%d, but revoke credentials failed: %v", profile, removed, revokeErr))
+							break
+						}
+						synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(r.Context(), resolvedDB, strings.TrimSpace(configPathValue), nil)
+						if syncErr != nil {
+							ops.set("error", fmt.Sprintf("named subscription disabled (%s), removed files=%d, credentials revoked=%d, but node sync failed: %v", profile, removed, revoked, syncErr))
+							break
+						}
+						ops.set("ok", fmt.Sprintf("named subscription disabled: profile=%s (removed files: %d, credentials revoked=%d) | node sync: synced=%d cleaned=%d", profile, removed, revoked, synced, cleaned))
 						break
 					}
 					sub, subErr := store.Subscriptions().GetByUserID(r.Context(), userID)
@@ -2980,6 +3101,14 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		if subErr == nil {
 			token := strings.TrimSpace(sub.AccessToken)
 			labels := configLabelsByUser[user.ID]
+			inboundIDs := make([]string, 0, len(configLabelsByUserInbound[user.ID]))
+			for inboundID := range configLabelsByUserInbound[user.ID] {
+				if strings.TrimSpace(inboundID) == "" {
+					continue
+				}
+				inboundIDs = append(inboundIDs, strings.TrimSpace(inboundID))
+			}
+			sort.Strings(inboundIDs)
 			subViews = append(subViews, panelSubscriptionView{
 				UserID:       user.ID,
 				UserName:     strings.TrimSpace(user.Name),
@@ -2989,6 +3118,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 				URL:          makeURL(token),
 				ConfigCount:  len(labels),
 				ConfigLabels: labels,
+				InboundIDs:   inboundIDs,
 			})
 		}
 		profilesPath := filepath.Join(strings.TrimSpace(cfg.Paths.Subscription), "profiles", strings.TrimSpace(user.ID)+".json")
@@ -3022,6 +3152,8 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			labels = compactUnique(labels)
 			sort.Strings(labels)
 			token := strings.TrimSpace(entry.AccessToken)
+			inboundIDs := compactUnique(entry.InboundIDs)
+			sort.Strings(inboundIDs)
 			subViews = append(subViews, panelSubscriptionView{
 				UserID:       user.ID,
 				UserName:     strings.TrimSpace(user.Name),
@@ -3031,6 +3163,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 				URL:          makeURL(token),
 				ConfigCount:  len(labels),
 				ConfigLabels: labels,
+				InboundIDs:   inboundIDs,
 			})
 		}
 	}
