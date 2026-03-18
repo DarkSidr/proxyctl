@@ -3980,6 +3980,62 @@ func panelTestNodeConnectivity(ctx context.Context, node domain.Node) error {
 	if out, err := runExecCombined(ctx, "ssh", sshArgs...); err != nil {
 		return fmt.Errorf("ssh connectivity check failed for node %q (%s): %w | %s", node.ID, host, err, strings.TrimSpace(string(out)))
 	}
+	sshCheckArgs := buildSSHArgs(settings.opts.sshPort, settings.opts.sshKeyPath, settings.opts.strictHostKey)
+	sshCheckArgs = append(sshCheckArgs, target, "command -v proxyctl >/dev/null 2>&1")
+	if out, err := runExecCombined(ctx, "ssh", sshCheckArgs...); err != nil {
+		return fmt.Errorf("proxyctl is not installed on node %q (%s): %w | %s", node.ID, host, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func panelEnsureProxyctlOnNode(ctx context.Context, configPath string, node domain.Node) error {
+	settings, err := panelNodeSyncSettingsFromEnv()
+	if err != nil {
+		return err
+	}
+	if !settings.enabled {
+		return nil
+	}
+	if node.Role != domain.NodeRoleNode || !node.Enabled {
+		return nil
+	}
+	if _, err := lookPath("ssh"); err != nil {
+		return fmt.Errorf("ssh client is required for node bootstrap: %w", err)
+	}
+	host := strings.TrimSpace(node.Host)
+	if host == "" {
+		return fmt.Errorf("node %q has empty host", node.ID)
+	}
+
+	contactEmail := ""
+	if cfg, cfgErr := config.Load(configPath); cfgErr == nil {
+		contactEmail = strings.TrimSpace(cfg.Public.ContactEmail)
+	}
+	prefix := ""
+	if settings.opts.remoteUseSudo {
+		prefix = "sudo "
+	}
+	installEnv := "PROXYCTL_PROMPT_CONFIG=0 PROXYCTL_DEPLOYMENT_MODE=node PROXYCTL_REVERSE_PROXY=caddy PROXYCTL_PUBLIC_DOMAIN=" + shellQuote(host)
+	if contactEmail != "" {
+		installEnv += " PROXYCTL_CONTACT_EMAIL=" + shellQuote(contactEmail)
+	}
+	installCmd := prefix + "bash -lc " + shellQuote(
+		"curl -fsSL "+defaultUpdateInstallURL+
+			" | "+installEnv+" bash",
+	)
+	updateCmd := prefix + "proxyctl update --force --restart-services --ensure-caddy"
+	remoteCmd := strings.Join([]string{
+		"set -e",
+		"if command -v proxyctl >/dev/null 2>&1; then " + updateCmd + "; else " + installCmd + "; fi",
+		"command -v proxyctl >/dev/null 2>&1",
+	}, "; ")
+
+	target := fmt.Sprintf("%s@%s", settings.opts.sshUser, host)
+	sshArgs := buildSSHArgs(settings.opts.sshPort, settings.opts.sshKeyPath, settings.opts.strictHostKey)
+	sshArgs = append(sshArgs, target, remoteCmd)
+	if out, err := runExecCombined(ctx, "ssh", sshArgs...); err != nil {
+		return fmt.Errorf("bootstrap proxyctl on node %q (%s): %w | %s", node.ID, host, err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 
@@ -4397,6 +4453,21 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		if err != nil {
 			return fmt.Errorf("create node: %w", err)
 		}
+		if created.Role == domain.NodeRoleNode && created.Enabled {
+			if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), created); bootErr != nil {
+				ops.set("error", fmt.Sprintf("node created (%s), but remote bootstrap failed: %v", created.Name, bootErr))
+				return nil
+			}
+			if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{created.ID}); syncErr != nil {
+				ops.set("error", fmt.Sprintf("node created (%s), bootstrap ok, but node sync failed: %v", created.Name, syncErr))
+				return nil
+			} else if synced > 0 || cleaned > 0 {
+				ops.set("ok", fmt.Sprintf("node created: %s (%s) | bootstrap ok | node sync: synced=%d cleaned=%d", created.Name, created.Host, synced, cleaned))
+				return nil
+			}
+			ops.set("ok", fmt.Sprintf("node created: %s (%s) | bootstrap ok", created.Name, created.Host))
+			return nil
+		}
 		ops.set("ok", fmt.Sprintf("node created: %s (%s)", created.Name, created.Host))
 		return nil
 	case "test", "set_enabled", "update", "delete":
@@ -4494,6 +4565,10 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 				return fmt.Errorf("update node: %w", err)
 			}
 			if updated.Role == domain.NodeRoleNode && updated.Enabled {
+				if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), updated); bootErr != nil {
+					ops.set("error", fmt.Sprintf("node updated (%s), but remote bootstrap failed: %v", updated.ID, bootErr))
+					return nil
+				}
 				if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{updated.ID}); syncErr != nil {
 					ops.set("error", fmt.Sprintf("node updated (%s), but node sync failed: %v", updated.ID, syncErr))
 					return nil
@@ -4520,6 +4595,10 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			return fmt.Errorf("set node enabled: %w", err)
 		}
 		if updated.Enabled && updated.Role == domain.NodeRoleNode {
+			if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), updated); bootErr != nil {
+				ops.set("error", fmt.Sprintf("node enabled (%s), but remote bootstrap failed: %v", updated.ID, bootErr))
+				return nil
+			}
 			if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{updated.ID}); syncErr != nil {
 				ops.set("error", fmt.Sprintf("node enabled (%s), but node sync failed: %v", updated.ID, syncErr))
 				return nil
