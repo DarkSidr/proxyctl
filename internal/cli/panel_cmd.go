@@ -2366,11 +2366,30 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						ops.set("error", "user id is required")
 						break
 					}
+					autoCreated := 0
+					createdCount, ensureErr := panelEnsureCredentialsForUserInbounds(r.Context(), resolvedDB, userID, nil)
+					if ensureErr != nil {
+						ops.set("error", fmt.Sprintf("subscription generate failed: ensure credentials: %v", ensureErr))
+						break
+					}
+					autoCreated = createdCount
+					if autoCreated > 0 {
+						synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(r.Context(), resolvedDB, strings.TrimSpace(configPathValue), nil)
+						if syncErr != nil {
+							ops.set("error", fmt.Sprintf("subscription generate failed: credentials auto-created=%d, but node sync failed: %v", autoCreated, syncErr))
+							break
+						}
+						ops.set("ok", fmt.Sprintf("credentials auto-created: %d | node sync: synced=%d cleaned=%d", autoCreated, synced, cleaned))
+					}
 					out, runErr := panelExecuteCommand(r.Context(), newSubscriptionGenerateCmd(&configPathValue, &dbPathValue), []string{userID})
 					if runErr != nil {
 						ops.set("error", "subscription generate failed: "+panelErrWithOutput(runErr, out))
 					} else {
-						ops.set("ok", "subscription generated: "+panelSummarizeOutput(out))
+						if autoCreated > 0 {
+							ops.set("ok", fmt.Sprintf("subscription generated: %s | credentials auto-created: %d", panelSummarizeOutput(out), autoCreated))
+						} else {
+							ops.set("ok", "subscription generated: "+panelSummarizeOutput(out))
+						}
 					}
 				case "generate_user_selected":
 					userID := strings.TrimSpace(r.FormValue("user_id"))
@@ -2387,6 +2406,21 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					if profile == "" {
 						profile = "panel"
 					}
+					autoCreated := 0
+					createdCount, ensureErr := panelEnsureCredentialsForUserInbounds(r.Context(), resolvedDB, userID, parseCSV(inboundsCSV))
+					if ensureErr != nil {
+						ops.set("error", fmt.Sprintf("subscription generate failed: ensure credentials: %v", ensureErr))
+						break
+					}
+					autoCreated = createdCount
+					if autoCreated > 0 {
+						synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(r.Context(), resolvedDB, strings.TrimSpace(configPathValue), nil)
+						if syncErr != nil {
+							ops.set("error", fmt.Sprintf("subscription generate failed: credentials auto-created=%d, but node sync failed: %v", autoCreated, syncErr))
+							break
+						}
+						ops.set("ok", fmt.Sprintf("credentials auto-created: %d | node sync: synced=%d cleaned=%d", autoCreated, synced, cleaned))
+					}
 					out, runErr := panelExecuteCommandWithSetup(r.Context(), newSubscriptionGenerateCmd(&configPathValue, &dbPathValue), []string{userID}, func(cmd *cobra.Command) error {
 						if err := cmd.Flags().Set("profile", profile); err != nil {
 							return err
@@ -2396,7 +2430,11 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					if runErr != nil {
 						ops.set("error", "subscription generate failed: "+panelErrWithOutput(runErr, out))
 					} else {
-						ops.set("ok", "subscription generated: "+panelSummarizeOutput(out))
+						if autoCreated > 0 {
+							ops.set("ok", fmt.Sprintf("subscription generated: %s | credentials auto-created: %d", panelSummarizeOutput(out), autoCreated))
+						} else {
+							ops.set("ok", "subscription generated: "+panelSummarizeOutput(out))
+						}
 					}
 				case "set_enabled":
 					userID := strings.TrimSpace(r.FormValue("user_id"))
@@ -3799,6 +3837,89 @@ func panelRevokeCredentialsForUser(ctx context.Context, dbPath, userID string, i
 		}
 	}
 	return deleted, nil
+}
+
+func panelEnsureCredentialsForUserInbounds(ctx context.Context, dbPath, userID string, inboundIDs []string) (int, error) {
+	store, err := openStoreWithInit(ctx, dbPath)
+	if err != nil {
+		return 0, err
+	}
+	defer store.Close()
+
+	users, err := store.Users().List(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list users: %w", err)
+	}
+	userFound := false
+	for _, user := range users {
+		if strings.TrimSpace(user.ID) == strings.TrimSpace(userID) {
+			userFound = true
+			break
+		}
+	}
+	if !userFound {
+		return 0, fmt.Errorf("user %q not found", userID)
+	}
+
+	inbounds, err := store.Inbounds().List(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list inbounds: %w", err)
+	}
+	inboundByID := make(map[string]domain.Inbound, len(inbounds))
+	for _, inbound := range inbounds {
+		inboundByID[strings.TrimSpace(inbound.ID)] = inbound
+	}
+
+	targetInboundIDs := compactUnique(inboundIDs)
+	if len(targetInboundIDs) == 0 {
+		for _, inbound := range inbounds {
+			if !inbound.Enabled {
+				continue
+			}
+			targetInboundIDs = append(targetInboundIDs, strings.TrimSpace(inbound.ID))
+		}
+		sort.Strings(targetInboundIDs)
+	}
+
+	credentials, err := store.Credentials().List(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list credentials: %w", err)
+	}
+	existing := make(map[string]struct{}, len(credentials))
+	for _, cred := range credentials {
+		if strings.TrimSpace(cred.UserID) != strings.TrimSpace(userID) {
+			continue
+		}
+		existing[strings.TrimSpace(cred.InboundID)] = struct{}{}
+	}
+
+	created := 0
+	for _, inboundID := range targetInboundIDs {
+		id := strings.TrimSpace(inboundID)
+		if id == "" {
+			continue
+		}
+		if _, ok := existing[id]; ok {
+			continue
+		}
+		inbound, ok := inboundByID[id]
+		if !ok {
+			continue
+		}
+		if !inbound.Enabled {
+			continue
+		}
+		credential, credErr := createCredentialForInbound(inbound, userID, "")
+		if credErr != nil {
+			return created, fmt.Errorf("create credential draft for inbound %s: %w", id, credErr)
+		}
+		if _, createErr := store.Credentials().Create(ctx, credential); createErr != nil {
+			return created, fmt.Errorf("create credential for inbound %s: %w", id, createErr)
+		}
+		existing[id] = struct{}{}
+		created++
+	}
+	return created, nil
 }
 
 func panelHandleUserAction(ctx context.Context, dbPath string, r *http.Request, ops *panelOperationFeed) error {
