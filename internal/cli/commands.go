@@ -204,6 +204,8 @@ func newUpdateCmd() *cobra.Command {
 	reinstallBinary := true
 	force := false
 	ensureCaddy := true
+	restartServices := true
+	configPath := config.DefaultConfigFile
 
 	cmd := &cobra.Command{
 		Use:   "update",
@@ -261,6 +263,16 @@ func newUpdateCmd() *cobra.Command {
 			if err := updateCmd.Run(); err != nil {
 				return fmt.Errorf("self-update failed: %w", err)
 			}
+			if restartServices {
+				appCfg, cfgErr := config.Load(configPath)
+				if cfgErr != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "warning: failed to load config %q for post-update service restart: %v (using defaults)\n", configPath, cfgErr)
+					appCfg = config.DefaultAppConfig()
+				}
+				if err := restartServicesAfterUpdate(cmd.Context(), cmd.OutOrStdout(), appCfg); err != nil {
+					return err
+				}
+			}
 			if ensureCaddy {
 				if err := ensureCaddyServiceHealthy(cmd.Context(), cmd.OutOrStdout()); err != nil {
 					return err
@@ -276,8 +288,88 @@ func newUpdateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&channel, "channel", channel, "Install channel passed to installer (auto|release|source|url|local)")
 	cmd.Flags().BoolVar(&reinstallBinary, "reinstall-binary", reinstallBinary, "Force proxyctl binary reinstall")
 	cmd.Flags().BoolVar(&force, "force", force, "Bypass version comparison and force update")
+	cmd.Flags().StringVar(&configPath, "config", configPath, "Path to proxyctl config used for post-update service restart")
+	cmd.Flags().BoolVar(&restartServices, "restart-services", restartServices, "Restart panel and active managed services after successful update")
 	cmd.Flags().BoolVar(&ensureCaddy, "ensure-caddy", ensureCaddy, "Check proxyctl-caddy.service state after update and auto-start it when inactive")
 	return cmd
+}
+
+func restartServicesAfterUpdate(ctx context.Context, out io.Writer, cfg config.AppConfig) error {
+	if _, err := lookPath("systemctl"); err != nil {
+		fmt.Fprintln(out, "post-update service restart skipped: systemctl not found")
+		return nil
+	}
+
+	panelUnit := "proxyctl-panel.service"
+	panelInstalled, err := systemdUnitInstalled(ctx, panelUnit)
+	if err != nil {
+		return err
+	}
+	if panelInstalled {
+		if _, err := runCommandOutput(ctx, "systemctl", "restart", panelUnit); err != nil {
+			return fmt.Errorf("restart %s: %w", panelUnit, err)
+		}
+		state, _ := systemdUnitActiveState(ctx, panelUnit)
+		if !strings.EqualFold(state, "active") {
+			return fmt.Errorf("%s is %q after restart", panelUnit, state)
+		}
+		fmt.Fprintf(out, "post-update: restarted %s\n", panelUnit)
+	}
+
+	units := compactUnique([]string{
+		strings.TrimSpace(cfg.Runtime.SingBoxUnit),
+		strings.TrimSpace(cfg.Runtime.XrayUnit),
+		strings.TrimSpace(cfg.Runtime.CaddyUnit),
+		strings.TrimSpace(cfg.Runtime.NginxUnit),
+	})
+	for _, unit := range units {
+		if unit == "" || unit == panelUnit {
+			continue
+		}
+		installed, err := systemdUnitInstalled(ctx, unit)
+		if err != nil {
+			return err
+		}
+		if !installed {
+			continue
+		}
+
+		beforeState, _ := systemdUnitActiveState(ctx, unit)
+		if !strings.EqualFold(beforeState, "active") {
+			fmt.Fprintf(out, "post-update: skip %s (state: %s)\n", unit, beforeState)
+			continue
+		}
+
+		if _, err := runCommandOutput(ctx, "systemctl", "restart", unit); err != nil {
+			return fmt.Errorf("restart %s: %w", unit, err)
+		}
+		afterState, _ := systemdUnitActiveState(ctx, unit)
+		if !strings.EqualFold(afterState, "active") {
+			return fmt.Errorf("%s is %q after restart", unit, afterState)
+		}
+		fmt.Fprintf(out, "post-update: restarted %s\n", unit)
+	}
+	return nil
+}
+
+func systemdUnitInstalled(ctx context.Context, unit string) (bool, error) {
+	loadState, err := runCommandOutput(ctx, "systemctl", "show", unit, "--property=LoadState", "--value")
+	if err != nil {
+		return false, fmt.Errorf("check %s load state: %w", unit, err)
+	}
+	return !strings.EqualFold(strings.TrimSpace(loadState), "not-found"), nil
+}
+
+func systemdUnitActiveState(ctx context.Context, unit string) (string, error) {
+	state, err := runCommandOutput(ctx, "systemctl", "is-active", unit)
+	trimmed := strings.TrimSpace(state)
+	if trimmed != "" {
+		return trimmed, err
+	}
+	if err != nil {
+		return "inactive", err
+	}
+	return "inactive", nil
 }
 
 func newUninstallCmd() *cobra.Command {

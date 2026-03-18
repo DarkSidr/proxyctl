@@ -272,6 +272,105 @@ func TestEnsureCaddyServiceHealthySkipsWithoutSystemctl(t *testing.T) {
 	}
 }
 
+func TestRestartServicesAfterUpdateSkipsWithoutSystemctl(t *testing.T) {
+	origLookPath := lookPath
+	origRun := runCommandOutput
+	t.Cleanup(func() {
+		lookPath = origLookPath
+		runCommandOutput = origRun
+	})
+
+	lookPath = func(file string) (string, error) {
+		return "", fmt.Errorf("not found")
+	}
+	runCommandOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		t.Fatalf("runCommandOutput should not be called when systemctl is unavailable")
+		return "", nil
+	}
+
+	var out bytes.Buffer
+	if err := restartServicesAfterUpdate(context.Background(), &out, config.DefaultAppConfig()); err != nil {
+		t.Fatalf("restartServicesAfterUpdate() error: %v", err)
+	}
+	if !strings.Contains(out.String(), "systemctl not found") {
+		t.Fatalf("output = %q, expected skip message", out.String())
+	}
+}
+
+func TestRestartServicesAfterUpdateRestartsPanelAndActiveUnitsOnly(t *testing.T) {
+	origLookPath := lookPath
+	origRun := runCommandOutput
+	t.Cleanup(func() {
+		lookPath = origLookPath
+		runCommandOutput = origRun
+	})
+
+	lookPath = func(file string) (string, error) {
+		if file == "systemctl" {
+			return "/bin/systemctl", nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+
+	restartCalls := map[string]int{}
+	runCommandOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		if name != "systemctl" {
+			return "", fmt.Errorf("unexpected command: %s", name)
+		}
+		key := strings.Join(args, " ")
+		switch key {
+		case "show proxyctl-panel.service --property=LoadState --value":
+			return "loaded", nil
+		case "show proxyctl-sing-box.service --property=LoadState --value":
+			return "loaded", nil
+		case "show proxyctl-xray.service --property=LoadState --value":
+			return "not-found", nil
+		case "show proxyctl-caddy.service --property=LoadState --value":
+			return "loaded", nil
+		case "show proxyctl-nginx.service --property=LoadState --value":
+			return "not-found", nil
+		case "is-active proxyctl-panel.service":
+			return "active", nil
+		case "is-active proxyctl-sing-box.service":
+			return "active", nil
+		case "is-active proxyctl-caddy.service":
+			return "inactive", fmt.Errorf("inactive")
+		case "restart proxyctl-panel.service":
+			restartCalls["proxyctl-panel.service"]++
+			return "", nil
+		case "restart proxyctl-sing-box.service":
+			restartCalls["proxyctl-sing-box.service"]++
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected args: %s", key)
+		}
+	}
+
+	var out bytes.Buffer
+	if err := restartServicesAfterUpdate(context.Background(), &out, config.DefaultAppConfig()); err != nil {
+		t.Fatalf("restartServicesAfterUpdate() error: %v", err)
+	}
+	if restartCalls["proxyctl-panel.service"] != 1 {
+		t.Fatalf("panel restart calls = %d, want 1", restartCalls["proxyctl-panel.service"])
+	}
+	if restartCalls["proxyctl-sing-box.service"] != 1 {
+		t.Fatalf("sing-box restart calls = %d, want 1", restartCalls["proxyctl-sing-box.service"])
+	}
+	if restartCalls["proxyctl-caddy.service"] != 0 {
+		t.Fatalf("caddy restart calls = %d, want 0 for inactive unit", restartCalls["proxyctl-caddy.service"])
+	}
+	text := out.String()
+	if !strings.Contains(text, "restarted proxyctl-panel.service") {
+		t.Fatalf("output = %q, expected panel restart message", text)
+	}
+	if !strings.Contains(text, "restarted proxyctl-sing-box.service") {
+		t.Fatalf("output = %q, expected sing-box restart message", text)
+	}
+	if !strings.Contains(text, "skip proxyctl-caddy.service (state: inactive)") {
+		t.Fatalf("output = %q, expected inactive skip message", text)
+	}
+}
+
 func TestWizardMainOptionsWithoutNodes(t *testing.T) {
 	t.Parallel()
 

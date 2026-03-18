@@ -2364,7 +2364,19 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 									ops.set("ok", "subscription enabled: "+panelSummarizeOutput(out))
 								}
 							} else {
-								ops.set("ok", fmt.Sprintf("subscription already disabled for user %s", userID))
+								revoked, revokeErr := panelRevokeCredentialsForUser(r.Context(), resolvedDB, userID, nil)
+								if revokeErr != nil {
+									ops.set("error", fmt.Sprintf("subscription already disabled, but revoke credentials failed: %v", revokeErr))
+									_ = store.Close()
+									break
+								}
+								synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(r.Context(), resolvedDB, strings.TrimSpace(configPathValue), nil)
+								if syncErr != nil {
+									ops.set("error", fmt.Sprintf("subscription already disabled for user %s, credentials revoked=%d, but node sync failed: %v", userID, revoked, syncErr))
+									_ = store.Close()
+									break
+								}
+								ops.set("ok", fmt.Sprintf("subscription already disabled for user %s | credentials revoked=%d | node sync: synced=%d cleaned=%d", userID, revoked, synced, cleaned))
 							}
 							_ = store.Close()
 							break
@@ -2400,7 +2412,17 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						if rmErr != nil {
 							ops.set("error", fmt.Sprintf("subscription disabled, but cleanup failed: %v", rmErr))
 						} else {
-							ops.set("ok", fmt.Sprintf("subscription disabled for user %s (removed files: %d)", userID, removed))
+							revoked, revokeErr := panelRevokeCredentialsForUser(r.Context(), resolvedDB, userID, nil)
+							if revokeErr != nil {
+								ops.set("error", fmt.Sprintf("subscription disabled for user %s (removed files: %d), but revoke credentials failed: %v", userID, removed, revokeErr))
+								break
+							}
+							synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(r.Context(), resolvedDB, strings.TrimSpace(configPathValue), nil)
+							if syncErr != nil {
+								ops.set("error", fmt.Sprintf("subscription disabled for user %s (removed files: %d, credentials revoked=%d), but node sync failed: %v", userID, removed, revoked, syncErr))
+								break
+							}
+							ops.set("ok", fmt.Sprintf("subscription disabled for user %s (removed files: %d, credentials revoked=%d) | node sync: synced=%d cleaned=%d", userID, removed, revoked, synced, cleaned))
 						}
 					}
 				case "refresh_all":
@@ -2458,16 +2480,27 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 							break
 						}
 						removed = rmCount
+						revoked, revokeErr := panelRevokeCredentialsForUser(r.Context(), resolvedDB, foundUserID, nil)
+						if revokeErr != nil {
+							_ = store.Close()
+							ops.set("error", fmt.Sprintf("subscription files cleaned (%s), but revoke credentials failed: %v", token, revokeErr))
+							break
+						}
 						deleted, delErr := store.Subscriptions().DeleteByUserID(r.Context(), foundUserID)
 						_ = store.Close()
 						if delErr != nil {
 							ops.set("error", fmt.Sprintf("delete subscription: %v", delErr))
 							break
 						}
+						synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(r.Context(), resolvedDB, strings.TrimSpace(configPathValue), nil)
+						if syncErr != nil {
+							ops.set("error", fmt.Sprintf("subscription deleted (%s), credentials revoked=%d, but node sync failed: %v", token, revoked, syncErr))
+							break
+						}
 						if deleted {
-							ops.set("ok", fmt.Sprintf("subscription deleted (%s), removed files: %d", token, removed))
+							ops.set("ok", fmt.Sprintf("subscription deleted (%s), removed files: %d, credentials revoked=%d | node sync: synced=%d cleaned=%d", token, removed, revoked, synced, cleaned))
 						} else {
-							ops.set("ok", fmt.Sprintf("subscription files cleaned (%s), removed files: %d", token, removed))
+							ops.set("ok", fmt.Sprintf("subscription files cleaned (%s), removed files: %d, credentials revoked=%d | node sync: synced=%d cleaned=%d", token, removed, revoked, synced, cleaned))
 						}
 						break
 					}
@@ -2495,6 +2528,21 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 							if strings.TrimSpace(entry.AccessToken) != token {
 								continue
 							}
+							inboundSet := make(map[string]struct{}, len(entry.InboundIDs))
+							for _, inboundID := range compactUnique(entry.InboundIDs) {
+								id := strings.TrimSpace(inboundID)
+								if id == "" {
+									continue
+								}
+								inboundSet[id] = struct{}{}
+							}
+							revoked, revokeErr := panelRevokeCredentialsForUser(r.Context(), resolvedDB, user.ID, inboundSet)
+							if revokeErr != nil {
+								_ = store.Close()
+								ops.set("error", fmt.Sprintf("delete named profile: revoke credentials failed: %v", revokeErr))
+								foundNamed = true
+								break
+							}
 							deleted, rmCount, delErr := deleteNamedWizardSubscriptionProfileWithMirror(user.ID, subscriptionDir, decoySiteDir, entry.Name)
 							_ = store.Close()
 							if delErr != nil {
@@ -2502,7 +2550,13 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 								foundNamed = true
 								break
 							}
-							ops.set("ok", fmt.Sprintf("named subscription deleted (%s): profile=%s user=%s metadata=%t removed_files=%d", token, wizardNormalizeProfileName(entry.Name), user.ID, deleted, rmCount))
+							synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(r.Context(), resolvedDB, strings.TrimSpace(configPathValue), nil)
+							if syncErr != nil {
+								ops.set("error", fmt.Sprintf("named subscription deleted (%s): profile=%s user=%s metadata=%t removed_files=%d credentials_revoked=%d, but node sync failed: %v", token, wizardNormalizeProfileName(entry.Name), user.ID, deleted, rmCount, revoked, syncErr))
+								foundNamed = true
+								break
+							}
+							ops.set("ok", fmt.Sprintf("named subscription deleted (%s): profile=%s user=%s metadata=%t removed_files=%d credentials_revoked=%d | node sync: synced=%d cleaned=%d", token, wizardNormalizeProfileName(entry.Name), user.ID, deleted, rmCount, revoked, synced, cleaned))
 							foundNamed = true
 							break
 						}
@@ -2564,10 +2618,20 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						ops.set("error", fmt.Sprintf("delete subscription: %v", delErr))
 						break
 					}
+					revoked, revokeErr := panelRevokeCredentialsForUser(r.Context(), resolvedDB, userID, nil)
+					if revokeErr != nil {
+						ops.set("error", fmt.Sprintf("subscription deleted for user %s (removed files: %d), but revoke credentials failed: %v", userID, removedFiles, revokeErr))
+						break
+					}
+					synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(r.Context(), resolvedDB, strings.TrimSpace(configPathValue), nil)
+					if syncErr != nil {
+						ops.set("error", fmt.Sprintf("subscription deleted for user %s (removed files: %d, credentials revoked=%d), but node sync failed: %v", userID, removedFiles, revoked, syncErr))
+						break
+					}
 					if deleted {
-						ops.set("ok", fmt.Sprintf("subscription deleted for user %s (removed files: %d)", userID, removedFiles))
+						ops.set("ok", fmt.Sprintf("subscription deleted for user %s (removed files: %d, credentials revoked=%d) | node sync: synced=%d cleaned=%d", userID, removedFiles, revoked, synced, cleaned))
 					} else {
-						ops.set("ok", fmt.Sprintf("subscription files cleaned for user %s (removed files: %d)", userID, removedFiles))
+						ops.set("ok", fmt.Sprintf("subscription files cleaned for user %s (removed files: %d, credentials revoked=%d) | node sync: synced=%d cleaned=%d", userID, removedFiles, revoked, synced, cleaned))
 					}
 				case "delete_selected_credentials":
 					userID := strings.TrimSpace(r.FormValue("user_id"))
@@ -3391,7 +3455,11 @@ func panelNodeSyncSettingsFromEnv() (panelNodeSyncSettings, error) {
 	if rawKeyPath != "" {
 		resolvedKeyPath, resolveErr := expandHomePath(rawKeyPath)
 		if resolveErr != nil {
-			return panelNodeSyncSettings{}, fmt.Errorf("resolve %s: %w", panelEnvAutoNodeSyncKey, resolveErr)
+			if keyConfigured {
+				return panelNodeSyncSettings{}, fmt.Errorf("resolve %s: %w", panelEnvAutoNodeSyncKey, resolveErr)
+			}
+			// Fallback for service environments without HOME: continue without explicit key path.
+			resolvedKeyPath = ""
 		}
 		if keyConfigured {
 			sshKeyPath = resolvedKeyPath
@@ -3562,6 +3630,42 @@ func panelCleanupNodeRuntime(ctx context.Context, configPath string, node domain
 	}
 	_, err = cleanupSingleNodeRuntime(ctx, node, settings.opts, appCfg)
 	return err
+}
+
+func panelRevokeCredentialsForUser(ctx context.Context, dbPath, userID string, inboundFilter map[string]struct{}) (int, error) {
+	store, err := openStoreWithInit(ctx, dbPath)
+	if err != nil {
+		return 0, err
+	}
+	defer store.Close()
+
+	credentials, err := store.Credentials().List(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list credentials: %w", err)
+	}
+	toDelete := make([]string, 0)
+	for _, cred := range credentials {
+		if strings.TrimSpace(cred.UserID) != strings.TrimSpace(userID) {
+			continue
+		}
+		if len(inboundFilter) > 0 {
+			if _, ok := inboundFilter[strings.TrimSpace(cred.InboundID)]; !ok {
+				continue
+			}
+		}
+		toDelete = append(toDelete, cred.ID)
+	}
+	deleted := 0
+	for _, credID := range toDelete {
+		ok, delErr := store.Credentials().Delete(ctx, credID)
+		if delErr != nil {
+			return deleted, fmt.Errorf("delete credential %s: %w", credID, delErr)
+		}
+		if ok {
+			deleted++
+		}
+	}
+	return deleted, nil
 }
 
 func panelHandleUserAction(ctx context.Context, dbPath string, r *http.Request, ops *panelOperationFeed) error {
@@ -3878,9 +3982,10 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		}
 
 		if action == "delete" {
+			cleanupWarning := ""
 			if current.Role == domain.NodeRoleNode {
 				if cleanupErr := panelCleanupNodeRuntime(ctx, strings.TrimSpace(*configPath), current); cleanupErr != nil {
-					return fmt.Errorf("cleanup node runtime before delete: %w", cleanupErr)
+					cleanupWarning = cleanupErr.Error()
 				}
 			}
 			deleted, err := store.Nodes().Delete(ctx, nodeID)
@@ -3892,10 +3997,18 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			}
 			out, refreshErr := panelRefreshAllSubscriptions(ctx, configPath, dbPathFlag)
 			if refreshErr != nil {
+				if cleanupWarning != "" {
+					ops.set("error", fmt.Sprintf("node deleted (%s), but remote cleanup failed: %s; subscription refresh failed: %s", nodeID, cleanupWarning, panelErrWithOutput(refreshErr, out)))
+					return nil
+				}
 				ops.set("error", fmt.Sprintf("node deleted (%s), but subscription refresh failed: %s", nodeID, panelErrWithOutput(refreshErr, out)))
 				return nil
 			}
 			if current.Role == domain.NodeRoleNode {
+				if cleanupWarning != "" {
+					ops.set("ok", fmt.Sprintf("node deleted: %s | warning: remote runtime cleanup failed: %s | subscriptions refreshed: %s", nodeID, cleanupWarning, panelSummarizeOutput(out)))
+					return nil
+				}
 				ops.set("ok", fmt.Sprintf("node deleted: %s | remote runtime cleaned | subscriptions refreshed: %s", nodeID, panelSummarizeOutput(out)))
 				return nil
 			}
