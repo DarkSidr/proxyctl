@@ -1732,6 +1732,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           '<td class="row">' +
             '<button class="btn secondary" data-node-save-id="'+esc(n.ID)+'" data-node-save-version="'+esc(n.Version)+'">save</button>' +
             '<button class="btn secondary" data-node-test-id="'+esc(n.ID)+'" data-node-test-version="'+esc(n.Version)+'">test</button>' +
+            '<button class="btn secondary" data-node-bootstrap-id="'+esc(n.ID)+'" data-node-bootstrap-version="'+esc(n.Version)+'">bootstrap</button>' +
             '<button class="btn '+(n.Enabled ? 'warn' : '')+'" data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
             '<button class="btn err" data-node-id="'+esc(n.ID)+'" data-node-version="'+esc(n.Version)+'">delete</button>' +
           '</td>' +
@@ -1781,6 +1782,21 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
               op: "test",
               node_id: btn.getAttribute("data-node-test-id"),
               version: btn.getAttribute("data-node-test-version"),
+            });
+          } catch (e) {
+            showOp("error", String(e));
+          }
+        });
+      });
+      document.querySelectorAll("[data-node-bootstrap-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            const sshPassword = window.prompt("Root password for initial node bootstrap (optional if SSH key already works):", "") || "";
+            await postForm(cfg.nodesActionPath, {
+              op: "bootstrap",
+              node_id: btn.getAttribute("data-node-bootstrap-id"),
+              version: btn.getAttribute("data-node-bootstrap-version"),
+              ssh_password: sshPassword,
             });
           } catch (e) {
             showOp("error", String(e));
@@ -3733,6 +3749,7 @@ const (
 	panelEnvAutoNodeSyncUser    = "PROXYCTL_PANEL_NODE_SYNC_SSH_USER"
 	panelEnvAutoNodeSyncPort    = "PROXYCTL_PANEL_NODE_SYNC_SSH_PORT"
 	panelEnvAutoNodeSyncKey     = "PROXYCTL_PANEL_NODE_SYNC_SSH_KEY"
+	panelEnvAutoNodeSyncPass    = "PROXYCTL_PANEL_NODE_SYNC_SSH_PASSWORD"
 	panelEnvAutoNodeSyncRuntime = "PROXYCTL_PANEL_NODE_SYNC_RUNTIME_DIR"
 	panelEnvAutoNodeSyncStrict  = "PROXYCTL_PANEL_NODE_SYNC_STRICT_HOST_KEY"
 	panelEnvAutoNodeSyncSudo    = "PROXYCTL_PANEL_NODE_SYNC_REMOTE_SUDO"
@@ -3801,6 +3818,7 @@ func panelNodeSyncSettingsFromEnv() (panelNodeSyncSettings, error) {
 			sshUser:       sshUser,
 			sshPort:       sshPort,
 			sshKeyPath:    sshKeyPath,
+			sshPassword:   strings.TrimSpace(os.Getenv(panelEnvAutoNodeSyncPass)),
 			runtimeDir:    runtimeDir,
 			restart:       restart,
 			strictHostKey: strictHostKey,
@@ -3837,12 +3855,19 @@ func panelEnvInt(key string, fallback int) (int, error) {
 }
 
 func panelSyncWorkerNodesByIDs(ctx context.Context, dbPath, configPath string, nodeIDs []string) (int, int, error) {
+	return panelSyncWorkerNodesByIDsWithPassword(ctx, dbPath, configPath, nodeIDs, "")
+}
+
+func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPath string, nodeIDs []string, sshPassword string) (int, int, error) {
 	settings, err := panelNodeSyncSettingsFromEnv()
 	if err != nil {
 		return 0, 0, err
 	}
 	if !settings.enabled {
 		return 0, 0, nil
+	}
+	if strings.TrimSpace(sshPassword) != "" {
+		settings.opts.sshPassword = strings.TrimSpace(sshPassword)
 	}
 	if _, err := lookPath("ssh"); err != nil {
 		return 0, 0, fmt.Errorf("ssh client is required for panel node sync: %w", err)
@@ -3960,12 +3985,19 @@ func panelCleanupNodeRuntime(ctx context.Context, configPath string, node domain
 }
 
 func panelTestNodeConnectivity(ctx context.Context, node domain.Node) error {
+	return panelTestNodeConnectivityWithPassword(ctx, node, "")
+}
+
+func panelTestNodeConnectivityWithPassword(ctx context.Context, node domain.Node, sshPassword string) error {
 	settings, err := panelNodeSyncSettingsFromEnv()
 	if err != nil {
 		return err
 	}
 	if !settings.enabled {
 		return fmt.Errorf("%s=0, auto-node-sync is disabled", panelEnvAutoNodeSyncEnabled)
+	}
+	if strings.TrimSpace(sshPassword) != "" {
+		settings.opts.sshPassword = strings.TrimSpace(sshPassword)
 	}
 	if _, err := lookPath("ssh"); err != nil {
 		return fmt.Errorf("ssh client is required: %w", err)
@@ -3977,24 +4009,27 @@ func panelTestNodeConnectivity(ctx context.Context, node domain.Node) error {
 	target := fmt.Sprintf("%s@%s", settings.opts.sshUser, host)
 	sshArgs := buildSSHArgs(settings.opts.sshPort, settings.opts.sshKeyPath, settings.opts.strictHostKey)
 	sshArgs = append(sshArgs, target, "echo proxyctl-panel-node-test-ok")
-	if out, err := runExecCombined(ctx, "ssh", sshArgs...); err != nil {
+	if out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, settings.opts.sshPassword); err != nil {
 		return fmt.Errorf("ssh connectivity check failed for node %q (%s): %w | %s", node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 	sshCheckArgs := buildSSHArgs(settings.opts.sshPort, settings.opts.sshKeyPath, settings.opts.strictHostKey)
 	sshCheckArgs = append(sshCheckArgs, target, "command -v proxyctl >/dev/null 2>&1")
-	if out, err := runExecCombined(ctx, "ssh", sshCheckArgs...); err != nil {
+	if out, err := runRemoteExecCombined(ctx, "ssh", sshCheckArgs, settings.opts.sshPassword); err != nil {
 		return fmt.Errorf("proxyctl is not installed on node %q (%s): %w | %s", node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-func panelEnsureProxyctlOnNode(ctx context.Context, configPath string, node domain.Node) error {
+func panelEnsureProxyctlOnNode(ctx context.Context, configPath string, node domain.Node, sshPassword string) error {
 	settings, err := panelNodeSyncSettingsFromEnv()
 	if err != nil {
 		return err
 	}
 	if !settings.enabled {
 		return nil
+	}
+	if strings.TrimSpace(sshPassword) != "" {
+		settings.opts.sshPassword = strings.TrimSpace(sshPassword)
 	}
 	if node.Role != domain.NodeRoleNode || !node.Enabled {
 		return nil
@@ -4033,7 +4068,7 @@ func panelEnsureProxyctlOnNode(ctx context.Context, configPath string, node doma
 	target := fmt.Sprintf("%s@%s", settings.opts.sshUser, host)
 	sshArgs := buildSSHArgs(settings.opts.sshPort, settings.opts.sshKeyPath, settings.opts.strictHostKey)
 	sshArgs = append(sshArgs, target, remoteCmd)
-	if out, err := runExecCombined(ctx, "ssh", sshArgs...); err != nil {
+	if out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, settings.opts.sshPassword); err != nil {
 		return fmt.Errorf("bootstrap proxyctl on node %q (%s): %w | %s", node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -4454,7 +4489,7 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			return fmt.Errorf("create node: %w", err)
 		}
 		if created.Role == domain.NodeRoleNode && created.Enabled {
-			if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), created); bootErr != nil {
+			if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), created, ""); bootErr != nil {
 				ops.set("error", fmt.Sprintf("node created (%s), but remote bootstrap failed: %v", created.Name, bootErr))
 				return nil
 			}
@@ -4470,7 +4505,7 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		}
 		ops.set("ok", fmt.Sprintf("node created: %s (%s)", created.Name, created.Host))
 		return nil
-	case "test", "set_enabled", "update", "delete":
+	case "bootstrap", "test", "set_enabled", "update", "delete":
 		nodeID := strings.TrimSpace(r.FormValue("node_id"))
 		version := strings.TrimSpace(r.FormValue("version"))
 		if nodeID == "" {
@@ -4495,12 +4530,56 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		if version != panelNodeVersion(current) {
 			return fmt.Errorf("node %q changed since page load; refresh and retry", nodeID)
 		}
+		if action == "bootstrap" {
+			if current.Role == domain.NodeRolePrimary {
+				ops.set("ok", fmt.Sprintf("node bootstrap skipped: %s (%s) is primary", current.Name, current.Host))
+				return nil
+			}
+			sshPassword := strings.TrimSpace(r.FormValue("ssh_password"))
+			if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), current, sshPassword); bootErr != nil {
+				ops.set("error", fmt.Sprintf("node bootstrap failed: %s (%s) | %v", current.Name, current.Host, bootErr))
+				return nil
+			}
+			if testErr := panelTestNodeConnectivityWithPassword(ctx, current, sshPassword); testErr != nil {
+				ops.set("error", fmt.Sprintf("node bootstrap completed, but test failed: %s (%s) | %v", current.Name, current.Host, testErr))
+				return nil
+			}
+			if synced, cleaned, syncErr := panelSyncWorkerNodesByIDsWithPassword(ctx, dbPath, strings.TrimSpace(*configPath), []string{current.ID}, sshPassword); syncErr != nil {
+				ops.set("error", fmt.Sprintf("node bootstrap completed (%s), but node sync failed: %v", current.ID, syncErr))
+				return nil
+			} else if synced > 0 || cleaned > 0 {
+				ops.set("ok", fmt.Sprintf("node bootstrap ok: %s (%s) | node sync: synced=%d cleaned=%d", current.Name, current.Host, synced, cleaned))
+				return nil
+			}
+			ops.set("ok", fmt.Sprintf("node bootstrap ok: %s (%s)", current.Name, current.Host))
+			return nil
+		}
 		if action == "test" {
 			if current.Role == domain.NodeRolePrimary {
 				ops.set("ok", fmt.Sprintf("node test ok: %s (%s) | primary node: local control-plane check (ssh skipped)", current.Name, current.Host))
 				return nil
 			}
-			if testErr := panelTestNodeConnectivity(ctx, current); testErr != nil {
+			if testErr := panelTestNodeConnectivityWithPassword(ctx, current, ""); testErr != nil {
+				msg := strings.ToLower(strings.TrimSpace(testErr.Error()))
+				if strings.Contains(msg, "proxyctl is not installed") {
+					if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), current, ""); bootErr != nil {
+						ops.set("error", fmt.Sprintf("node test failed: %s (%s) | proxyctl missing and bootstrap failed: %v", current.Name, current.Host, bootErr))
+						return nil
+					}
+					if recheckErr := panelTestNodeConnectivityWithPassword(ctx, current, ""); recheckErr != nil {
+						ops.set("error", fmt.Sprintf("node test failed after bootstrap: %s (%s) | %v", current.Name, current.Host, recheckErr))
+						return nil
+					}
+					if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{current.ID}); syncErr != nil {
+						ops.set("error", fmt.Sprintf("node test ok after bootstrap (%s), but node sync failed: %v", current.ID, syncErr))
+						return nil
+					} else if synced > 0 || cleaned > 0 {
+						ops.set("ok", fmt.Sprintf("node test ok: %s (%s) | proxyctl bootstrap completed | node sync: synced=%d cleaned=%d", current.Name, current.Host, synced, cleaned))
+						return nil
+					}
+					ops.set("ok", fmt.Sprintf("node test ok: %s (%s) | proxyctl bootstrap completed", current.Name, current.Host))
+					return nil
+				}
 				ops.set("error", fmt.Sprintf("node test failed: %s (%s) | %v", current.Name, current.Host, testErr))
 				return nil
 			}
@@ -4565,7 +4644,7 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 				return fmt.Errorf("update node: %w", err)
 			}
 			if updated.Role == domain.NodeRoleNode && updated.Enabled {
-				if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), updated); bootErr != nil {
+				if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), updated, ""); bootErr != nil {
 					ops.set("error", fmt.Sprintf("node updated (%s), but remote bootstrap failed: %v", updated.ID, bootErr))
 					return nil
 				}
@@ -4595,7 +4674,7 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			return fmt.Errorf("set node enabled: %w", err)
 		}
 		if updated.Enabled && updated.Role == domain.NodeRoleNode {
-			if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), updated); bootErr != nil {
+			if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), updated, ""); bootErr != nil {
 				ops.set("error", fmt.Sprintf("node enabled (%s), but remote bootstrap failed: %v", updated.ID, bootErr))
 				return nil
 			}

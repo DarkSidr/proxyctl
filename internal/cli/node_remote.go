@@ -231,6 +231,7 @@ type nodeSyncOptions struct {
 	sshUser       string
 	sshPort       int
 	sshKeyPath    string
+	sshPassword   string
 	runtimeDir    string
 	restart       bool
 	strictHostKey bool
@@ -282,15 +283,15 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 
 	scpBase := buildSCPArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
 	singSCP := append(append([]string{}, scpBase...), singLocal, fmt.Sprintf("%s:%s", target, singRemoteTmp))
-	if out, err := runExecCombined(ctx, "scp", singSCP...); err != nil {
+	if out, err := runRemoteExecCombined(ctx, "scp", singSCP, opts.sshPassword); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("upload sing-box config to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 	xraySCP := append(append([]string{}, scpBase...), xrayLocal, fmt.Sprintf("%s:%s", target, xrayRemoteTmp))
-	if out, err := runExecCombined(ctx, "scp", xraySCP...); err != nil {
+	if out, err := runRemoteExecCombined(ctx, "scp", xraySCP, opts.sshPassword); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("upload xray config to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 	syncedSCP := append(append([]string{}, scpBase...), syncedInboundsLocal, fmt.Sprintf("%s:%s", target, syncedInboundsRemoteTmp))
-	if out, err := runExecCombined(ctx, "scp", syncedSCP...); err != nil {
+	if out, err := runRemoteExecCombined(ctx, "scp", syncedSCP, opts.sshPassword); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("upload synced inbounds snapshot to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 
@@ -310,7 +311,7 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 
 	sshArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
 	sshArgs = append(sshArgs, target, installCmd)
-	if out, err := runExecCombined(ctx, "ssh", sshArgs...); err != nil {
+	if out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, opts.sshPassword); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("install configs on node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 
@@ -321,7 +322,7 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 			restartCmd := strings.TrimSpace(prefix + "systemctl restart " + shellQuote(unit))
 			sshRestartArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
 			sshRestartArgs = append(sshRestartArgs, target, restartCmd)
-			if out, err := runExecCombined(ctx, "ssh", sshRestartArgs...); err != nil {
+			if out, err := runRemoteExecCombined(ctx, "ssh", sshRestartArgs, opts.sshPassword); err != nil {
 				return nodeSyncResult{}, fmt.Errorf("restart unit %q on node %q (%s): %w\n%s", unit, req.Node.ID, host, err, strings.TrimSpace(string(out)))
 			}
 			restartedUnits = append(restartedUnits, unit)
@@ -363,7 +364,7 @@ func cleanupSingleNodeRuntime(ctx context.Context, node domain.Node, opts nodeSy
 
 	sshArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
 	sshArgs = append(sshArgs, target, cleanupCmd)
-	if out, err := runExecCombined(ctx, "ssh", sshArgs...); err != nil {
+	if out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, opts.sshPassword); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("cleanup runtime configs on node %q (%s): %w\n%s", node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 
@@ -381,7 +382,7 @@ func cleanupSingleNodeRuntime(ctx context.Context, node domain.Node, opts nodeSy
 			stopCmd := strings.TrimSpace(prefix + "systemctl stop " + shellQuote(unit))
 			sshStopArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
 			sshStopArgs = append(sshStopArgs, target, stopCmd)
-			if out, err := runExecCombined(ctx, "ssh", sshStopArgs...); err != nil {
+			if out, err := runRemoteExecCombined(ctx, "ssh", sshStopArgs, opts.sshPassword); err != nil {
 				return nodeSyncResult{}, fmt.Errorf("stop unit %q on node %q (%s): %w\n%s", unit, node.ID, host, err, strings.TrimSpace(string(out)))
 			}
 			stoppedUnits = append(stoppedUnits, unit)
@@ -543,4 +544,18 @@ func buildSCPArgs(port int, keyPath string, strictHostKey bool) []string {
 func runExecCombined(ctx context.Context, name string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, args...)
 	return command.CombinedOutput()
+}
+
+func runRemoteExecCombined(ctx context.Context, binary string, args []string, sshPassword string) ([]byte, error) {
+	password := strings.TrimSpace(sshPassword)
+	if password == "" {
+		return runExecCombined(ctx, binary, args...)
+	}
+	if _, err := lookPath("sshpass"); err != nil {
+		return nil, fmt.Errorf("ssh password auth requested, but sshpass is not installed: %w", err)
+	}
+	sshpassArgs := make([]string, 0, len(args)+3)
+	sshpassArgs = append(sshpassArgs, "-p", password, binary)
+	sshpassArgs = append(sshpassArgs, args...)
+	return runExecCombined(ctx, "sshpass", sshpassArgs...)
 }
