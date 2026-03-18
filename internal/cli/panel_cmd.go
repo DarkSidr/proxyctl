@@ -2095,7 +2095,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     document.getElementById("inTransport").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
     document.getElementById("inSniMode").addEventListener("change", () => updateInboundSniInputState());
     document.getElementById("inNode").addEventListener("change", () => {
-      updateInboundDomainFromNode(false);
+      updateInboundDomainFromNode(true);
       updateInboundSniInputState();
     });
     document.getElementById("inDomain").addEventListener("blur", () => {
