@@ -552,7 +552,7 @@ func runRemoteExecCombined(ctx context.Context, binary string, args []string, ss
 		return runExecCombined(ctx, binary, args...)
 	}
 	if _, err := lookPath("sshpass"); err != nil {
-		return nil, fmt.Errorf("ssh password auth requested, but sshpass is not installed: %w", err)
+		return nil, fmt.Errorf("ssh password auth requested, but sshpass is not installed (install: apt-get update && apt-get install -y sshpass): %w", err)
 	}
 	sshpassArgs := make([]string, 0, len(args)+3)
 	sshpassArgs = append(sshpassArgs, "-p", password, binary)

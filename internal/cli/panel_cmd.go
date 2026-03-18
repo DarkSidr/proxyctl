@@ -1791,10 +1791,15 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       document.querySelectorAll("[data-node-bootstrap-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           try {
-            const sshPassword = window.prompt("Root password for initial node bootstrap (optional if SSH key already works):", "") || "";
+            const nodeID = (btn.getAttribute("data-node-bootstrap-id") || "").trim();
+            const rowNode = nodes.find((item) => String(item?.ID || "").trim() === nodeID);
+            const nodeName = String(rowNode?.Name || nodeID || "node").trim();
+            const nodeHost = String(rowNode?.Host || "").trim();
+            const nodeLabel = nodeHost ? (nodeName + " (" + nodeHost + ")") : nodeName;
+            const sshPassword = window.prompt("Root password for node bootstrap: " + nodeLabel + " (optional if SSH key already works):", "") || "";
             await postForm(cfg.nodesActionPath, {
               op: "bootstrap",
-              node_id: btn.getAttribute("data-node-bootstrap-id"),
+              node_id: nodeID,
               version: btn.getAttribute("data-node-bootstrap-version"),
               ssh_password: sshPassword,
             });
