@@ -566,17 +566,28 @@ func ensureSSHPassInstalled(ctx context.Context) error {
 	if _, err := lookPath("sshpass"); err == nil {
 		return nil
 	}
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("sshpass missing and panel process is not running as root")
-	}
 	if _, err := lookPath("apt-get"); err != nil {
 		return fmt.Errorf("sshpass missing and apt-get is not available")
 	}
-	if out, err := runExecCombined(ctx, "apt-get", "update"); err != nil {
-		return fmt.Errorf("apt-get update failed: %w | %s", err, strings.TrimSpace(string(out)))
-	}
-	if out, err := runExecCombined(ctx, "apt-get", "install", "-y", "sshpass"); err != nil {
-		return fmt.Errorf("apt-get install sshpass failed: %w | %s", err, strings.TrimSpace(string(out)))
+
+	asRoot := os.Geteuid() == 0
+	if asRoot {
+		if out, err := runExecCombined(ctx, "apt-get", "update"); err != nil {
+			return fmt.Errorf("apt-get update failed: %w | %s", err, strings.TrimSpace(string(out)))
+		}
+		if out, err := runExecCombined(ctx, "apt-get", "install", "-y", "sshpass"); err != nil {
+			return fmt.Errorf("apt-get install sshpass failed: %w | %s", err, strings.TrimSpace(string(out)))
+		}
+	} else {
+		if _, err := lookPath("sudo"); err != nil {
+			return fmt.Errorf("sshpass missing and panel process is not root; install manually: apt-get update && apt-get install -y sshpass")
+		}
+		if out, err := runExecCombined(ctx, "sudo", "apt-get", "update"); err != nil {
+			return fmt.Errorf("sudo apt-get update failed: %w | %s", err, strings.TrimSpace(string(out)))
+		}
+		if out, err := runExecCombined(ctx, "sudo", "apt-get", "install", "-y", "sshpass"); err != nil {
+			return fmt.Errorf("sudo apt-get install sshpass failed: %w | %s", err, strings.TrimSpace(string(out)))
+		}
 	}
 	if _, err := lookPath("sshpass"); err != nil {
 		return fmt.Errorf("sshpass still not found in PATH after install")

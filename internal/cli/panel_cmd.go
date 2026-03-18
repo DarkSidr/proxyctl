@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -3828,8 +3829,8 @@ func panelNodeSyncSettingsFromEnv() (panelNodeSyncSettings, error) {
 			if keyConfigured {
 				return panelNodeSyncSettings{}, fmt.Errorf("resolve %s: %w", panelEnvAutoNodeSyncKey, resolveErr)
 			}
-			// Fallback for service environments without HOME: continue without explicit key path.
-			resolvedKeyPath = ""
+			// Fallback for service environments without HOME.
+			resolvedKeyPath = panelDefaultSSHKeyPath(sshUser)
 		}
 		if keyConfigured {
 			sshKeyPath = resolvedKeyPath
@@ -3878,6 +3879,22 @@ func panelEnvInt(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s must be a valid integer: %w", key, err)
 	}
 	return value, nil
+}
+
+func panelDefaultSSHKeyPath(sshUser string) string {
+	userName := strings.TrimSpace(sshUser)
+	if userName == "" || strings.EqualFold(userName, "root") {
+		return "/root/.ssh/id_ed25519"
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		return filepath.Join(home, ".ssh", "id_ed25519")
+	}
+	if current, err := user.Current(); err == nil {
+		if home := strings.TrimSpace(current.HomeDir); home != "" {
+			return filepath.Join(home, ".ssh", "id_ed25519")
+		}
+	}
+	return "/tmp/proxyctl-panel-ssh/id_ed25519"
 }
 
 func panelSyncWorkerNodesByIDs(ctx context.Context, dbPath, configPath string, nodeIDs []string) (int, int, error) {
@@ -4120,7 +4137,7 @@ func panelInstallSSHKeyOnNode(ctx context.Context, node domain.Node, sshPassword
 	generated := false
 	if keyPath == "" {
 		var genErr error
-		keyPath, generated, genErr = ensureWizardSSHKey(ctx, "~/.ssh/id_ed25519")
+		keyPath, generated, genErr = ensureWizardSSHKey(ctx, panelDefaultSSHKeyPath(settings.opts.sshUser))
 		if genErr != nil {
 			return false, "", fmt.Errorf("prepare ssh key: %w", genErr)
 		}
