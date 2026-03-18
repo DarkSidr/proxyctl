@@ -2394,7 +2394,9 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 							ops.set("error", fmt.Sprintf("subscription disabled, but cleanup failed: %v", dirErr))
 							break
 						}
-						removed, rmErr := cleanupUserSubscriptionFiles(userID, subscriptionDir, strings.TrimSpace(sub.OutputPath), strings.TrimSpace(sub.AccessToken))
+						appCfg, _ := loadAppConfig(configPathValue)
+						decoySiteDir := strings.TrimSpace(appCfg.Paths.DecoySiteDir)
+						removed, rmErr := cleanupUserSubscriptionFilesWithMirror(userID, subscriptionDir, decoySiteDir, strings.TrimSpace(sub.OutputPath), strings.TrimSpace(sub.AccessToken))
 						if rmErr != nil {
 							ops.set("error", fmt.Sprintf("subscription disabled, but cleanup failed: %v", rmErr))
 						} else {
@@ -2432,6 +2434,8 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						ops.set("error", fmt.Sprintf("resolve subscription dir: %v", dirErr))
 						break
 					}
+					appCfg, _ := loadAppConfig(configPathValue)
+					decoySiteDir := strings.TrimSpace(appCfg.Paths.DecoySiteDir)
 					foundUserID := ""
 					var foundSub domain.Subscription
 					for _, user := range users {
@@ -2447,7 +2451,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					}
 					removed := 0
 					if foundUserID != "" {
-						rmCount, rmErr := cleanupUserSubscriptionFiles(foundUserID, subscriptionDir, strings.TrimSpace(foundSub.OutputPath), strings.TrimSpace(foundSub.AccessToken))
+						rmCount, rmErr := cleanupUserSubscriptionFilesWithMirror(foundUserID, subscriptionDir, decoySiteDir, strings.TrimSpace(foundSub.OutputPath), strings.TrimSpace(foundSub.AccessToken))
 						if rmErr != nil {
 							_ = store.Close()
 							ops.set("error", fmt.Sprintf("cleanup subscription files: %v", rmErr))
@@ -2467,7 +2471,49 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						}
 						break
 					}
-					rmCount, rmErr := cleanupSubscriptionTokenFiles(subscriptionDir, token)
+					foundNamed := false
+					for _, user := range users {
+						profilesPath := filepath.Join(strings.TrimSpace(subscriptionDir), "profiles", strings.TrimSpace(user.ID)+".json")
+						content, readErr := os.ReadFile(profilesPath)
+						if readErr != nil {
+							if os.IsNotExist(readErr) {
+								continue
+							}
+							_ = store.Close()
+							ops.set("error", fmt.Sprintf("read profiles file: %v", readErr))
+							foundNamed = true
+							break
+						}
+						var file wizardSubscriptionProfilesFile
+						if unmarshalErr := json.Unmarshal(content, &file); unmarshalErr != nil {
+							_ = store.Close()
+							ops.set("error", fmt.Sprintf("decode profiles file: %v", unmarshalErr))
+							foundNamed = true
+							break
+						}
+						for _, entry := range file.Profiles {
+							if strings.TrimSpace(entry.AccessToken) != token {
+								continue
+							}
+							deleted, rmCount, delErr := deleteNamedWizardSubscriptionProfileWithMirror(user.ID, subscriptionDir, decoySiteDir, entry.Name)
+							_ = store.Close()
+							if delErr != nil {
+								ops.set("error", fmt.Sprintf("delete named profile: %v", delErr))
+								foundNamed = true
+								break
+							}
+							ops.set("ok", fmt.Sprintf("named subscription deleted (%s): profile=%s user=%s metadata=%t removed_files=%d", token, wizardNormalizeProfileName(entry.Name), user.ID, deleted, rmCount))
+							foundNamed = true
+							break
+						}
+						if foundNamed {
+							break
+						}
+					}
+					if foundNamed {
+						break
+					}
+					rmCount, rmErr := cleanupSubscriptionTokenFilesWithMirror(subscriptionDir, decoySiteDir, token)
 					_ = store.Close()
 					if rmErr != nil {
 						ops.set("error", fmt.Sprintf("cleanup subscription token files: %v", rmErr))
@@ -2491,10 +2537,12 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						ops.set("error", fmt.Sprintf("resolve subscription dir: %v", dirErr))
 						break
 					}
+					appCfg, _ := loadAppConfig(configPathValue)
+					decoySiteDir := strings.TrimSpace(appCfg.Paths.DecoySiteDir)
 					sub, subErr := store.Subscriptions().GetByUserID(r.Context(), userID)
 					removedFiles := 0
 					if subErr == nil {
-						rmCount, rmErr := cleanupUserSubscriptionFiles(userID, subscriptionDir, strings.TrimSpace(sub.OutputPath), strings.TrimSpace(sub.AccessToken))
+						rmCount, rmErr := cleanupUserSubscriptionFilesWithMirror(userID, subscriptionDir, decoySiteDir, strings.TrimSpace(sub.OutputPath), strings.TrimSpace(sub.AccessToken))
 						if rmErr != nil {
 							_ = store.Close()
 							ops.set("error", fmt.Sprintf("cleanup subscription files: %v", rmErr))
@@ -2502,7 +2550,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						}
 						removedFiles = rmCount
 					} else {
-						rmCount, rmErr := cleanupUserSubscriptionFiles(userID, subscriptionDir, "", "")
+						rmCount, rmErr := cleanupUserSubscriptionFilesWithMirror(userID, subscriptionDir, decoySiteDir, "", "")
 						if rmErr != nil {
 							_ = store.Close()
 							ops.set("error", fmt.Sprintf("cleanup subscription files: %v", rmErr))
@@ -2581,7 +2629,9 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						removedFiles := 0
 						if sub, subErr := store.Subscriptions().GetByUserID(r.Context(), userID); subErr == nil {
 							if subscriptionDir, dirErr := resolveSubscriptionDir(configPathValue); dirErr == nil {
-								if rmCount, rmErr := cleanupUserSubscriptionFiles(userID, subscriptionDir, strings.TrimSpace(sub.OutputPath), strings.TrimSpace(sub.AccessToken)); rmErr == nil {
+								appCfg, _ := loadAppConfig(configPathValue)
+								decoySiteDir := strings.TrimSpace(appCfg.Paths.DecoySiteDir)
+								if rmCount, rmErr := cleanupUserSubscriptionFilesWithMirror(userID, subscriptionDir, decoySiteDir, strings.TrimSpace(sub.OutputPath), strings.TrimSpace(sub.AccessToken)); rmErr == nil {
 									removedFiles = rmCount
 								}
 							}
@@ -4378,15 +4428,27 @@ func panelSubscriptionTokenFromLink(raw string) string {
 }
 
 func cleanupSubscriptionTokenFiles(subscriptionDir, token string) (int, error) {
+	return cleanupSubscriptionTokenFilesWithMirror(subscriptionDir, "", token)
+}
+
+func cleanupSubscriptionTokenFilesWithMirror(subscriptionDir, decoySiteDir, token string) (int, error) {
 	t := strings.TrimSpace(token)
 	if t == "" {
 		return 0, nil
 	}
 	publicDir := subscriptionPublicDir(subscriptionDir)
-	paths := compactUnique([]string{
+	mirrorDir := subscriptionDecoyDir(decoySiteDir)
+	paths := []string{
 		filepath.Join(publicDir, t),
 		filepath.Join(publicDir, t+".txt"),
-	})
+	}
+	if strings.TrimSpace(mirrorDir) != "" {
+		paths = append(paths,
+			filepath.Join(mirrorDir, t),
+			filepath.Join(mirrorDir, t+".txt"),
+		)
+	}
+	paths = compactUnique(paths)
 	removed := 0
 	for _, p := range paths {
 		if strings.TrimSpace(p) == "" {

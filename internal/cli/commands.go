@@ -4042,11 +4042,15 @@ func deleteWizardSubscription(cmd *cobra.Command, configPath, dbPath, userID, pr
 }
 
 func deleteNamedWizardSubscriptionProfile(userID, subscriptionDir, profileName string) (bool, int, error) {
+	return deleteNamedWizardSubscriptionProfileWithMirror(userID, subscriptionDir, "", profileName)
+}
+
+func deleteNamedWizardSubscriptionProfileWithMirror(userID, subscriptionDir, decoySiteDir, profileName string) (bool, int, error) {
 	profilesPath := filepath.Join(strings.TrimSpace(subscriptionDir), "profiles", strings.TrimSpace(userID)+".json")
 	content, err := os.ReadFile(profilesPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			removed, removeErr := cleanupNamedSubscriptionFiles(userID, subscriptionDir, profileName, "")
+			removed, removeErr := cleanupNamedSubscriptionFilesWithMirror(userID, subscriptionDir, decoySiteDir, profileName, "")
 			return removed > 0, removed, removeErr
 		}
 		return false, 0, fmt.Errorf("read profiles file: %w", err)
@@ -4085,7 +4089,7 @@ func deleteNamedWizardSubscriptionProfile(userID, subscriptionDir, profileName s
 		}
 	}
 
-	removed, err := cleanupNamedSubscriptionFiles(userID, subscriptionDir, profileName, removedToken)
+	removed, err := cleanupNamedSubscriptionFilesWithMirror(userID, subscriptionDir, decoySiteDir, profileName, removedToken)
 	if err != nil {
 		return false, removed, err
 	}
@@ -4093,18 +4097,29 @@ func deleteNamedWizardSubscriptionProfile(userID, subscriptionDir, profileName s
 }
 
 func cleanupNamedSubscriptionFiles(userID, subscriptionDir, profileName, accessToken string) (int, error) {
+	return cleanupNamedSubscriptionFilesWithMirror(userID, subscriptionDir, "", profileName, accessToken)
+}
+
+func cleanupNamedSubscriptionFilesWithMirror(userID, subscriptionDir, decoySiteDir, profileName, accessToken string) (int, error) {
 	paths := []string{
 		filepath.Join(subscriptionDir, userID+"."+profileName+".txt"),
 		filepath.Join(subscriptionDir, userID+"."+profileName+".base64"),
 		filepath.Join(subscriptionDir, userID+"."+profileName+".json"),
 	}
 	publicDir := subscriptionPublicDir(subscriptionDir)
+	mirrorDir := subscriptionDecoyDir(decoySiteDir)
 	token := strings.TrimSpace(accessToken)
 	if token != "" {
 		paths = append(paths,
 			filepath.Join(publicDir, token),
 			filepath.Join(publicDir, token+".txt"),
 		)
+		if strings.TrimSpace(mirrorDir) != "" {
+			paths = append(paths,
+				filepath.Join(mirrorDir, token),
+				filepath.Join(mirrorDir, token+".txt"),
+			)
+		}
 	}
 	unique := compactUnique(paths)
 	removed := 0
@@ -5222,18 +5237,29 @@ func buildSubscriptionPublicURL(cfg config.AppConfig, accessToken string) string
 }
 
 func cleanupUserSubscriptionFiles(userID, subscriptionDir, storedOutputPath, accessToken string) (int, error) {
+	return cleanupUserSubscriptionFilesWithMirror(userID, subscriptionDir, "", storedOutputPath, accessToken)
+}
+
+func cleanupUserSubscriptionFilesWithMirror(userID, subscriptionDir, decoySiteDir, storedOutputPath, accessToken string) (int, error) {
 	paths := []string{
 		filepath.Join(subscriptionDir, userID+".txt"),
 		filepath.Join(subscriptionDir, userID+".base64"),
 		filepath.Join(subscriptionDir, userID+".json"),
 	}
 	publicDir := subscriptionPublicDir(subscriptionDir)
+	mirrorDir := subscriptionDecoyDir(decoySiteDir)
 	token := strings.TrimSpace(accessToken)
 	if token != "" {
 		paths = append(paths,
 			filepath.Join(publicDir, token),
 			filepath.Join(publicDir, token+".txt"),
 		)
+		if strings.TrimSpace(mirrorDir) != "" {
+			paths = append(paths,
+				filepath.Join(mirrorDir, token),
+				filepath.Join(mirrorDir, token+".txt"),
+			)
+		}
 	}
 	if strings.TrimSpace(storedOutputPath) != "" {
 		paths = append(paths, strings.TrimSpace(storedOutputPath))
