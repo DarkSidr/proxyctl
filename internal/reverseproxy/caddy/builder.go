@@ -124,6 +124,20 @@ func (b *Builder) Build(req BuildRequest) (BuildResult, error) {
 		}
 	}
 
+	// If a panel route is requested, ensure the public domain (or node host)
+	// is present in siteMap even when no inbounds produce caddy routes.
+	if strings.TrimSpace(req.PanelPath) != "" {
+		panelDomain := strings.TrimSpace(b.cfg.Public.Domain)
+		if panelDomain == "" {
+			panelDomain = strings.TrimSpace(req.Node.Host)
+		}
+		if panelDomain != "" {
+			if _, exists := siteMap[panelDomain]; !exists {
+				siteMap[panelDomain] = []Route{}
+			}
+		}
+	}
+
 	domains := make([]string, 0, len(siteMap))
 	for domainName := range siteMap {
 		domains = append(domains, domainName)
