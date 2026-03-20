@@ -1914,7 +1914,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       updateInboundAdvancedVisibility();
     }
     function beginInboundEdit(inbound) {
-      if (!inbound || !inbound.ID) return;
+      console.log('[beginInboundEdit] called with:', JSON.stringify({ID: inbound?.ID, Domain: inbound?.Domain, Port: inbound?.Port, NodeID: inbound?.NodeID, Transport: inbound?.Transport, RealityEnabled: inbound?.RealityEnabled, TLS: inbound?.TLS}));
+      if (!inbound || !inbound.ID) { console.warn('[beginInboundEdit] no inbound or no ID, aborting'); return; }
       editingInboundID = String(inbound.ID || "").trim();
       editingInboundVersion = String(inbound.Version || "").trim();
       editingInboundEnabled = !!inbound.Enabled;
@@ -1944,12 +1945,15 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const nodeEl = document.getElementById("inNode");
       if (nodeEl) {
         const nextNodeID = String(inbound.NodeID || "").trim();
-        if (nextNodeID && Array.from(nodeEl.options).some((o) => o.value === nextNodeID)) {
+        const nodeInOptions = Array.from(nodeEl.options).some((o) => o.value === nextNodeID);
+        console.log('[beginInboundEdit] setting node:', nextNodeID, 'found in options:', nodeInOptions, 'available options:', Array.from(nodeEl.options).map(o => o.value));
+        if (nextNodeID && nodeInOptions) {
           nodeEl.value = nextNodeID;
         }
       }
       document.getElementById("inDomain").value = String(inbound.Domain || "").trim();
       document.getElementById("inPort").value = String(inbound.Port || "").trim();
+      console.log('[beginInboundEdit] after setting: node=', document.getElementById("inNode")?.value, 'domain=', document.getElementById("inDomain")?.value, 'port=', document.getElementById("inPort")?.value);
       document.getElementById("inPath").value = String(inbound.Path || "").trim();
       const sni = String(inbound.SNI || "").trim();
       const targetEl = document.getElementById("inTarget");
@@ -1999,6 +2003,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       updateInboundCreateFieldVisibility(false);
       updateInboundTargetToSni(true);
       updateInboundAdvancedVisibility();
+      console.log('[beginInboundEdit] FINAL DOM values - node:', document.getElementById("inNode")?.value, 'domain:', document.getElementById("inDomain")?.value, 'port:', document.getElementById("inPort")?.value, 'transport:', document.getElementById("inTransport")?.value, 'security:', document.getElementById("inSecurityMode")?.value);
     }
     function refreshInboundSniList(nodes, inbounds) {
       const presets = (snapshot && Array.isArray(snapshot.SNIPresets)) ? snapshot.SNIPresets : [];
@@ -2047,6 +2052,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
       if (type === "hysteria2") {
         if (engineEl) engineEl.value = "sing-box";
+        setTransportOptions(["udp"]);
         if (transportSel) transportSel.value = "udp";
         if (secEl) secEl.value = "tls";
         if (mTransportRow) mTransportRow.classList.add("hidden");
@@ -2056,6 +2062,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         setModalSecTab("tls");
       } else if (type === "xhttp") {
         if (engineEl) engineEl.value = "xray";
+        setTransportOptions(["xhttp"]);
         if (transportSel) transportSel.value = "xhttp";
         if (mTransportRow) mTransportRow.classList.add("hidden");
         if (mPathRow) mPathRow.classList.remove("hidden");
@@ -2443,8 +2450,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       )).join("");
       document.querySelectorAll("[data-inbound-toggle-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
+          const enabledNow = btn.getAttribute("data-inbound-enabled") === "1";
+          console.log('[inbound toggle] id:', btn.getAttribute("data-inbound-toggle-id"), 'enabledNow:', enabledNow, '→ setting to:', enabledNow ? "0" : "1");
           try {
-            const enabledNow = btn.getAttribute("data-inbound-enabled") === "1";
             await postForm(cfg.inboundsActionPath, {
               op: "set_enabled",
               inbound_id: btn.getAttribute("data-inbound-toggle-id"),
@@ -2458,6 +2466,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       });
       document.querySelectorAll("[data-inbound-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
+          console.log('[inbound delete] id:', btn.getAttribute("data-inbound-id"));
           try {
             await postForm(cfg.inboundsActionPath, {
               op: "delete",
@@ -2634,6 +2643,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
     });
     document.getElementById("createInboundBtn").addEventListener("click", async () => {
+      console.log('[createInboundBtn] click - editingInboundID:', editingInboundID);
       updateInboundCreateFieldVisibility(false);
       const type = (document.getElementById("inType").value || "").trim();
       const transport = (document.getElementById("inTransport").value || "").trim();
@@ -2669,7 +2679,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           document.getElementById("inPort").value = port;
         }
       }
-      if (!type || !transport || !nodeID || !domain || !port) return;
+      console.log('[createInboundBtn] validation - type:', type, 'transport:', transport, 'nodeID:', nodeID, 'domain:', domain, 'port:', port);
+      if (!type || !transport || !nodeID || !domain || !port) { console.warn('[createInboundBtn] validation FAILED, returning'); return; }
       try {
         const isEdit = !!editingInboundID;
         const payload = {
@@ -2837,9 +2848,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const btn = e.target.closest("[data-inbound-edit-id]");
       if (!btn) return;
       const inboundID = (btn.getAttribute("data-inbound-edit-id") || "").trim();
+      console.log('[inboundsBody] edit click - inboundID:', inboundID);
       if (!inboundID) return;
       const currentInbounds = Array.isArray(snapshot?.Inbounds) ? snapshot.Inbounds : [];
       const selected = currentInbounds.find((item) => String(item.ID || "").trim() === inboundID);
+      console.log('[inboundsBody] found inbound:', selected ? JSON.stringify({ID: selected.ID, Domain: selected.Domain, Port: selected.Port, NodeID: selected.NodeID}) : 'NOT FOUND');
       if (!selected) return;
       beginInboundEdit(selected);
     });
@@ -2892,6 +2905,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       updateInboundDomainFromNode(true);
     });
     document.getElementById("openCreateInboundBtn").addEventListener("click", () => {
+      console.log('[openCreateInboundBtn] opening create modal');
       resetInboundCreateDefaults();
       const modalTitle = document.getElementById("inboundModalTitle");
       if (modalTitle) modalTitle.textContent = "Create Inbound";
@@ -2901,6 +2915,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       updateInboundCreateFieldVisibility(true);
     });
     document.getElementById("closeInboundModalBtn").addEventListener("click", () => {
+      console.log('[closeInboundModalBtn] closing modal');
       resetInboundCreateDefaults();
     });
     document.getElementById("inboundModal").addEventListener("click", (e) => {
