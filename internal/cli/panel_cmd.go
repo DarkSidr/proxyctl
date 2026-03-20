@@ -242,7 +242,8 @@ type nodeSyncRecord struct {
 
 var panelNodeSyncCache sync.Map // key: nodeID string → value: nodeSyncRecord
 
-// dashMu guards delta-metric state used to compute per-second speeds.
+// dashMu guards delta-metric state used to compute per-second speeds
+// and traffic reset baselines.
 var (
 	dashMu       sync.Mutex
 	prevNetRX    uint64
@@ -250,6 +251,9 @@ var (
 	prevNetAt    time.Time
 	prevCPUIdle  uint64
 	prevCPUTotal uint64
+	// Traffic display reset baseline: display = raw - baseline.
+	trafResetRX uint64
+	trafResetTX uint64
 )
 
 // nodeJob tracks a background SSH operation per node.
@@ -1079,6 +1083,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     .sec-hdr { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
     .sec-hdr h2 { margin: 0; font-size: 0.95rem; }
     @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+    /* Toggle switch */
+    .toggle { position: relative; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; vertical-align: middle; }
+    .toggle input[type="checkbox"] { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+    .toggle-track { position: relative; width: 34px; height: 18px; flex-shrink: 0; background: rgba(148,163,184,0.12); border: 1px solid rgba(148,163,184,0.2); border-radius: 18px; transition: background 0.18s, border-color 0.18s; }
+    .toggle-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); transition: transform 0.18s, background 0.18s; }
+    .toggle input[type="checkbox"]:checked ~ .toggle-track { background: rgba(34,211,238,0.18); border-color: #22d3ee; }
+    .toggle input[type="checkbox"]:checked ~ .toggle-track::after { transform: translateX(16px); background: #22d3ee; }
+    .toggle-label { font-size: 0.82rem; color: var(--muted); }
     /* Dashboard gauges */
     .dash-gauges { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
     .gauge { flex: 1 1 140px; min-width: 130px; max-width: 200px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
@@ -1135,9 +1147,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       <div class="sec-hdr">
         <h2>dashboard</h2>
         <div class="row" style="gap:8px">
-          <label class="row" style="gap:6px">
+          <label class="toggle">
             <input id="liveMode" type="checkbox" checked>
-            <span class="label">live</span>
+            <span class="toggle-track"></span>
+            <span class="toggle-label">live</span>
           </label>
           <select id="liveInterval">
             <option value="3000">3s</option>
@@ -1209,7 +1222,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         <!-- User traffic table -->
         <div class="table-wrap" style="margin-top:10px">
           <table>
-            <thead><tr><th>user</th><th>rx</th><th>tx</th><th>total</th></tr></thead>
+            <thead><tr><th>user</th><th>rx</th><th>tx</th><th>total</th><th></th></tr></thead>
             <tbody id="userTrafficBody"></tbody>
           </table>
         </div>
@@ -1394,8 +1407,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
             <span class="flabel">SNI</span>
             <div class="frow-inline">
               <input id="inSni" type="text" list="inSniList" placeholder="auto from target" style="flex:1">
-              <label style="display:flex;align-items:center;gap:4px;font-size:0.78rem;color:var(--muted);white-space:nowrap;cursor:pointer">
-                <input id="inLinkTargetSni" type="checkbox" checked style="width:auto"> = Target
+              <label class="toggle" style="white-space:nowrap">
+                <input id="inLinkTargetSni" type="checkbox" checked>
+                <span class="toggle-track"></span>
+                <span class="toggle-label">= Target</span>
               </label>
             </div>
           </div>
@@ -1435,20 +1450,20 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           </div>
         </div>
       </div>
-      <div class="frow">
-        <span class="flabel">Sniffing</span>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" id="inSniffingEnabled" style="width:auto">
-          <span style="font-size:0.85rem;color:var(--muted)">detect protocol &amp; redirect</span>
-        </label>
-      </div>
-      <div id="mSniffingRow" class="frow hidden">
-        <span class="flabel">Detect</span>
-        <div style="display:flex;gap:12px;flex-wrap:wrap">
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.85rem"><input type="checkbox" id="inSniffingHTTP" checked style="width:auto"> HTTP</label>
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.85rem"><input type="checkbox" id="inSniffingTLS" checked style="width:auto"> TLS</label>
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.85rem"><input type="checkbox" id="inSniffingQUIC" style="width:auto"> QUIC</label>
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.85rem"><input type="checkbox" id="inSniffingFakeDNS" style="width:auto"> FakeDNS</label>
+      <div class="modal-block">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span class="modal-block-hdr" style="margin:0">Sniffing</span>
+          <label class="toggle">
+            <input type="checkbox" id="inSniffingEnabled">
+            <span class="toggle-track"></span>
+            <span class="toggle-label">detect protocol &amp; redirect</span>
+          </label>
+        </div>
+        <div id="mSniffingRow" class="hidden" style="display:flex;gap:16px;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--line)">
+          <label class="toggle"><input type="checkbox" id="inSniffingHTTP" checked><span class="toggle-track"></span><span class="toggle-label">HTTP</span></label>
+          <label class="toggle"><input type="checkbox" id="inSniffingTLS" checked><span class="toggle-track"></span><span class="toggle-label">TLS</span></label>
+          <label class="toggle"><input type="checkbox" id="inSniffingQUIC"><span class="toggle-track"></span><span class="toggle-label">QUIC</span></label>
+          <label class="toggle"><input type="checkbox" id="inSniffingFakeDNS"><span class="toggle-track"></span><span class="toggle-label">FakeDNS</span></label>
         </div>
       </div>
       <div class="modal-ftr">
@@ -2444,25 +2459,45 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
       // Traffic & connections card
       const trafEl = document.getElementById("dashTraffic");
-      if (trafEl) trafEl.innerHTML = statRows([
-        ["total rx",    fmtBytes(dash.TotalRXBytes||0)],
-        ["total tx",    fmtBytes(dash.TotalTXBytes||0)],
-        ["total",       fmtBytes(dash.TotalBytes||0)],
-        ["tcp conns",   String(dash.TCPConns||0)],
-        ["udp conns",   String(dash.UDPConns||0)],
-      ]);
+      if (trafEl) {
+        trafEl.innerHTML =
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+            '<span class="stat-label" style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em">interface totals</span>' +
+            '<button class="btn-xs danger" id="resetTotalTrafficBtn">reset</button>' +
+          '</div>' +
+          statRows([
+            ["rx",        fmtBytes(dash.TotalRXBytes||0)],
+            ["tx",        fmtBytes(dash.TotalTXBytes||0)],
+            ["total",     fmtBytes(dash.TotalBytes||0)],
+            ["tcp conns", String(dash.TCPConns||0)],
+            ["udp conns", String(dash.UDPConns||0)],
+          ]);
+        document.getElementById("resetTotalTrafficBtn")?.addEventListener("click", async () => {
+          try { await postForm(cfg.dashboardActionPath, { action: "reset_total_traffic" }); }
+          catch(e) { showOp("error", String(e)); }
+        });
+      }
 
       // User traffic table
       const userTraffic = Array.isArray(dash.UserTraffic) ? dash.UserTraffic : [];
       const utEl = document.getElementById("userTrafficBody");
-      if (utEl) utEl.innerHTML = userTraffic.map((u) =>
-        '<tr>' +
-          '<td>'+esc(u.UserName || u.UserID)+'</td>' +
-          '<td>'+esc(fmtBytes(u.RXBytes))+'</td>' +
-          '<td>'+esc(fmtBytes(u.TXBytes))+'</td>' +
-          '<td>'+esc(fmtBytes(u.TotalBytes))+'</td>' +
-        '</tr>'
-      ).join("");
+      if (utEl) {
+        utEl.innerHTML = userTraffic.map((u) =>
+          '<tr>' +
+            '<td>'+esc(u.UserName || u.UserID)+'</td>' +
+            '<td>'+esc(fmtBytes(u.RXBytes))+'</td>' +
+            '<td>'+esc(fmtBytes(u.TXBytes))+'</td>' +
+            '<td>'+esc(fmtBytes(u.TotalBytes))+'</td>' +
+            '<td><button class="btn-xs danger" data-reset-uid="'+esc(u.UserID)+'">reset</button></td>' +
+          '</tr>'
+        ).join("");
+        utEl.querySelectorAll("[data-reset-uid]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            try { await postForm(cfg.dashboardActionPath, { action: "reset_user_traffic", user_id: btn.getAttribute("data-reset-uid") }); }
+            catch(e) { showOp("error", String(e)); }
+          });
+        });
+      }
       const metaEl = document.getElementById("trafficMeta");
       if (metaEl) metaEl.textContent = "traffic source: " + (dash.TrafficSource || "none");
     }
@@ -3398,7 +3433,29 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					} else {
 						ops.set("ok", "apply completed: "+panelSummarizeOutput(out))
 					}
-				case "restart_unit", "stop_unit", "start_unit":
+				case "reset_total_traffic":
+				rx, tx, err := panelNetTotals()
+				if err != nil {
+					ops.set("error", "reset traffic: "+err.Error())
+				} else {
+					dashMu.Lock()
+					trafResetRX = rx
+					trafResetTX = tx
+					dashMu.Unlock()
+					ops.set("ok", "traffic counters reset")
+				}
+			case "reset_user_traffic":
+				userID := strings.TrimSpace(r.FormValue("user_id"))
+				if err := panelResetUserTraffic(cfg.Paths.RuntimeDir, userID); err != nil {
+					ops.set("error", "reset user traffic: "+err.Error())
+				} else {
+					if userID == "" {
+						ops.set("ok", "all user traffic reset")
+					} else {
+						ops.set("ok", "user traffic reset: "+userID)
+					}
+				}
+			case "restart_unit", "stop_unit", "start_unit":
 					unit := strings.TrimSpace(r.FormValue("unit"))
 					allowed := map[string]bool{
 						cfg.Runtime.XrayUnit:    true,
@@ -4481,7 +4538,7 @@ func buildPanelDashboard(cfg config.AppConfig, users []panelUserView) panelDashb
 	swapUsed, swapTotal, _ := panelSwapUsage()
 	diskUsed, diskTotal, _ := panelDiskUsage(cfg.Paths.StateDir)
 	uptime, _ := panelUptimeSeconds()
-	totalRX, totalTX, _ := panelNetTotals()
+	rawRX, rawTX, _ := panelNetTotals()
 	rxSpeed, txSpeed := panelNetSpeed()
 	tcpConns, udpConns := panelNetConnections()
 	userTraffic, source := panelUserTraffic(cfg.Paths.RuntimeDir, users)
@@ -4489,7 +4546,23 @@ func buildPanelDashboard(cfg config.AppConfig, users []panelUserView) panelDashb
 	for _, item := range userTraffic {
 		totalUserBytes += item.TotalBytes
 	}
-	totalBytes := totalRX + totalTX
+	// Apply traffic reset baseline.
+	dashMu.Lock()
+	baseRX := trafResetRX
+	baseTX := trafResetTX
+	dashMu.Unlock()
+	displayRX, displayTX := rawRX, rawTX
+	if displayRX > baseRX {
+		displayRX -= baseRX
+	} else {
+		displayRX = 0
+	}
+	if displayTX > baseTX {
+		displayTX -= baseTX
+	} else {
+		displayTX = 0
+	}
+	totalBytes := displayRX + displayTX
 	if totalUserBytes > 0 {
 		totalBytes = totalUserBytes
 	}
@@ -4507,8 +4580,8 @@ func buildPanelDashboard(cfg config.AppConfig, users []panelUserView) panelDashb
 		DiskUsedBytes:   diskUsed,
 		DiskTotalBytes:  diskTotal,
 		UptimeSeconds:   uptime,
-		TotalRXBytes:    totalRX,
-		TotalTXBytes:    totalTX,
+		TotalRXBytes:    displayRX,
+		TotalTXBytes:    displayTX,
 		TotalBytes:      totalBytes,
 		NetRXSpeed:      rxSpeed,
 		NetTXSpeed:      txSpeed,
@@ -4832,6 +4905,54 @@ func panelUserTraffic(runtimeDir string, users []panelUserView) ([]panelUserTraf
 		}
 	}
 	return rows, "user-traffic.json"
+}
+
+// panelResetUserTraffic zeros out traffic bytes in user-traffic.json.
+// If userID is empty, all users are reset.
+func panelResetUserTraffic(runtimeDir, userID string) error {
+	path := filepath.Join(strings.TrimSpace(runtimeDir), "user-traffic.json")
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	type trafficItem struct {
+		UserID     string `json:"user_id"`
+		UserName   string `json:"user_name"`
+		RXBytes    uint64 `json:"rx_bytes"`
+		TXBytes    uint64 `json:"tx_bytes"`
+		TotalBytes uint64 `json:"total_bytes"`
+	}
+	var payload struct {
+		UsersMap  map[string]trafficItem `json:"users,omitempty"`
+		UsersList []trafficItem          `json:"user_traffic,omitempty"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	zero := func(item trafficItem) trafficItem {
+		item.RXBytes = 0
+		item.TXBytes = 0
+		item.TotalBytes = 0
+		return item
+	}
+	for k, v := range payload.UsersMap {
+		if userID == "" || v.UserID == userID || k == userID {
+			payload.UsersMap[k] = zero(v)
+		}
+	}
+	for i, v := range payload.UsersList {
+		if userID == "" || v.UserID == userID {
+			payload.UsersList[i] = zero(v)
+		}
+	}
+	out, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
 }
 
 func panelRunSystemctl(ctx context.Context, subcmd, unit string) (string, error) {
