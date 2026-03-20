@@ -2460,15 +2460,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           '</td>' +
         '</tr>'
       )).join("");
-      document.querySelectorAll("[data-inbound-edit-id]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const inboundID = (btn.getAttribute("data-inbound-edit-id") || "").trim();
-          if (!inboundID) return;
-          const selected = inbounds.find((item) => String(item.ID || "").trim() === inboundID);
-          if (!selected) return;
-          beginInboundEdit(selected);
-        });
-      });
       document.querySelectorAll("[data-inbound-toggle-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           try {
@@ -2869,6 +2860,16 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (!document.hidden && document.getElementById("liveMode")?.checked) {
         pollSnapshotSilently();
       }
+    });
+    document.getElementById("inboundsBody").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-inbound-edit-id]");
+      if (!btn) return;
+      const inboundID = (btn.getAttribute("data-inbound-edit-id") || "").trim();
+      if (!inboundID) return;
+      const currentInbounds = Array.isArray(snapshot?.Inbounds) ? snapshot.Inbounds : [];
+      const selected = currentInbounds.find((item) => String(item.ID || "").trim() === inboundID);
+      if (!selected) return;
+      beginInboundEdit(selected);
     });
     document.getElementById("inType").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
     document.getElementById("inTransport").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
