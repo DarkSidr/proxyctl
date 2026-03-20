@@ -1199,7 +1199,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           </div>
           <div class="frow">
             <span class="flabel">Target (dest)</span>
-            <input id="inTarget" type="text" list="inTargetList" placeholder="www.example.com">
+            <div class="frow-inline">
+              <input id="inTarget" type="text" list="inTargetList" placeholder="www.example.com:443" style="flex:1">
+              <button type="button" id="inTargetRegen" title="Pick random preset" style="padding:0 10px;font-size:1rem;background:var(--bg2);border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text)">↻</button>
+            </div>
           </div>
           <div class="frow">
             <span class="flabel">SNI</span>
@@ -1308,10 +1311,22 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     let editingInboundVersion = "";
     let editingInboundEnabled = true;
     let inboundSniManualOverride = false;
+    const REALITY_PRESETS = [
+      { target: "www.amd.com:443", fingerprint: "chrome" },
+      { target: "www.intel.com:443", fingerprint: "chrome" },
+      { target: "www.microsoft.com:443", fingerprint: "edge" },
+      { target: "www.apple.com:443", fingerprint: "safari" },
+      { target: "addons.mozilla.org:443", fingerprint: "firefox" },
+      { target: "www.logitech.com:443", fingerprint: "chrome" },
+      { target: "www.asus.com:443", fingerprint: "chrome" },
+      { target: "www.samsung.com:443", fingerprint: "chrome" },
+      { target: "aws.amazon.com:443", fingerprint: "chrome" },
+      { target: "github.com:443", fingerprint: "chrome" },
+    ];
     const browserPresetDefaults = {
-      chrome: { target: "www.google.com", fingerprint: "chrome" },
-      firefox: { target: "www.mozilla.org", fingerprint: "firefox" },
-      safari: { target: "www.apple.com", fingerprint: "safari" },
+      chrome: { target: "www.google.com:443", fingerprint: "chrome" },
+      firefox: { target: "addons.mozilla.org:443", fingerprint: "firefox" },
+      safari: { target: "www.apple.com:443", fingerprint: "safari" },
     };
     let liveTimer = null;
     let liveBusy = false;
@@ -1514,8 +1529,37 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const linked = !!linkEl.checked;
       const target = (targetEl.value || "").trim();
       if (!linked || (!force && inboundSniManualOverride)) return;
-      sniEl.value = target;
+      const host = target.includes(":") ? target.split(":")[0] : target;
+      sniEl.value = host;
       if (force) inboundSniManualOverride = false;
+    }
+    function updateDestServerFromTarget() {
+      const targetEl = document.getElementById("inTarget");
+      const serverEl = document.getElementById("inRealityServer");
+      const portEl = document.getElementById("inRealityServerPort");
+      if (!targetEl || !serverEl || !portEl) return;
+      const target = (targetEl.value || "").trim();
+      if (!target) return;
+      if (target.includes(":")) {
+        const colonIdx = target.lastIndexOf(":");
+        const host = target.slice(0, colonIdx);
+        const port = target.slice(colonIdx + 1);
+        if (host) serverEl.value = host;
+        if (/^\d+$/.test(port)) portEl.value = port;
+      } else {
+        serverEl.value = target;
+      }
+    }
+    function pickRandomRealityPreset() {
+      return REALITY_PRESETS[Math.floor(Math.random() * REALITY_PRESETS.length)];
+    }
+    function applyRealityPreset(preset) {
+      const targetEl = document.getElementById("inTarget");
+      if (targetEl) targetEl.value = preset.target;
+      const fpEl = document.getElementById("inRealityFingerprint");
+      if (fpEl) fpEl.value = preset.fingerprint;
+      updateDestServerFromTarget();
+      updateInboundTargetToSni(false);
     }
     function updateInboundAdvancedVisibility() {
       // no-op: advanced block replaced by modal layout
@@ -1528,8 +1572,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (targetEl && !(targetEl.value || "").trim()) targetEl.value = data.target;
       const fpEl = document.getElementById("inRealityFingerprint");
       if (fpEl) fpEl.value = data.fingerprint;
-      const realityServerEl = document.getElementById("inRealityServer");
-      if (realityServerEl && !(realityServerEl.value || "").trim()) realityServerEl.value = data.target;
+      updateDestServerFromTarget();
       updateInboundTargetToSni(false);
     }
     function updateInboundSniInputState() {
@@ -1547,7 +1590,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       targetEl.disabled = !sniSupported;
       linkEl.disabled = !sniSupported;
       sniEl.placeholder = sniSupported ? "sni value" : "sni disabled";
-      targetEl.placeholder = sniSupported ? "target" : "target disabled";
+      targetEl.placeholder = sniSupported ? "www.example.com:443" : "target disabled";
     }
     function selectedInboundNodeHost() {
       const nodeID = (document.getElementById("inNode")?.value || "").trim();
@@ -1652,7 +1695,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const targetEl = document.getElementById("inTarget");
       const linkEl = document.getElementById("inLinkTargetSni");
       const sniEl = document.getElementById("inSni");
-      if (targetEl) targetEl.value = sni;
+      const realityHost = String(inbound.RealityServer || "").trim();
+      const realityPort = inbound.RealityServerPort || 443;
+      if (targetEl) targetEl.value = realityHost ? realityHost + ":" + realityPort : sni;
       if (linkEl) linkEl.checked = true;
       inboundSniManualOverride = false;
       if (sniEl) {
@@ -1795,6 +1840,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       });
       const mRealityBlock = document.getElementById("mRealityBlock");
       if (mRealityBlock) mRealityBlock.classList.toggle("hidden", sec !== "reality");
+      if (sec === "reality") {
+        const targetEl = document.getElementById("inTarget");
+        if (!(targetEl?.value || "").trim()) applyRealityPreset(pickRandomRealityPreset());
+      }
     }
     function currentSubUserID() {
       const subUserSel = document.getElementById("subUser");
@@ -2315,7 +2364,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const securityMode = (document.getElementById("inSecurityMode").value || "none").trim().toLowerCase();
       let sni = (document.getElementById("inSni").value || "").trim();
       if (!sni && linkTargetSni && target) {
-        sni = target;
+        sni = target.includes(":") ? target.split(":")[0] : target;
       }
       const realityServer = (document.getElementById("inRealityServer").value || "").trim();
       const realityServerPort = (document.getElementById("inRealityServerPort").value || "").trim();
@@ -2495,6 +2544,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     document.getElementById("inTransport").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
     document.getElementById("inTarget").addEventListener("input", () => {
       updateInboundTargetToSni(false);
+      updateDestServerFromTarget();
+    });
+    document.getElementById("inTargetRegen").addEventListener("click", () => {
+      applyRealityPreset(pickRandomRealityPreset());
     });
     document.getElementById("inLinkTargetSni").addEventListener("change", () => {
       if (document.getElementById("inLinkTargetSni").checked) {
@@ -2505,8 +2558,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     document.getElementById("inSni").addEventListener("input", () => {
       const linked = !!document.getElementById("inLinkTargetSni")?.checked;
       const target = (document.getElementById("inTarget")?.value || "").trim();
+      const host = target.includes(":") ? target.split(":")[0] : target;
       const sni = (document.getElementById("inSni")?.value || "").trim();
-      inboundSniManualOverride = linked && sni !== target;
+      inboundSniManualOverride = linked && sni !== host;
     });
     document.getElementById("inNode").addEventListener("change", () => {
       updateInboundDomainFromNode(true);
