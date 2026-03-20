@@ -34,6 +34,8 @@ import (
 	"proxyctl/internal/engine"
 	"proxyctl/internal/renderer"
 	subscriptionservice "proxyctl/internal/subscription/service"
+
+	"proxyctl/internal/storage"
 )
 
 type panelUnitState struct {
@@ -5608,6 +5610,28 @@ func panelHandleUserAction(ctx context.Context, dbPath string, r *http.Request, 
 	}
 }
 
+// panelCheckPortConflict returns an error if another inbound on the same node
+// already uses the given port. excludeID is the current inbound ID when editing
+// (so we don't flag the inbound against itself).
+func panelCheckPortConflict(ctx context.Context, repo storage.InboundRepository, nodeID string, port int, excludeID string) error {
+	all, err := repo.List(ctx)
+	if err != nil {
+		return fmt.Errorf("port conflict check: %w", err)
+	}
+	for _, ib := range all {
+		if ib.NodeID != nodeID {
+			continue
+		}
+		if excludeID != "" && ib.ID == excludeID {
+			continue
+		}
+		if ib.Port == port {
+			return fmt.Errorf("port %d is already used by inbound %s (type: %s) on this node", port, ib.ID, ib.Type)
+		}
+	}
+	return nil
+}
+
 func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Request, configPath, dbPathFlag *string, ops *panelOperationFeed) error {
 	if err := r.ParseForm(); err != nil {
 		return fmt.Errorf("invalid inbound action request")
@@ -5627,6 +5651,9 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 	case "create":
 		inbound, err := panelInboundFromForm(r, domain.Inbound{})
 		if err != nil {
+			return err
+		}
+		if err := panelCheckPortConflict(ctx, store.Inbounds(), inbound.NodeID, inbound.Port, ""); err != nil {
 			return err
 		}
 		created, err := store.Inbounds().Create(ctx, inbound)
@@ -5765,6 +5792,9 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 			if strings.ToLower(string(updated.Type)) != string(domain.ProtocolVLESS) || strings.ToLower(strings.TrimSpace(updated.Transport)) != "tcp" || strings.ToLower(string(updated.Engine)) != string(domain.EngineXray) {
 				return fmt.Errorf("inbound has reality enabled; keep type=vless transport=tcp engine=xray")
 			}
+		}
+		if err := panelCheckPortConflict(ctx, store.Inbounds(), updated.NodeID, updated.Port, updated.ID); err != nil {
+			return err
 		}
 		stored, err := store.Inbounds().Update(ctx, updated)
 		if err != nil {
