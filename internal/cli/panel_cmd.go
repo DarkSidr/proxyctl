@@ -4703,6 +4703,7 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 	cleaned := 0
 	targeted := 0
 	skippedPrimary := 0
+	var primaryNodeForCaddy *domain.Node
 	for _, node := range nodes {
 		if len(filter) > 0 {
 			if _, ok := filter[node.ID]; !ok {
@@ -4712,6 +4713,8 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 		if !node.Enabled || node.Role != domain.NodeRoleNode {
 			// Primary nodes manage their own config locally — SSH sync is not applicable.
 			if node.Role == domain.NodeRolePrimary {
+				n := node
+				primaryNodeForCaddy = &n
 				skippedPrimary++
 			}
 			continue
@@ -4762,6 +4765,14 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 		return synced, cleaned, fmt.Errorf("no enabled worker nodes found for requested IDs")
 	}
 	if skippedPrimary > 0 {
+		// Reload caddy first so ACME cert acquisition starts before
+		// sing-box/xray are restarted by the apply pipeline.
+		if primaryNodeForCaddy != nil {
+			nodeInbounds := append([]domain.Inbound(nil), inboundsByNode[primaryNodeForCaddy.ID]...)
+			sort.Slice(nodeInbounds, func(i, j int) bool { return nodeInbounds[i].ID < nodeInbounds[j].ID })
+			// Non-fatal: caddy errors should not block the apply pipeline.
+			_ = syncPrimaryNodeCaddy(ctx, *primaryNodeForCaddy, nodeInbounds, appCfg)
+		}
 		if applyErr := panelApplyPrimary(ctx, configPath, dbPath); applyErr != nil {
 			return synced, cleaned, fmt.Errorf("primary node apply failed: %w", applyErr)
 		}

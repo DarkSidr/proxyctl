@@ -269,6 +269,12 @@ func buildRoute(cfg config.AppConfig, node domain.Node, inbound domain.Inbound) 
 	if transport != "ws" && transport != "grpc" && transport != "xhttp" {
 		return Route{}, false
 	}
+	// xhttp with TLS: xray handles TLS directly using caddy-managed certs.
+	// Caddy must not reverse-proxy to it — a bare domain entry for ACME cert
+	// acquisition is added separately via needsCaddyCert.
+	if transport == "xhttp" && inbound.TLSEnabled {
+		return Route{}, false
+	}
 	if inbound.Port < 1 || inbound.Port > 65535 {
 		return Route{}, false
 	}

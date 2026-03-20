@@ -367,16 +367,10 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 
 	restartedUnits := make([]string, 0, 3)
 	if opts.restart {
-		units := requiredRuntimeUnits(req, appCfg)
-		for _, unit := range units {
-			restartCmd := strings.TrimSpace(prefix + "systemctl restart " + shellQuote(unit))
-			sshRestartArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
-			sshRestartArgs = append(sshRestartArgs, target, restartCmd)
-			if out, err := runRemoteExecCombined(ctx, "ssh", sshRestartArgs, opts.sshPassword); err != nil {
-				return nodeSyncResult{}, fmt.Errorf("restart unit %q on node %q (%s): %w\n%s", unit, req.Node.ID, host, err, strings.TrimSpace(string(out)))
-			}
-			restartedUnits = append(restartedUnits, unit)
-		}
+		// Reload caddy BEFORE restarting other services so that ACME cert
+		// acquisition starts as early as possible. sing-box/xray may need
+		// the cert on startup; reloading caddy first gives it the best
+		// chance of already having the cert on subsequent syncs.
 		if hasCaddyConfig && strings.TrimSpace(appCfg.Runtime.CaddyUnit) != "" {
 			caddyUnit := strings.TrimSpace(appCfg.Runtime.CaddyUnit)
 			reloadCmd := strings.TrimSpace(prefix + "systemctl reload-or-restart " + shellQuote(caddyUnit))
@@ -387,6 +381,16 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 			}
 			restartedUnits = append(restartedUnits, caddyUnit)
 		}
+		units := requiredRuntimeUnits(req, appCfg)
+		for _, unit := range units {
+			restartCmd := strings.TrimSpace(prefix + "systemctl restart " + shellQuote(unit))
+			sshRestartArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
+			sshRestartArgs = append(sshRestartArgs, target, restartCmd)
+			if out, err := runRemoteExecCombined(ctx, "ssh", sshRestartArgs, opts.sshPassword); err != nil {
+				return nodeSyncResult{}, fmt.Errorf("restart unit %q on node %q (%s): %w\n%s", unit, req.Node.ID, host, err, strings.TrimSpace(string(out)))
+			}
+			restartedUnits = append(restartedUnits, unit)
+		}
 	}
 
 	return nodeSyncResult{
@@ -395,6 +399,47 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 		Uploaded: uploadedFiles,
 		Restart:  restartedUnits,
 	}, nil
+}
+
+// syncPrimaryNodeCaddy builds the Caddyfile for the primary node's inbounds,
+// writes it to the configured caddy directory, and triggers a caddy reload so
+// ACME cert acquisition starts before sing-box/xray are restarted.
+// Returns nil when no caddy configuration is needed (non-fatal errors are
+// suppressed so that caddy issues do not block the overall apply pipeline).
+func syncPrimaryNodeCaddy(ctx context.Context, primaryNode domain.Node, inbounds []domain.Inbound, appCfg config.AppConfig) error {
+	caddyResult, err := caddy.New(appCfg).Build(caddy.BuildRequest{
+		Node:     primaryNode,
+		Inbounds: inbounds,
+	})
+	if err != nil {
+		// No caddy config needed for this node (e.g. no TLS inbounds).
+		return nil
+	}
+	if len(caddyResult.Caddyfile) == 0 {
+		return nil
+	}
+
+	caddyDir := strings.TrimSpace(appCfg.Paths.CaddyDir)
+	if caddyDir == "" {
+		caddyDir = "/etc/proxy-orchestrator/runtime/caddy"
+	}
+	if err := os.MkdirAll(caddyDir, 0o755); err != nil {
+		return fmt.Errorf("create caddy config dir for primary node: %w", err)
+	}
+	caddyfilePath := filepath.Join(caddyDir, "Caddyfile")
+	if err := os.WriteFile(caddyfilePath, caddyResult.Caddyfile, 0o644); err != nil {
+		return fmt.Errorf("write Caddyfile for primary node: %w", err)
+	}
+
+	caddyUnit := strings.TrimSpace(appCfg.Runtime.CaddyUnit)
+	if caddyUnit == "" {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "systemctl", "reload-or-restart", caddyUnit)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("reload caddy for primary node: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func cleanupSingleNodeRuntime(ctx context.Context, node domain.Node, opts nodeSyncOptions, appCfg config.AppConfig) (nodeSyncResult, error) {
