@@ -15,19 +15,10 @@ func TestResolveCompatibleMatrix(t *testing.T) {
 		want domain.Engine
 	}{
 		{
-			name: "vless defaults to sing-box",
+			name: "vless defaults to xray",
 			req: ResolutionRequest{
 				Protocol:  domain.ProtocolVLESS,
 				Transport: "tcp",
-			},
-			want: domain.EngineSingBox,
-		},
-		{
-			name: "vless accepts explicit xray",
-			req: ResolutionRequest{
-				Protocol:        domain.ProtocolVLESS,
-				Transport:       "tcp",
-				PreferredEngine: domain.EngineXray,
 			},
 			want: domain.EngineXray,
 		},
@@ -102,10 +93,18 @@ func TestResolveIncompatibleMatrix(t *testing.T) {
 			},
 		},
 		{
-			name: "incompatible preferred engine",
+			name: "incompatible preferred engine for xhttp",
 			req: ResolutionRequest{
 				Protocol:        domain.ProtocolXHTTP,
 				Transport:       "xhttp",
+				PreferredEngine: domain.EngineSingBox,
+			},
+		},
+		{
+			name: "vless rejects sing-box",
+			req: ResolutionRequest{
+				Protocol:        domain.ProtocolVLESS,
+				Transport:       "tcp",
 				PreferredEngine: domain.EngineSingBox,
 			},
 		},
