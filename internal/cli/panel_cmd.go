@@ -63,6 +63,8 @@ type panelInboundView struct {
 	RealityServer      string
 	RealityServerPort  int
 	VLESSFlow          string
+	TLSCertPath        string
+	TLSKeyPath         string
 	SniffingEnabled    bool
 	SniffingHTTP       bool
 	SniffingTLS        bool
@@ -543,24 +545,6 @@ var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
     </div>
 
     {{if eq .ActiveTab "dashboard"}}
-    <section class="section">
-      <h2>runtime actions</h2>
-      <div class="pad line">
-        <form method="post" action="{{.DashboardActionPath}}" class="inline">
-          <input type="hidden" name="action" value="render">
-          <button class="btn" type="submit">render configs</button>
-        </form>
-        <form method="post" action="{{.DashboardActionPath}}" class="inline">
-          <input type="hidden" name="action" value="validate">
-          <button class="btn warn" type="submit">validate</button>
-        </form>
-        <form method="post" action="{{.DashboardActionPath}}" class="inline">
-          <input type="hidden" name="action" value="apply">
-          <button class="btn err" type="submit">apply</button>
-        </form>
-      </div>
-    </section>
-
     <section class="section">
       <h2>runtime units</h2>
       <table>
@@ -1096,9 +1080,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     <section class="sec" data-tab-section="runtime">
       <h2>runtime actions</h2>
       <div class="pad row">
-        <button class="btn" data-runtime="render">render</button>
-        <button class="btn warn" data-runtime="validate">validate</button>
-        <button class="btn err" data-runtime="apply">apply</button>
         <button id="askTrafficBtn" class="btn secondary">ask traffic now</button>
         <label class="row" style="gap:6px">
           <input id="liveMode" type="checkbox" checked>
@@ -2613,15 +2594,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       });
     }
 
-    document.querySelectorAll("[data-runtime]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        try {
-          await postForm(cfg.dashboardActionPath, { action: btn.getAttribute("data-runtime") || "" });
-        } catch (e) {
-          showOp("error", String(e));
-        }
-      });
-    });
     document.getElementById("createUserBtn").addEventListener("click", async () => {
       const field = document.getElementById("newUserName");
       const name = (field.value || "").trim();
@@ -4789,7 +4761,17 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 	if len(filter) > 0 && targeted == 0 && skippedPrimary == 0 {
 		return synced, cleaned, fmt.Errorf("no enabled worker nodes found for requested IDs")
 	}
+	if skippedPrimary > 0 {
+		if applyErr := panelApplyPrimary(ctx, configPath, dbPath); applyErr != nil {
+			return synced, cleaned, fmt.Errorf("primary node apply failed: %w", applyErr)
+		}
+	}
 	return synced, cleaned, nil
+}
+
+func panelApplyPrimary(ctx context.Context, configPath, dbPath string) error {
+	_, err := panelExecuteCommand(ctx, newApplyCmd(&configPath, &dbPath), nil)
+	return err
 }
 
 func panelCleanupNodeRuntime(ctx context.Context, configPath string, node domain.Node) error {
