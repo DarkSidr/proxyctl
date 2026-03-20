@@ -311,14 +311,17 @@ func restartServicesAfterUpdate(ctx context.Context, out io.Writer, cfg config.A
 		return err
 	}
 	if panelInstalled {
-		if _, err := runCommandOutput(ctx, "systemctl", "restart", panelUnit); err != nil {
-			return fmt.Errorf("restart %s: %w", panelUnit, err)
+		beforeState, _ := systemdUnitActiveState(ctx, panelUnit)
+		if strings.EqualFold(beforeState, "active") {
+			if _, err := runCommandOutput(ctx, "systemctl", "restart", panelUnit); err != nil {
+				return fmt.Errorf("restart %s: %w", panelUnit, err)
+			}
+			afterState, _ := systemdUnitActiveState(ctx, panelUnit)
+			if !strings.EqualFold(afterState, "active") {
+				return fmt.Errorf("%s is %q after restart", panelUnit, afterState)
+			}
+			fmt.Fprintf(out, "post-update: restarted %s\n", panelUnit)
 		}
-		state, _ := systemdUnitActiveState(ctx, panelUnit)
-		if !strings.EqualFold(state, "active") {
-			return fmt.Errorf("%s is %q after restart", panelUnit, state)
-		}
-		fmt.Fprintf(out, "post-update: restarted %s\n", panelUnit)
 	}
 
 	units := compactUnique([]string{
