@@ -548,6 +548,74 @@ func cleanupSingleNodeRuntime(ctx context.Context, node domain.Node, opts nodeSy
 	}, nil
 }
 
+// uninstallSingleNode fully removes proxyctl and all its data from a remote node via SSH.
+// This is called only when permanently deleting a node; for disable/update use cleanupSingleNodeRuntime.
+func uninstallSingleNode(ctx context.Context, node domain.Node, opts nodeSyncOptions, appCfg config.AppConfig) error {
+	host := strings.TrimSpace(node.Host)
+	if host == "" {
+		return fmt.Errorf("node %q has empty host", node.ID)
+	}
+
+	target := fmt.Sprintf("%s@%s", opts.sshUser, host)
+	prefix := ""
+	if opts.remoteUseSudo {
+		prefix = "sudo "
+	}
+
+	units := []string{}
+	for _, u := range []string{
+		strings.TrimSpace(appCfg.Runtime.SingBoxUnit),
+		strings.TrimSpace(appCfg.Runtime.XrayUnit),
+		strings.TrimSpace(appCfg.Runtime.CaddyUnit),
+		strings.TrimSpace(appCfg.Runtime.NginxUnit),
+	} {
+		if u != "" {
+			units = append(units, u)
+		}
+	}
+
+	parts := []string{"set -e"}
+
+	systemdDir := strings.TrimSpace(appCfg.Paths.SystemdUnits)
+	for _, unit := range units {
+		parts = append(parts,
+			prefix+"systemctl stop "+shellQuote(unit)+" 2>/dev/null || true",
+			prefix+"systemctl disable "+shellQuote(unit)+" 2>/dev/null || true",
+		)
+		if systemdDir != "" {
+			parts = append(parts, prefix+"rm -f "+shellQuote(filepath.Join(systemdDir, unit)))
+		}
+	}
+	if len(units) > 0 {
+		parts = append(parts, prefix+"systemctl daemon-reload 2>/dev/null || true")
+	}
+
+	if baseDir := strings.TrimSpace(appCfg.Paths.BaseDir); baseDir != "" && baseDir != "/" {
+		parts = append(parts, prefix+"rm -rf "+shellQuote(baseDir))
+	}
+	if stateDir := strings.TrimSpace(appCfg.Paths.StateDir); stateDir != "" && stateDir != "/" {
+		parts = append(parts, prefix+"rm -rf "+shellQuote(stateDir))
+	}
+
+	// Caddy data directory contains ACME certificates
+	parts = append(parts, prefix+"rm -rf /caddy 2>/dev/null || true")
+
+	// Remove proxyctl and proxy engine binaries installed by proxyctl
+	if binDir := strings.TrimSpace(appCfg.Paths.BinDir); binDir != "" {
+		for _, bin := range []string{"proxyctl", "xray", "sing-box"} {
+			parts = append(parts, prefix+"rm -f "+shellQuote(filepath.Join(binDir, bin))+" 2>/dev/null || true")
+		}
+	}
+
+	cmd := strings.Join(parts, "; ")
+	sshArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
+	sshArgs = append(sshArgs, target, cmd)
+	if out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, opts.sshPassword); err != nil {
+		return fmt.Errorf("uninstall node %q (%s): %w\n%s", node.ID, host, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func requiredRuntimeUnits(req renderer.BuildRequest, appCfg config.AppConfig) []string {
 	// Always restart all configured runtime units so that services whose
 	// engine is no longer used reload the (now-empty) config and release

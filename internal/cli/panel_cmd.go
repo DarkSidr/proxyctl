@@ -1650,6 +1650,36 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </div>
   </div>
 
+  <div id="nodeDeleteModal" class="modal-overlay hidden">
+    <div class="modal" style="max-width:500px">
+      <div class="modal-hdr">
+        <h3>Delete Node</h3>
+        <button class="modal-close" id="closeNodeDeleteModalBtn">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom:16px;padding:12px 16px;background:var(--bg2,#1e1e1e);border-radius:6px;border:1px solid var(--border,#333)">
+          <div id="nodeDeleteModalName" style="font-weight:600;font-size:1.05rem;margin-bottom:2px"></div>
+          <div id="nodeDeleteModalHost" style="font-size:0.85rem;opacity:0.6;font-family:monospace"></div>
+        </div>
+        <div style="margin-bottom:20px;padding:12px 16px;background:rgba(220,50,50,0.08);border:1px solid rgba(220,50,50,0.3);border-radius:6px;font-size:0.88rem;line-height:1.6">
+          <div style="font-weight:600;margin-bottom:8px;color:#e05555">This action cannot be undone.</div>
+          The following will be permanently removed from the server:
+          <ul style="margin:8px 0 0 0;padding-left:18px;opacity:0.85">
+            <li>All proxy services (xray, sing-box, caddy, nginx) — stopped and disabled</li>
+            <li>All configuration files <span style="font-family:monospace;font-size:0.85em">/etc/proxy-orchestrator/</span></li>
+            <li>Database and subscriptions <span style="font-family:monospace;font-size:0.85em">/var/lib/proxy-orchestrator/</span></li>
+            <li>SSL certificates <span style="font-family:monospace;font-size:0.85em">/caddy/</span></li>
+            <li>Binaries: proxyctl, xray, sing-box</li>
+          </ul>
+        </div>
+        <div class="modal-ftr">
+          <button type="button" class="btn secondary" id="cancelNodeDeleteModalBtn">Cancel</button>
+          <button type="button" class="btn err" id="confirmNodeDeleteBtn">Delete Node</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     const cfgRaw = {
       basePath: {{printf "%q" .BasePath}},
@@ -1946,6 +1976,32 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         function onConfirm() { const p = (document.getElementById("nodePassInput").value || "").trim(); cleanup(); resolve(p); }
         function onCancel() { cleanup(); reject(new Error("cancelled")); }
         function onKey(e) { if (e.key === "Enter") onConfirm(); if (e.key === "Escape") onCancel(); }
+        confirmBtn.addEventListener("click", onConfirm);
+        cancelBtn.addEventListener("click", onCancel);
+        closeBtn.addEventListener("click", onCancel);
+        modal.addEventListener("keydown", onKey);
+      });
+    }
+    function promptNodeDelete(name, host) {
+      return new Promise((resolve, reject) => {
+        const modal = document.getElementById("nodeDeleteModal");
+        document.getElementById("nodeDeleteModalName").textContent = name || "Unknown Node";
+        document.getElementById("nodeDeleteModalHost").textContent = host || "";
+        modal.classList.remove("hidden");
+        setTimeout(() => { const el = document.getElementById("confirmNodeDeleteBtn"); if (el) el.focus(); }, 50);
+        const confirmBtn = document.getElementById("confirmNodeDeleteBtn");
+        const cancelBtn = document.getElementById("cancelNodeDeleteModalBtn");
+        const closeBtn = document.getElementById("closeNodeDeleteModalBtn");
+        function cleanup() {
+          modal.classList.add("hidden");
+          confirmBtn.removeEventListener("click", onConfirm);
+          cancelBtn.removeEventListener("click", onCancel);
+          closeBtn.removeEventListener("click", onCancel);
+          modal.removeEventListener("keydown", onKey);
+        }
+        function onConfirm() { cleanup(); resolve(); }
+        function onCancel() { cleanup(); reject(new Error("cancelled")); }
+        function onKey(e) { if (e.key === "Escape") onCancel(); }
         confirmBtn.addEventListener("click", onConfirm);
         cancelBtn.addEventListener("click", onCancel);
         closeBtn.addEventListener("click", onCancel);
@@ -2897,7 +2953,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
             '<button class="btn secondary" data-node-edit-id="'+esc(n.ID)+'">edit</button>' +
             '<button class="btn secondary"'+dis+' data-node-test-id="'+esc(n.ID)+'" data-node-test-version="'+esc(n.Version)+'">test</button>' +
             '<button class="btn '+(n.Enabled ? 'warn' : '')+'"'+dis+' data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
-            '<button class="btn err"'+dis+' data-node-delete-id="'+esc(n.ID)+'" data-node-delete-version="'+esc(n.Version)+'">delete</button>' +
+            '<button class="btn err"'+dis+' data-node-delete-id="'+esc(n.ID)+'" data-node-delete-version="'+esc(n.Version)+'" data-node-delete-name="'+esc(n.Name)+'" data-node-delete-host="'+esc(n.Host)+'">delete</button>' +
           '</td>' +
         '</tr>';
       }).join("");
@@ -2910,11 +2966,20 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       });
       document.querySelectorAll("[data-node-delete-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
+          const nodeID = btn.getAttribute("data-node-delete-id");
+          const version = btn.getAttribute("data-node-delete-version");
+          const nodeName = btn.getAttribute("data-node-delete-name") || nodeID;
+          const nodeHost = btn.getAttribute("data-node-delete-host") || "";
+          try {
+            await promptNodeDelete(nodeName, nodeHost);
+          } catch (e) {
+            return;
+          }
           try {
             await postForm(cfg.nodesActionPath, {
               op: "delete",
-              node_id: btn.getAttribute("data-node-delete-id"),
-              version: btn.getAttribute("data-node-delete-version"),
+              node_id: nodeID,
+              version: version,
             });
           } catch (e) {
             showOp("error", String(e));
@@ -6026,6 +6091,32 @@ func panelCleanupNodeRuntime(ctx context.Context, configPath string, node domain
 	return err
 }
 
+// panelUninstallNodeRuntime fully uninstalls proxyctl and all its data from a remote node.
+// Called only on node delete.
+func panelUninstallNodeRuntime(ctx context.Context, configPath string, node domain.Node) error {
+	settings, err := panelNodeSyncSettingsFromEnv()
+	if err != nil {
+		return err
+	}
+	if !settings.enabled {
+		return nil
+	}
+	if _, err := lookPath("ssh"); err != nil {
+		return fmt.Errorf("ssh client is required for node uninstall: %w", err)
+	}
+	if node.SSHUser != "" {
+		settings.opts.sshUser = node.SSHUser
+	}
+	if node.SSHPort > 0 {
+		settings.opts.sshPort = node.SSHPort
+	}
+	appCfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	return uninstallSingleNode(ctx, node, settings.opts, appCfg)
+}
+
 // panelFetchNodeRemoteVersion SSHes to the node, runs "proxyctl version", and caches the result.
 func panelFetchNodeRemoteVersion(ctx context.Context, node domain.Node) (string, error) {
 	settings, err := panelNodeSyncSettingsFromEnv()
@@ -6949,7 +7040,7 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		if action == "delete" {
 			cleanupWarning := ""
 			if current.Role == domain.NodeRoleNode {
-				if cleanupErr := panelCleanupNodeRuntime(ctx, strings.TrimSpace(*configPath), current); cleanupErr != nil {
+				if cleanupErr := panelUninstallNodeRuntime(ctx, strings.TrimSpace(*configPath), current); cleanupErr != nil {
 					cleanupWarning = cleanupErr.Error()
 				}
 			}
