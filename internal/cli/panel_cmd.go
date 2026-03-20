@@ -4730,14 +4730,19 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 	synced := 0
 	cleaned := 0
 	targeted := 0
+	skippedPrimary := 0
 	for _, node := range nodes {
-		if !node.Enabled || node.Role != domain.NodeRoleNode {
-			continue
-		}
 		if len(filter) > 0 {
 			if _, ok := filter[node.ID]; !ok {
 				continue
 			}
+		}
+		if !node.Enabled || node.Role != domain.NodeRoleNode {
+			// Primary nodes manage their own config locally — SSH sync is not applicable.
+			if node.Role == domain.NodeRolePrimary {
+				skippedPrimary++
+			}
+			continue
 		}
 		targeted++
 
@@ -4781,7 +4786,7 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 		setNodeSyncStatus(node.ID, true, "")
 		synced++
 	}
-	if len(filter) > 0 && targeted == 0 {
+	if len(filter) > 0 && targeted == 0 && skippedPrimary == 0 {
 		return synced, cleaned, fmt.Errorf("no enabled worker nodes found for requested IDs")
 	}
 	return synced, cleaned, nil
