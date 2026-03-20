@@ -101,6 +101,8 @@ type panelNodeView struct {
 	Role    string
 	Enabled bool
 	Version string
+	SyncOK  *bool // nil = never synced, true = last OK, false = last failed
+	SyncMsg string
 }
 
 type panelSubscriptionState struct {
@@ -169,6 +171,7 @@ type panelPageData struct {
 	SubscriptionState   map[string]panelSubscriptionState
 	SuggestedPorts      map[string]int
 	SNIPresets          []string
+	SSHKeyWarning       string
 	Dashboard           panelDashboardView
 	ContactEmail        string
 	OperationStatus     string
@@ -208,6 +211,28 @@ func (f *panelOperationFeed) snapshot() (status, message, at string) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return f.status, f.message, f.at
+}
+
+// nodeSyncRecord caches the last sync result per node (in-memory, resets on restart).
+type nodeSyncRecord struct {
+	ok  bool
+	msg string
+	at  time.Time
+}
+
+var panelNodeSyncCache sync.Map // key: nodeID string → value: nodeSyncRecord
+
+func setNodeSyncStatus(nodeID string, ok bool, msg string) {
+	panelNodeSyncCache.Store(strings.TrimSpace(nodeID), nodeSyncRecord{ok: ok, msg: strings.TrimSpace(msg), at: time.Now()})
+}
+
+func getNodeSyncStatus(nodeID string) (ok bool, msg string, found bool) {
+	v, exists := panelNodeSyncCache.Load(strings.TrimSpace(nodeID))
+	if !exists {
+		return false, "", false
+	}
+	r := v.(nodeSyncRecord)
+	return r.ok, r.msg, true
 }
 
 var panelPageTmpl = template.Must(template.New("panel").Funcs(template.FuncMap{
@@ -1033,6 +1058,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
     <section class="sec" data-tab-section="nodes">
       <h2>nodes</h2>
+      <div id="nodesSshWarning" class="hidden" style="margin:4px 0 10px;padding:8px 12px;background:#7a4a00;color:#ffd680;border-radius:6px;font-size:0.85rem"></div>
       <div class="pad row">
         <input id="nodeName" type="text" placeholder="node name">
         <input id="nodeHost" type="text" placeholder="node host/ip">
@@ -2081,10 +2107,23 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         });
       });
 
-      document.getElementById("nodesBody").innerHTML = nodes.map((n) => (
-        '<tr>' +
+      const sshWarn = (snapshot && snapshot.SSHKeyWarning) ? snapshot.SSHKeyWarning : "";
+      const sshWarnEl = document.getElementById("nodesSshWarning");
+      if (sshWarnEl) {
+        if (sshWarn) {
+          sshWarnEl.textContent = "⚠ " + sshWarn;
+          sshWarnEl.classList.remove("hidden");
+        } else {
+          sshWarnEl.classList.add("hidden");
+        }
+      }
+      document.getElementById("nodesBody").innerHTML = nodes.map((n) => {
+        let dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);margin-right:6px;vertical-align:middle" title="never synced"></span>';
+        if (n.SyncOK === true) dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#4caf50;margin-right:6px;vertical-align:middle" title="last sync OK"></span>';
+        if (n.SyncOK === false) dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f44336;margin-right:6px;vertical-align:middle" title="last sync failed: '+esc(n.SyncMsg || "")+'"></span>';
+        return '<tr>' +
           '<td><input type="text" data-node-name="'+esc(n.ID)+'" value="'+esc(n.Name)+'"></td>' +
-          '<td><input type="text" data-node-host="'+esc(n.ID)+'" value="'+esc(n.Host)+'"></td>' +
+          '<td>'+dot+'<input type="text" data-node-host="'+esc(n.ID)+'" value="'+esc(n.Host)+'" style="display:inline-block;width:calc(100% - 20px)"></td>' +
           '<td><select data-node-role="'+esc(n.ID)+'"><option value="primary"'+(String(n.Role) === "primary" ? " selected" : "")+'>primary</option><option value="node"'+(String(n.Role) === "node" ? " selected" : "")+'>node</option></select></td>' +
           '<td>'+ (n.Enabled ? "yes" : "no") +'</td>' +
           '<td class="row">' +
@@ -2095,8 +2134,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
             '<button class="btn '+(n.Enabled ? 'warn' : '')+'" data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
             '<button class="btn err" data-node-id="'+esc(n.ID)+'" data-node-version="'+esc(n.Version)+'">delete</button>' +
           '</td>' +
-        '</tr>'
-      )).join("");
+        '</tr>';
+      }).join("");
       document.querySelectorAll("[data-node-save-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           try {
@@ -2899,6 +2938,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					SubscriptionState:   snapshot.subscriptionState,
 					SuggestedPorts:      snapshot.suggestedPorts,
 					SNIPresets:          snapshot.sniPresets,
+					SSHKeyWarning:       snapshot.sshKeyWarning,
 					Dashboard:           snapshot.dashboard,
 					ContactEmail:        strings.TrimSpace(cfg.Public.ContactEmail),
 				}
@@ -3567,6 +3607,7 @@ type panelSnapshot struct {
 	suggestedPorts    map[string]int
 	sniPresets        []string
 	dashboard         panelDashboardView
+	sshKeyWarning     string // non-empty if SSH key is not configured/found
 }
 
 func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig) (panelSnapshot, error) {
@@ -3600,14 +3641,20 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	for _, node := range nodes {
 		nodeNameByID[node.ID] = strings.TrimSpace(node.Name)
 		nodeByID[node.ID] = node
-		nodeRows = append(nodeRows, panelNodeView{
+		nv := panelNodeView{
 			ID:      node.ID,
 			Name:    node.Name,
 			Host:    node.Host,
 			Role:    string(node.Role),
 			Enabled: node.Enabled,
 			Version: panelNodeVersion(node),
-		})
+		}
+		if ok, msg, found := getNodeSyncStatus(node.ID); found {
+			okVal := ok
+			nv.SyncOK = &okVal
+			nv.SyncMsg = msg
+		}
+		nodeRows = append(nodeRows, nv)
 	}
 	sort.Slice(nodeRows, func(i, j int) bool { return nodeRows[i].ID < nodeRows[j].ID })
 
@@ -3877,6 +3924,15 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	}
 	dashboard := buildPanelDashboard(cfg, userRows)
 
+	sshKeyWarning := ""
+	if syncSettings, settingsErr := panelNodeSyncSettingsFromEnv(); settingsErr == nil && syncSettings.enabled {
+		if syncSettings.opts.sshKeyPath == "" {
+			sshKeyWarning = "SSH key not configured — node sync may require a password. Use 'setup ssh key' on each node."
+		} else if _, statErr := os.Stat(syncSettings.opts.sshKeyPath); statErr != nil {
+			sshKeyWarning = fmt.Sprintf("SSH key not found at %s — node sync may require a password. Use 'setup ssh key' on each node.", syncSettings.opts.sshKeyPath)
+		}
+	}
+
 	return panelSnapshot{
 		counts: panelCounts{
 			UsersTotal:     len(users),
@@ -3895,6 +3951,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		suggestedPorts:    suggestedPorts,
 		sniPresets:        panelWizardSNIPresets(),
 		dashboard:         dashboard,
+		sshKeyWarning:     sshKeyWarning,
 	}, nil
 }
 
@@ -4428,8 +4485,10 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 		sort.Slice(nodeInbounds, func(i, j int) bool { return nodeInbounds[i].ID < nodeInbounds[j].ID })
 		if len(nodeInbounds) == 0 {
 			if _, err := cleanupSingleNodeRuntime(ctx, node, settings.opts, appCfg); err != nil {
+				setNodeSyncStatus(node.ID, false, err.Error())
 				return synced, cleaned, err
 			}
+			setNodeSyncStatus(node.ID, true, "no inbounds — config cleaned")
 			cleaned++
 			continue
 		}
@@ -4447,8 +4506,10 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 			Inbounds:    nodeInbounds,
 			Credentials: nodeCredentials,
 		}, settings.opts, appCfg); err != nil {
+			setNodeSyncStatus(node.ID, false, err.Error())
 			return synced, cleaned, err
 		}
+		setNodeSyncStatus(node.ID, true, "")
 		synced++
 	}
 	if len(filter) > 0 && targeted == 0 {
