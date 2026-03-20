@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -255,6 +256,11 @@ var (
 	// Traffic display reset baseline: display = raw - baseline.
 	trafResetRX uint64
 	trafResetTX uint64
+	// Self-update version cache.
+	panelUpdMu  sync.Mutex
+	panelUpdTag string
+	panelUpdURL string
+	panelUpdAt  time.Time
 )
 
 // nodeJob tracks a background SSH operation per node.
@@ -1127,9 +1133,31 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     .stat-row:last-child { border-bottom: none; }
     .stat-label { color: var(--muted); }
     .stat-value { font-weight: 600; }
+    /* Loading overlay */
+    #loadOverlay {
+      position: fixed; inset: 0; z-index: 9999;
+      background:
+        radial-gradient(circle at 3% 0%, #06b6d420 0%, transparent 35%),
+        radial-gradient(circle at 100% 0%, #22c55e16 0%, transparent 28%),
+        linear-gradient(160deg, #020617, #0f172a);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px;
+      transition: opacity 0.45s;
+    }
+    #loadOverlay.done { opacity: 0; pointer-events: none; }
+    .load-brand { font-size: 2.2rem; font-weight: 700; color: #22d3ee; letter-spacing: -0.02em; }
+    .load-sub { font-size: 0.82rem; color: #94a3b8; }
+    .load-bar-wrap { width: 220px; height: 2px; background: rgba(148,163,184,0.18); border-radius: 2px; overflow: hidden; }
+    .load-bar { height: 100%; background: linear-gradient(90deg, #22d3ee, #34d399); border-radius: 2px; width: 0%; animation: ldProg 1.6s cubic-bezier(0.4,0,0.2,1) forwards; transition: width 0.25s ease; }
+    @keyframes ldProg { to { width: 72%; } }
   </style>
 </head>
 <body>
+  <div id="loadOverlay">
+    <div class="load-brand">proxyctl</div>
+    <div class="load-sub" id="loadStatus">loading…</div>
+    <div class="load-bar-wrap"><div class="load-bar" id="loadBar"></div></div>
+  </div>
   <div class="wrap">
     <div class="top">
       <h1 class="title">proxyctl app</h1>
@@ -1224,6 +1252,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           <div class="dash-card">
             <h3>traffic &amp; connections</h3>
             <div id="dashTraffic"></div>
+          </div>
+          <!-- Version & update -->
+          <div class="dash-card">
+            <h3>proxyctl</h3>
+            <div id="dashVersion"></div>
           </div>
         </div>
         <!-- User traffic table -->
@@ -1722,7 +1755,28 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         throw new Error("snapshot request failed" + (msg ? ": " + msg : ""));
       }
       snapshot = await res.json();
+      // Hide loading overlay on first successful load.
+      const overlay = document.getElementById("loadOverlay");
+      if (overlay && overlay.style.display !== "none") {
+        const bar = document.getElementById("loadBar");
+        if (bar) { bar.style.animation = "none"; bar.style.width = "100%"; }
+        overlay.classList.add("done");
+        setTimeout(() => { overlay.style.display = "none"; }, 460);
+      }
       render();
+    }
+    // fetchRaw: like postForm but returns raw JSON without reloading the snapshot.
+    async function fetchRaw(path, form) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Accept": "application/json" },
+        body: new URLSearchParams(form),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error((body || "").trim() || "request failed (" + res.status + ")");
+      }
+      return res.json();
     }
     async function pollSnapshotSilently() {
       if (liveBusy) return;
@@ -2471,7 +2525,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         ["load 1m",   (dash.Load1||0).toFixed(2)],
         ["load 5m",   (dash.Load5||0).toFixed(2)],
         ["load 15m",  (dash.Load15||0).toFixed(2)],
-        ["version",   dash.ProxyctlVersion || "dev"],
       ]);
 
       // Speed card
@@ -2499,6 +2552,70 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         document.getElementById("resetTotalTrafficBtn")?.addEventListener("click", async () => {
           try { await postForm(cfg.dashboardActionPath, { action: "reset_total_traffic" }); }
           catch(e) { showOp("error", String(e)); }
+        });
+      }
+
+      // Version & update card — initialize once, no re-render on poll.
+      const verEl = document.getElementById("dashVersion");
+      if (verEl && !verEl.dataset.init) {
+        verEl.dataset.init = "1";
+        const current = dash.ProxyctlVersion || "dev";
+        verEl.innerHTML =
+          statRows([["version", current]]) +
+          '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+            '<button class="btn-xs" id="checkUpdateBtn">check for update</button>' +
+            '<span id="updateStatus" class="muted" style="font-size:0.75rem"></span>' +
+          '</div>' +
+          '<div id="updateAction" style="margin-top:8px"></div>';
+        document.getElementById("checkUpdateBtn")?.addEventListener("click", async () => {
+          const statusEl = document.getElementById("updateStatus");
+          const actionEl = document.getElementById("updateAction");
+          const btn = document.getElementById("checkUpdateBtn");
+          if (btn) { btn.disabled = true; btn.textContent = "checking…"; }
+          if (statusEl) statusEl.textContent = "";
+          if (actionEl) actionEl.innerHTML = "";
+          try {
+            const out = await fetchRaw(cfg.dashboardActionPath, { action: "check_update" });
+            if (btn) { btn.disabled = false; btn.textContent = "check for update"; }
+            if (out.error) {
+              if (statusEl) statusEl.textContent = "error: " + out.error;
+              return;
+            }
+            const latest = out.latest_version || "";
+            const dlURL = out.download_url || "";
+            const curVer = out.current_version || current;
+            if (!latest) {
+              if (statusEl) statusEl.textContent = "no releases found";
+            } else if (latest === curVer) {
+              if (statusEl) statusEl.textContent = "up to date (" + latest + ")";
+            } else {
+              if (statusEl) statusEl.textContent = "latest: " + latest;
+              if (actionEl) actionEl.innerHTML =
+                '<button class="btn warn" style="font-size:0.8rem;padding:5px 10px" id="doUpdateBtn">update to ' + esc(latest) + '</button>';
+              document.getElementById("doUpdateBtn")?.addEventListener("click", async () => {
+                if (!confirm("Update proxyctl to " + latest + "?\nThe panel must be restarted to apply the new binary.")) return;
+                const updateBtn = document.getElementById("doUpdateBtn");
+                if (updateBtn) { updateBtn.disabled = true; updateBtn.textContent = "updating…"; }
+                try {
+                  const res = await fetchRaw(cfg.dashboardActionPath, { action: "update_proxyctl", download_url: dlURL });
+                  if (res.error) {
+                    if (updateBtn) { updateBtn.disabled = false; updateBtn.textContent = "retry"; }
+                    if (statusEl) statusEl.textContent = "error: " + res.error;
+                  } else {
+                    if (actionEl) actionEl.innerHTML =
+                      '<span style="color:var(--ok);font-size:0.8rem">' + esc(res.message || "updated — restart panel") + '</span>';
+                    if (statusEl) statusEl.textContent = "";
+                  }
+                } catch(e) {
+                  if (updateBtn) { updateBtn.disabled = false; updateBtn.textContent = "retry"; }
+                  if (statusEl) statusEl.textContent = String(e);
+                }
+              });
+            }
+          } catch(e) {
+            if (btn) { btn.disabled = false; btn.textContent = "check for update"; }
+            if (statusEl) statusEl.textContent = String(e);
+          }
         });
       }
 
@@ -3509,6 +3626,39 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					} else {
 						ops.set("ok", subcmd+" "+unit+" ok")
 					}
+				case "check_update":
+					tag, dlURL, fetchErr := panelFetchLatestVersion(r.Context())
+					if fetchErr != nil {
+						panelWriteJSON(w, http.StatusOK, map[string]string{"error": fetchErr.Error()})
+						return
+					}
+					panelWriteJSON(w, http.StatusOK, map[string]string{
+						"latest_version":  tag,
+						"download_url":    dlURL,
+						"current_version": strings.TrimSpace(Version),
+					})
+					return
+				case "update_proxyctl":
+					dlURL := strings.TrimSpace(r.FormValue("download_url"))
+					if dlURL == "" {
+						_, dlURL, _ = panelFetchLatestVersion(r.Context())
+					}
+					if dlURL == "" {
+						panelWriteJSON(w, http.StatusBadRequest, map[string]string{"error": "could not resolve download URL"})
+						return
+					}
+					if updErr := panelSelfUpdate(dlURL); updErr != nil {
+						panelWriteJSON(w, http.StatusOK, map[string]string{"error": updErr.Error()})
+						return
+					}
+					panelUpdMu.Lock()
+					panelUpdAt = time.Time{}
+					panelUpdMu.Unlock()
+					panelWriteJSON(w, http.StatusOK, map[string]string{
+						"ok":      "true",
+						"message": "binary updated — restart proxyctl panel to apply",
+					})
+					return
 				default:
 					ops.set("error", "unknown dashboard action")
 				}
@@ -4997,6 +5147,103 @@ func panelRunSystemctl(ctx context.Context, subcmd, unit string) (string, error)
 	cmd := exec.CommandContext(ctx, "systemctl", subcmd, unit)
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
+}
+
+// panelFetchLatestVersion queries GitHub API for the latest proxyctl release.
+// Results are cached for 1 hour.
+func panelFetchLatestVersion(ctx context.Context) (tag, downloadURL string, err error) {
+	panelUpdMu.Lock()
+	if !panelUpdAt.IsZero() && time.Since(panelUpdAt) < time.Hour {
+		tag, downloadURL = panelUpdTag, panelUpdURL
+		panelUpdMu.Unlock()
+		return
+	}
+	panelUpdMu.Unlock()
+
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet,
+		"https://api.github.com/repos/DarkSidr/proxyctl/releases/latest", nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("User-Agent", "proxyctl/"+Version)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	var rel struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return
+	}
+	tag = rel.TagName
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+	for _, a := range rel.Assets {
+		n := strings.ToLower(a.Name)
+		if strings.Contains(n, goos) && strings.Contains(n, goarch) {
+			downloadURL = a.BrowserDownloadURL
+			break
+		}
+	}
+	panelUpdMu.Lock()
+	panelUpdTag, panelUpdURL, panelUpdAt = tag, downloadURL, time.Now()
+	panelUpdMu.Unlock()
+	return
+}
+
+// panelSelfUpdate downloads a new proxyctl binary and atomically replaces the current one.
+func panelSelfUpdate(downloadURL string) error {
+	if !strings.HasPrefix(downloadURL, "https://github.com/DarkSidr/proxyctl/") {
+		return fmt.Errorf("invalid download URL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "proxyctl/"+Version)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: %s", resp.Status)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate binary: %w", err)
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return fmt.Errorf("resolve symlink: %w", err)
+	}
+	tmpPath := self + ".new"
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	_, copyErr := io.Copy(f, resp.Body)
+	f.Close()
+	if copyErr != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("write binary: %w", copyErr)
+	}
+	if err := os.Rename(tmpPath, self); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("replace binary: %w", err)
+	}
+	return nil
 }
 
 func panelExecuteCommand(ctx context.Context, cmd *cobra.Command, args []string) (string, error) {
