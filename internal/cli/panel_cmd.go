@@ -73,6 +73,7 @@ type panelInboundView struct {
 	SniffingTLS        bool
 	SniffingQUIC       bool
 	SniffingFakeDNS    bool
+	PortConflict       bool
 	Version            string
 }
 
@@ -2684,20 +2685,24 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         }
         updateInboundDomainFromNode(false);
       }
-      document.getElementById("inboundsBody").innerHTML = inbounds.map((i) => (
-        '<tr>' +
+      document.getElementById("inboundsBody").innerHTML = inbounds.map((i) => {
+        const portCell = i.PortConflict
+          ? '<td><span style="color:var(--err);font-weight:600" title="Port conflict: another inbound on this node uses the same port">⚠ '+esc(i.Port)+'</span></td>'
+          : '<td>'+esc(i.Port)+'</td>';
+        const rowStyle = i.PortConflict ? ' style="background:rgba(251,113,133,0.06)"' : '';
+        return '<tr'+rowStyle+'>' +
           '<td class="mono muted">'+esc(i.ID)+'</td>' +
           '<td>'+esc(i.Type)+'</td>' +
           '<td>'+esc(i.NodeName)+'</td>' +
           '<td>'+esc(i.Domain)+'</td>' +
-          '<td>'+esc(i.Port)+'</td>' +
+          portCell +
           '<td class="row">' +
             '<button class="btn secondary" data-inbound-edit-id="'+esc(i.ID)+'">edit</button>' +
             '<button class="btn '+(i.Enabled ? 'warn' : '')+'" data-inbound-toggle-id="'+esc(i.ID)+'" data-inbound-toggle-version="'+esc(i.Version)+'" data-inbound-enabled="'+(i.Enabled ? '1' : '0')+'">'+(i.Enabled ? 'disable' : 'enable')+'</button>' +
             '<button class="btn err" data-inbound-id="'+esc(i.ID)+'" data-inbound-version="'+esc(i.Version)+'">delete</button>' +
           '</td>' +
-        '</tr>'
-      )).join("");
+        '</tr>';
+      }).join("");
       document.querySelectorAll("[data-inbound-toggle-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const enabledNow = btn.getAttribute("data-inbound-enabled") === "1";
@@ -4210,6 +4215,14 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	}
 	sort.Slice(nodeRows, func(i, j int) bool { return nodeRows[i].ID < nodeRows[j].ID })
 
+	// Detect port conflicts: count inbounds per (nodeID, port).
+	portCountPerNode := make(map[string]int, len(inbounds)) // "nodeID:port" → count
+	for _, ib := range inbounds {
+		if ib.Port > 0 {
+			portCountPerNode[ib.NodeID+":"+strconv.Itoa(ib.Port)]++
+		}
+	}
+
 	inboundRows := make([]panelInboundView, 0, len(inbounds))
 	inboundByID := make(map[string]domain.Inbound, len(inbounds))
 	enabledInbounds := 0
@@ -4220,6 +4233,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		if name := strings.TrimSpace(nodeNameByID[inbound.NodeID]); name != "" {
 			nodeName = name
 		}
+		conflict := inbound.Port > 0 && portCountPerNode[inbound.NodeID+":"+strconv.Itoa(inbound.Port)] > 1
 		inboundRows = append(inboundRows, panelInboundView{
 			ID:                 inbound.ID,
 			Type:               string(inbound.Type),
@@ -4247,13 +4261,15 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			SniffingTLS:        inbound.SniffingTLS,
 			SniffingQUIC:       inbound.SniffingQUIC,
 			SniffingFakeDNS:    inbound.SniffingFakeDNS,
+			PortConflict:       conflict,
 			Version:            panelInboundVersion(inbound),
 		})
+		// Track ALL ports (enabled and disabled) so suggestions avoid them.
+		if inbound.Port > 0 {
+			usedPorts[inbound.Port] = struct{}{}
+		}
 		if inbound.Enabled {
 			enabledInbounds++
-			if inbound.Port > 0 {
-				usedPorts[inbound.Port] = struct{}{}
-			}
 		}
 	}
 	sort.Slice(inboundRows, func(i, j int) bool { return inboundRows[i].ID < inboundRows[j].ID })
