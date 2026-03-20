@@ -1114,6 +1114,136 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       <div class="pad muted">used by caddy tls/acme and new node bootstrap flows</div>
     </section>
   </div>
+
+  <!-- Inbound modal -->
+  <div id="inboundModal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-hdr">
+        <h3 id="inboundModalTitle">Create Inbound</h3>
+        <button class="modal-close" id="closeInboundModalBtn">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <div class="frow">
+          <span class="flabel">Protocol</span>
+          <select id="inType">
+            <option value="vless">VLESS &mdash; xray</option>
+            <option value="xhttp">XHTTP &mdash; xray</option>
+            <option value="hysteria2">Hysteria2 &mdash; sing-box</option>
+          </select>
+        </div>
+        <div class="frow">
+          <span class="flabel">Node</span>
+          <select id="inNode"></select>
+        </div>
+        <div class="frow">
+          <span class="flabel">Domain</span>
+          <input id="inDomain" type="text" placeholder="e.g. swe.darksidr.icu">
+        </div>
+        <div class="frow">
+          <span class="flabel">Port</span>
+          <input id="inPort" type="number" min="1" max="65535" placeholder="e.g. 8443">
+        </div>
+        <div class="frow" id="mTransportRow">
+          <span class="flabel">Transport</span>
+          <select id="inTransport">
+            <option value="tcp">TCP (RAW)</option>
+            <option value="ws">WebSocket</option>
+            <option value="grpc">gRPC</option>
+          </select>
+        </div>
+        <div class="frow hidden" id="mPathRow">
+          <span class="flabel">Path</span>
+          <input id="inPath" type="text" placeholder="/path">
+        </div>
+        <div class="frow" id="mSecurityRow">
+          <span class="flabel">Security</span>
+          <div class="sec-tabs" id="mSecTabs">
+            <button type="button" class="sec-tab active" data-sec="none">None</button>
+            <button type="button" class="sec-tab" data-sec="reality" id="mSecTabReality">Reality</button>
+            <button type="button" class="sec-tab" data-sec="tls">TLS</button>
+          </div>
+        </div>
+        <select id="inSecurityMode" class="hidden">
+          <option value="none">none</option>
+          <option value="tls">tls</option>
+          <option value="reality">reality</option>
+        </select>
+        <input type="hidden" id="inEngine" value="xray">
+        <select id="inMode" class="hidden">
+          <option value="basic">basic</option>
+          <option value="advanced">advanced</option>
+        </select>
+        <select id="inBrowserPreset" class="hidden">
+          <option value="">custom</option>
+          <option value="chrome">chrome</option>
+          <option value="firefox">firefox</option>
+          <option value="safari">safari</option>
+        </select>
+        <datalist id="inTargetList"></datalist>
+        <datalist id="inSniList"></datalist>
+        <div id="inLinkWrap" class="hidden"></div>
+        <div id="mRealityBlock" class="modal-block hidden">
+          <div class="modal-block-hdr">Reality Settings</div>
+          <div class="frow">
+            <span class="flabel">Fingerprint (uTLS)</span>
+            <select id="inRealityFingerprint">
+              <option value="chrome">Chrome</option>
+              <option value="firefox">Firefox</option>
+              <option value="safari">Safari</option>
+              <option value="edge">Edge</option>
+              <option value="ios">iOS</option>
+              <option value="random">Random</option>
+            </select>
+          </div>
+          <div class="frow">
+            <span class="flabel">Target (dest)</span>
+            <input id="inTarget" type="text" list="inTargetList" placeholder="www.example.com">
+          </div>
+          <div class="frow">
+            <span class="flabel">SNI</span>
+            <div class="frow-inline">
+              <input id="inSni" type="text" list="inSniList" placeholder="auto from target" style="flex:1">
+              <label style="display:flex;align-items:center;gap:4px;font-size:0.78rem;color:var(--muted);white-space:nowrap;cursor:pointer">
+                <input id="inLinkTargetSni" type="checkbox" checked style="width:auto"> = Target
+              </label>
+            </div>
+          </div>
+          <div class="frow">
+            <span class="flabel">Dest Server</span>
+            <div class="frow-inline">
+              <input id="inRealityServer" type="text" placeholder="www.example.com" style="flex:1">
+              <input id="inRealityServerPort" type="number" min="1" max="65535" value="443" style="width:80px">
+            </div>
+          </div>
+          <div class="frow">
+            <span class="flabel">Short ID <span style="font-weight:normal">(auto if empty)</span></span>
+            <input id="inRealityShortID" type="text" placeholder="e.g. 797e">
+          </div>
+          <div class="frow">
+            <span class="flabel">SpiderX</span>
+            <input id="inRealitySpiderX" type="text" placeholder="/">
+          </div>
+          <div class="frow">
+            <span class="flabel">Public Key</span>
+            <input id="inRealityPublicKey" type="text" placeholder="reality public key">
+          </div>
+          <div class="frow">
+            <span class="flabel">Private Key</span>
+            <input id="inRealityPrivateKey" type="text" placeholder="reality private key">
+          </div>
+          <div class="frow">
+            <span class="flabel">Flow</span>
+            <input id="inVlessFlow" type="text" value="xtls-rprx-vision">
+          </div>
+        </div>
+      </div>
+      <div class="modal-ftr">
+        <button type="button" class="btn secondary" id="cancelInboundEditBtn">Cancel</button>
+        <button type="button" class="btn" id="createInboundBtn">Create</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const cfgRaw = {
       basePath: {{printf "%q" .BasePath}},
@@ -1551,10 +1681,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       updateInboundCreateFieldVisibility(false);
       updateInboundTargetToSni(true);
       updateInboundAdvancedVisibility();
-      const createBtn = document.getElementById("createInboundBtn");
-      if (createBtn) createBtn.textContent = "save inbound";
-      const cancelBtn = document.getElementById("cancelInboundEditBtn");
-      if (cancelBtn) cancelBtn.classList.remove("hidden");
     }
     function refreshInboundSniList(nodes, inbounds) {
       const presets = (snapshot && Array.isArray(snapshot.SNIPresets)) ? snapshot.SNIPresets : [];
@@ -2429,137 +2555,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
     getSnapshot().catch((e) => showOp("error", String(e)));
   </script>
-
-  <!-- Inbound modal -->
-  <div id="inboundModal" class="modal-overlay hidden">
-    <div class="modal">
-      <div class="modal-hdr">
-        <h3 id="inboundModalTitle">Create Inbound</h3>
-        <button class="modal-close" id="closeInboundModalBtn">&#215;</button>
-      </div>
-      <div class="modal-body">
-        <div class="frow">
-          <span class="flabel">Protocol</span>
-          <select id="inType">
-            <option value="vless">VLESS &mdash; xray</option>
-            <option value="xhttp">XHTTP &mdash; xray</option>
-            <option value="hysteria2">Hysteria2 &mdash; sing-box</option>
-          </select>
-        </div>
-        <div class="frow">
-          <span class="flabel">Node</span>
-          <select id="inNode"></select>
-        </div>
-        <div class="frow">
-          <span class="flabel">Domain</span>
-          <input id="inDomain" type="text" placeholder="e.g. swe.darksidr.icu">
-        </div>
-        <div class="frow">
-          <span class="flabel">Port</span>
-          <input id="inPort" type="number" min="1" max="65535" placeholder="e.g. 8443">
-        </div>
-        <div class="frow" id="mTransportRow">
-          <span class="flabel">Transport</span>
-          <select id="inTransport">
-            <option value="tcp">TCP (RAW)</option>
-            <option value="ws">WebSocket</option>
-            <option value="grpc">gRPC</option>
-          </select>
-        </div>
-        <div class="frow hidden" id="mPathRow">
-          <span class="flabel">Path</span>
-          <input id="inPath" type="text" placeholder="/path">
-        </div>
-        <div class="frow" id="mSecurityRow">
-          <span class="flabel">Security</span>
-          <div class="sec-tabs" id="mSecTabs">
-            <button type="button" class="sec-tab active" data-sec="none">None</button>
-            <button type="button" class="sec-tab" data-sec="reality" id="mSecTabReality">Reality</button>
-            <button type="button" class="sec-tab" data-sec="tls">TLS</button>
-          </div>
-        </div>
-        <!-- Hidden fields used by existing form logic -->
-        <select id="inSecurityMode" class="hidden">
-          <option value="none">none</option>
-          <option value="tls">tls</option>
-          <option value="reality">reality</option>
-        </select>
-        <input type="hidden" id="inEngine" value="xray">
-        <select id="inMode" class="hidden">
-          <option value="basic">basic</option>
-          <option value="advanced">advanced</option>
-        </select>
-        <select id="inBrowserPreset" class="hidden">
-          <option value="">custom</option>
-          <option value="chrome">chrome</option>
-          <option value="firefox">firefox</option>
-          <option value="safari">safari</option>
-        </select>
-        <datalist id="inTargetList"></datalist>
-        <datalist id="inSniList"></datalist>
-        <div id="inLinkWrap" class="hidden"></div>
-        <!-- Reality block -->
-        <div id="mRealityBlock" class="modal-block hidden">
-          <div class="modal-block-hdr">Reality Settings</div>
-          <div class="frow">
-            <span class="flabel">Fingerprint (uTLS)</span>
-            <select id="inRealityFingerprint">
-              <option value="chrome">Chrome</option>
-              <option value="firefox">Firefox</option>
-              <option value="safari">Safari</option>
-              <option value="edge">Edge</option>
-              <option value="ios">iOS</option>
-              <option value="random">Random</option>
-            </select>
-          </div>
-          <div class="frow">
-            <span class="flabel">Target (dest)</span>
-            <input id="inTarget" type="text" list="inTargetList" placeholder="www.example.com">
-          </div>
-          <div class="frow">
-            <span class="flabel">SNI</span>
-            <div class="frow-inline">
-              <input id="inSni" type="text" list="inSniList" placeholder="auto from target" style="flex:1">
-              <label style="display:flex;align-items:center;gap:4px;font-size:0.78rem;color:var(--muted);white-space:nowrap;cursor:pointer">
-                <input id="inLinkTargetSni" type="checkbox" checked style="width:auto"> = Target
-              </label>
-            </div>
-          </div>
-          <div class="frow">
-            <span class="flabel">Dest Server</span>
-            <div class="frow-inline">
-              <input id="inRealityServer" type="text" placeholder="www.example.com" style="flex:1">
-              <input id="inRealityServerPort" type="number" min="1" max="65535" value="443" style="width:80px">
-            </div>
-          </div>
-          <div class="frow">
-            <span class="flabel">Short ID <span style="font-weight:normal">(auto if empty)</span></span>
-            <input id="inRealityShortID" type="text" placeholder="e.g. 797e">
-          </div>
-          <div class="frow">
-            <span class="flabel">SpiderX</span>
-            <input id="inRealitySpiderX" type="text" placeholder="/">
-          </div>
-          <div class="frow">
-            <span class="flabel">Public Key</span>
-            <input id="inRealityPublicKey" type="text" placeholder="reality public key">
-          </div>
-          <div class="frow">
-            <span class="flabel">Private Key</span>
-            <input id="inRealityPrivateKey" type="text" placeholder="reality private key">
-          </div>
-          <div class="frow">
-            <span class="flabel">Flow</span>
-            <input id="inVlessFlow" type="text" value="xtls-rprx-vision">
-          </div>
-        </div>
-      </div>
-      <div class="modal-ftr">
-        <button type="button" class="btn secondary" id="cancelInboundEditBtn">Cancel</button>
-        <button type="button" class="btn" id="createInboundBtn">Create</button>
-      </div>
-    </div>
-  </div>
 </body>
 </html>`))
 
