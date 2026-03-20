@@ -1149,6 +1149,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
             <option value="tcp">TCP (RAW)</option>
             <option value="ws">WebSocket</option>
             <option value="grpc">gRPC</option>
+            <option value="xhttp" class="hidden">xhttp</option>
+            <option value="udp" class="hidden">udp</option>
           </select>
         </div>
         <div class="frow hidden" id="mPathRow">
@@ -1729,6 +1731,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
       if (type === "hysteria2") {
         if (engineEl) engineEl.value = "sing-box";
+        if (transportSel) transportSel.value = "udp";
         if (secEl) secEl.value = "tls";
         if (mTransportRow) mTransportRow.classList.add("hidden");
         if (mPathRow) mPathRow.classList.add("hidden");
@@ -1737,6 +1740,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         setModalSecTab("tls");
       } else if (type === "xhttp") {
         if (engineEl) engineEl.value = "xray";
+        if (transportSel) transportSel.value = "xhttp";
         if (mTransportRow) mTransportRow.classList.add("hidden");
         if (mPathRow) mPathRow.classList.remove("hidden");
         if (mSecurityRow) mSecurityRow.classList.remove("hidden");
