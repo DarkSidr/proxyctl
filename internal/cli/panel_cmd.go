@@ -1935,12 +1935,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
       const engineEl = document.getElementById("inEngine");
       if (engineEl) {
-        const nextEngine = String(inbound.Engine || "").trim();
-        if (nextEngine && Array.from(engineEl.options).some((o) => o.value === nextEngine)) {
-          engineEl.value = nextEngine;
-        } else {
-          engineEl.value = "";
-        }
+        engineEl.value = String(inbound.Engine || "").trim();
       }
       const nodeEl = document.getElementById("inNode");
       if (nodeEl) {
