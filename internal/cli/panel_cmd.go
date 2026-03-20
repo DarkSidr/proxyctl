@@ -1515,6 +1515,17 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           <span class="flabel">Password</span>
           <input id="ndPassword" type="password" placeholder="for first-time bootstrap (optional, not stored)">
         </div>
+        <div id="ndMaintenanceSection" class="modal-block hidden">
+          <div class="modal-block-hdr">maintenance</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+            <button type="button" class="btn secondary" id="ndSetupSshKeyBtn">setup ssh key</button>
+            <button type="button" class="btn secondary" id="ndBootstrapBtn">bootstrap</button>
+          </div>
+          <div class="muted" style="font-size:0.75rem;margin-top:8px;line-height:1.5">
+            <b>setup ssh key</b> — installs panel public key on node for passwordless sync<br>
+            <b>bootstrap</b> — (re)installs xray / sing-box / caddy on node
+          </div>
+        </div>
         <div class="modal-ftr">
           <button type="button" class="btn secondary" id="cancelNodeModalBtn">Cancel</button>
           <button type="button" class="btn" id="saveNodeBtn">Save</button>
@@ -1827,18 +1838,23 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     }
     function openNodeModal(node) {
       const isEdit = !!node;
+      const role = node ? (node.Role || "node") : "node";
       document.getElementById("nodeModalTitle").textContent = isEdit ? "Edit Node" : "Add Node";
       document.getElementById("ndName").value = node ? (node.Name || "") : "";
       document.getElementById("ndHost").value = node ? (node.Host || "") : "";
-      document.getElementById("ndRole").value = node ? (node.Role || "node") : "node";
+      document.getElementById("ndRole").value = role;
       document.getElementById("ndSSHUser").value = node ? (node.SSHUser || "") : "";
       document.getElementById("ndSSHPort").value = node ? (node.SSHPort || 22) : 22;
       document.getElementById("ndPassword").value = "";
       const pwRow = document.getElementById("ndPasswordRow");
       if (pwRow) pwRow.classList.toggle("hidden", isEdit);
+      const maintenanceSection = document.getElementById("ndMaintenanceSection");
+      if (maintenanceSection) maintenanceSection.classList.toggle("hidden", !isEdit || role === "primary");
       const modal = document.getElementById("nodeModal");
       modal.setAttribute("data-node-id", node ? (node.ID || "") : "");
       modal.setAttribute("data-node-version", node ? (node.Version || "") : "");
+      modal.setAttribute("data-node-name", node ? (node.Name || "") : "");
+      modal.setAttribute("data-node-host", node ? (node.Host || "") : "");
       modal.classList.remove("hidden");
       setTimeout(() => { const el = document.getElementById("ndName"); if (el) el.focus(); }, 50);
     }
@@ -2592,8 +2608,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           '<td class="row">' +
             '<button class="btn secondary" data-node-edit-id="'+esc(n.ID)+'">edit</button>' +
             '<button class="btn secondary"'+dis+' data-node-test-id="'+esc(n.ID)+'" data-node-test-version="'+esc(n.Version)+'">test</button>' +
-            (n.Role !== 'primary' ? '<button class="btn secondary"'+dis+' data-node-sshkey-id="'+esc(n.ID)+'" data-node-sshkey-version="'+esc(n.Version)+'">setup ssh key</button>' : '') +
-            (n.Role !== 'primary' ? '<button class="btn secondary"'+dis+' data-node-bootstrap-id="'+esc(n.ID)+'" data-node-bootstrap-version="'+esc(n.Version)+'">bootstrap</button>' : '') +
             '<button class="btn '+(n.Enabled ? 'warn' : '')+'"'+dis+' data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
             '<button class="btn err"'+dis+' data-node-delete-id="'+esc(n.ID)+'" data-node-delete-version="'+esc(n.Version)+'">delete</button>' +
           '</td>' +
@@ -2628,48 +2642,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
               version: btn.getAttribute("data-node-test-version"),
             });
           } catch (e) {
-            showOp("error", String(e));
-          }
-        });
-      });
-      document.querySelectorAll("[data-node-bootstrap-id]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          try {
-            const nodeID = (btn.getAttribute("data-node-bootstrap-id") || "").trim();
-            const rowNode = nodes.find((item) => String(item?.ID || "").trim() === nodeID);
-            const nodeName = String(rowNode?.Name || nodeID || "node").trim();
-            const nodeHost = String(rowNode?.Host || "").trim();
-            const nodeLabel = nodeHost ? (nodeName + " (" + nodeHost + ")") : nodeName;
-            const sshPassword = await promptNodePass("Bootstrap Node", "SSH password for " + nodeLabel + " (leave empty if key auth works):");
-            await postForm(cfg.nodesActionPath, {
-              op: "bootstrap",
-              node_id: nodeID,
-              version: btn.getAttribute("data-node-bootstrap-version"),
-              ssh_password: sshPassword,
-            });
-          } catch (e) {
-            if (String(e).includes("cancelled")) return;
-            showOp("error", String(e));
-          }
-        });
-      });
-      document.querySelectorAll("[data-node-sshkey-id]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          try {
-            const nodeID = (btn.getAttribute("data-node-sshkey-id") || "").trim();
-            const rowNode = nodes.find((item) => String(item?.ID || "").trim() === nodeID);
-            const nodeName = String(rowNode?.Name || nodeID || "node").trim();
-            const nodeHost = String(rowNode?.Host || "").trim();
-            const nodeLabel = nodeHost ? (nodeName + " (" + nodeHost + ")") : nodeName;
-            const sshPassword = await promptNodePass("Setup SSH Key", "SSH password for " + nodeLabel + " (leave empty if key auth already works):");
-            await postForm(cfg.nodesActionPath, {
-              op: "install_ssh_key",
-              node_id: nodeID,
-              version: btn.getAttribute("data-node-sshkey-version"),
-              ssh_password: sshPassword,
-            });
-          } catch (e) {
-            if (String(e).includes("cancelled")) return;
             showOp("error", String(e));
           }
         });
@@ -2880,6 +2852,42 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         await postForm(cfg.usersActionPath, { op: "create", name, enabled: "1" });
         field.value = "";
       } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+    // Maintenance modal buttons — read node from modal data attributes.
+    function getModalNode() {
+      const modal = document.getElementById("nodeModal");
+      return {
+        id:      (modal.getAttribute("data-node-id")      || "").trim(),
+        version: (modal.getAttribute("data-node-version") || "").trim(),
+        name:    (modal.getAttribute("data-node-name")    || "").trim(),
+        host:    (modal.getAttribute("data-node-host")    || "").trim(),
+      };
+    }
+    document.getElementById("ndSetupSshKeyBtn").addEventListener("click", async () => {
+      const n = getModalNode();
+      if (!n.id) return;
+      const label = n.host ? (n.name + " (" + n.host + ")") : n.name;
+      try {
+        const sshPassword = await promptNodePass("Setup SSH Key", "SSH password for " + label + " (leave empty if key auth already works):");
+        closeNodeModal();
+        await postForm(cfg.nodesActionPath, { op: "install_ssh_key", node_id: n.id, version: n.version, ssh_password: sshPassword });
+      } catch (e) {
+        if (String(e).includes("cancelled")) return;
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("ndBootstrapBtn").addEventListener("click", async () => {
+      const n = getModalNode();
+      if (!n.id) return;
+      const label = n.host ? (n.name + " (" + n.host + ")") : n.name;
+      try {
+        const sshPassword = await promptNodePass("Bootstrap Node", "SSH password for " + label + " (leave empty if key auth works):");
+        closeNodeModal();
+        await postForm(cfg.nodesActionPath, { op: "bootstrap", node_id: n.id, version: n.version, ssh_password: sshPassword });
+      } catch (e) {
+        if (String(e).includes("cancelled")) return;
         showOp("error", String(e));
       }
     });
