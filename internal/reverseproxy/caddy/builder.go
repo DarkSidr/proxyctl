@@ -15,11 +15,14 @@ import (
 
 const caddyTemplateName = "Caddyfile.tmpl"
 
-const caddyTemplateFallback = `{{- if .ContactEmail }}{
+const caddyTemplateFallback = `{
+  acme_ca https://acme-v02.api.letsencrypt.org/directory
+{{- if .ContactEmail }}
   email {{ .ContactEmail }}
+{{- end }}
 }
 
-{{ end -}}
+
 {{- range .Sites }}
 {{ .Address }} {
   root * {{ .DecoyRoot }}
