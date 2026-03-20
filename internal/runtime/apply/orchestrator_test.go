@@ -232,6 +232,9 @@ func (f fakeStore) Credentials() storage.CredentialRepository {
 func (f fakeStore) Subscriptions() storage.SubscriptionRepository {
 	return fakeSubscriptionsRepo{}
 }
+func (f fakeStore) UserTraffic() storage.UserTrafficRepository {
+	return fakeUserTrafficRepo{}
+}
 
 var _ storage.Store = fakeStore{}
 
@@ -241,9 +244,21 @@ func (fakeUsersRepo) Create(context.Context, domain.User) (domain.User, error) {
 	return domain.User{}, nil
 }
 func (fakeUsersRepo) List(context.Context) ([]domain.User, error) { return nil, nil }
+func (fakeUsersRepo) Update(context.Context, domain.User) (domain.User, error) {
+	return domain.User{}, nil
+}
 func (fakeUsersRepo) Delete(context.Context, string) (bool, error) {
 	return false, nil
 }
+
+type fakeUserTrafficRepo struct{}
+
+func (fakeUserTrafficRepo) Upsert(context.Context, string, int64, int64) error { return nil }
+func (fakeUserTrafficRepo) List(context.Context) ([]domain.UserTrafficRecord, error) {
+	return nil, nil
+}
+func (fakeUserTrafficRepo) ResetUser(context.Context, string) error { return nil }
+func (fakeUserTrafficRepo) ResetAll(context.Context) error          { return nil }
 
 type fakeNodesRepo struct{ items []domain.Node }
 
