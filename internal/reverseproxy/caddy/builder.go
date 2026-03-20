@@ -98,13 +98,31 @@ func (b *Builder) Build(req BuildRequest) (BuildResult, error) {
 		siteMap[route.Domain] = append(siteMap[route.Domain], route)
 	}
 
+	// Include domains from TLS-enabled non-HTTP inbounds (e.g. Hysteria2) so
+	// caddy triggers ACME cert acquisition for them even without HTTP routes.
+	for _, inbound := range req.Inbounds {
+		if !inbound.Enabled {
+			continue
+		}
+		if !needsCaddyCert(inbound) {
+			continue
+		}
+		domainName := publicDomain(b.cfg, req.Node, inbound)
+		if domainName == "" {
+			continue
+		}
+		if _, exists := siteMap[domainName]; !exists {
+			siteMap[domainName] = []Route{}
+		}
+	}
+
 	domains := make([]string, 0, len(siteMap))
 	for domainName := range siteMap {
 		domains = append(domains, domainName)
 	}
 	sort.Strings(domains)
 	if len(domains) == 0 {
-		return BuildResult{}, fmt.Errorf("no HTTP reverse-proxy inbounds found for caddy (supported transports: ws|grpc|xhttp)")
+		return BuildResult{}, fmt.Errorf("no inbounds require caddy: no HTTP reverse-proxy routes and no TLS-only inbounds found")
 	}
 
 	tplData := caddyTemplateData{}
@@ -309,4 +327,14 @@ func ensurePrefixPath(path string) string {
 		return path + "*"
 	}
 	return path + "/*"
+}
+
+// needsCaddyCert reports whether an inbound relies on caddy-managed ACME certs.
+// This is true when TLS is enabled, Reality is not used (Reality has its own
+// key-pair), and no explicit cert path is configured (the renderer falls back
+// to the caddy cert path at /caddy/certificates/...).
+func needsCaddyCert(inbound domain.Inbound) bool {
+	return inbound.TLSEnabled &&
+		!inbound.RealityEnabled &&
+		strings.TrimSpace(inbound.TLSCertPath) == ""
 }

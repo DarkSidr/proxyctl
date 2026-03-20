@@ -16,6 +16,7 @@ import (
 	"proxyctl/internal/renderer"
 	"proxyctl/internal/renderer/singbox"
 	"proxyctl/internal/renderer/xray"
+	"proxyctl/internal/reverseproxy/caddy"
 	"proxyctl/internal/storage/sqlite"
 )
 
@@ -256,6 +257,14 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 		return nodeSyncResult{}, fmt.Errorf("render xray for node %q: %w", req.Node.ID, err)
 	}
 
+	// Build Caddyfile for ACME cert management. Errors here are non-fatal:
+	// if the node has no inbounds that need caddy, we simply skip caddy sync.
+	caddyResult, caddyBuildErr := caddy.New(appCfg).Build(caddy.BuildRequest{
+		Node:     req.Node,
+		Inbounds: req.Inbounds,
+	})
+	hasCaddyConfig := caddyBuildErr == nil && len(caddyResult.Caddyfile) > 0
+
 	tmpDir, err := os.MkdirTemp("", "proxyctl-node-sync-")
 	if err != nil {
 		return nodeSyncResult{}, fmt.Errorf("create temp dir for node %q: %w", req.Node.ID, err)
@@ -279,10 +288,19 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 		return nodeSyncResult{}, fmt.Errorf("write temp synced inbounds snapshot for node %q: %w", req.Node.ID, err)
 	}
 
+	caddyfileLocal := ""
+	if hasCaddyConfig {
+		caddyfileLocal = filepath.Join(tmpDir, "Caddyfile")
+		if err := os.WriteFile(caddyfileLocal, caddyResult.Caddyfile, 0o644); err != nil {
+			return nodeSyncResult{}, fmt.Errorf("write temp Caddyfile for node %q: %w", req.Node.ID, err)
+		}
+	}
+
 	target := fmt.Sprintf("%s@%s", opts.sshUser, host)
 	singRemoteTmp := fmt.Sprintf("/tmp/proxyctl-%s-sing-box.json", req.Node.ID)
 	xrayRemoteTmp := fmt.Sprintf("/tmp/proxyctl-%s-xray.json", req.Node.ID)
 	syncedInboundsRemoteTmp := fmt.Sprintf("/tmp/proxyctl-%s-%s", req.Node.ID, syncedInboundsFileName)
+	caddyfileRemoteTmp := fmt.Sprintf("/tmp/proxyctl-%s-Caddyfile", req.Node.ID)
 
 	scpBase := buildSCPArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
 	singSCP := append(append([]string{}, scpBase...), singLocal, fmt.Sprintf("%s:%s", target, singRemoteTmp))
@@ -297,20 +315,40 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 	if out, err := runRemoteExecCombined(ctx, "scp", syncedSCP, opts.sshPassword); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("upload synced inbounds snapshot to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 	}
+	if hasCaddyConfig {
+		caddyfileSCP := append(append([]string{}, scpBase...), caddyfileLocal, fmt.Sprintf("%s:%s", target, caddyfileRemoteTmp))
+		if out, err := runRemoteExecCombined(ctx, "scp", caddyfileSCP, opts.sshPassword); err != nil {
+			return nodeSyncResult{}, fmt.Errorf("upload Caddyfile to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
+		}
+	}
 
 	prefix := ""
 	if opts.remoteUseSudo {
 		prefix = "sudo "
 	}
 
-	installCmd := strings.Join([]string{
+	remoteCaddyDir := strings.TrimSpace(appCfg.Paths.CaddyDir)
+	if remoteCaddyDir == "" {
+		remoteCaddyDir = "/etc/proxy-orchestrator/runtime/caddy"
+	}
+
+	installCmdParts := []string{
 		"set -e",
 		prefix + "mkdir -p " + shellQuote(opts.runtimeDir),
 		prefix + "install -m 640 " + shellQuote(singRemoteTmp) + " " + shellQuote(filepath.Join(opts.runtimeDir, "sing-box.json")),
 		prefix + "install -m 640 " + shellQuote(xrayRemoteTmp) + " " + shellQuote(filepath.Join(opts.runtimeDir, "xray.json")),
 		prefix + "install -m 640 " + shellQuote(syncedInboundsRemoteTmp) + " " + shellQuote(filepath.Join(opts.runtimeDir, syncedInboundsFileName)),
-		"rm -f " + shellQuote(singRemoteTmp) + " " + shellQuote(xrayRemoteTmp) + " " + shellQuote(syncedInboundsRemoteTmp),
-	}, "; ")
+	}
+	cleanupTmps := []string{shellQuote(singRemoteTmp), shellQuote(xrayRemoteTmp), shellQuote(syncedInboundsRemoteTmp)}
+	if hasCaddyConfig {
+		installCmdParts = append(installCmdParts,
+			prefix+"mkdir -p "+shellQuote(remoteCaddyDir),
+			prefix+"install -m 644 "+shellQuote(caddyfileRemoteTmp)+" "+shellQuote(filepath.Join(remoteCaddyDir, "Caddyfile")),
+		)
+		cleanupTmps = append(cleanupTmps, shellQuote(caddyfileRemoteTmp))
+	}
+	installCmdParts = append(installCmdParts, "rm -f "+strings.Join(cleanupTmps, " "))
+	installCmd := strings.Join(installCmdParts, "; ")
 
 	sshArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
 	sshArgs = append(sshArgs, target, installCmd)
@@ -318,7 +356,16 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 		return nodeSyncResult{}, fmt.Errorf("install configs on node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 
-	restartedUnits := make([]string, 0, 2)
+	uploadedFiles := []string{
+		filepath.Join(opts.runtimeDir, "sing-box.json"),
+		filepath.Join(opts.runtimeDir, "xray.json"),
+		filepath.Join(opts.runtimeDir, syncedInboundsFileName),
+	}
+	if hasCaddyConfig {
+		uploadedFiles = append(uploadedFiles, filepath.Join(remoteCaddyDir, "Caddyfile"))
+	}
+
+	restartedUnits := make([]string, 0, 3)
 	if opts.restart {
 		units := requiredRuntimeUnits(req, appCfg)
 		for _, unit := range units {
@@ -330,17 +377,23 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 			}
 			restartedUnits = append(restartedUnits, unit)
 		}
+		if hasCaddyConfig && strings.TrimSpace(appCfg.Runtime.CaddyUnit) != "" {
+			caddyUnit := strings.TrimSpace(appCfg.Runtime.CaddyUnit)
+			reloadCmd := strings.TrimSpace(prefix + "systemctl reload-or-restart " + shellQuote(caddyUnit))
+			sshReloadArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
+			sshReloadArgs = append(sshReloadArgs, target, reloadCmd)
+			if out, err := runRemoteExecCombined(ctx, "ssh", sshReloadArgs, opts.sshPassword); err != nil {
+				return nodeSyncResult{}, fmt.Errorf("reload caddy on node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
+			}
+			restartedUnits = append(restartedUnits, caddyUnit)
+		}
 	}
 
 	return nodeSyncResult{
-		NodeID: req.Node.ID,
-		Host:   host,
-		Uploaded: []string{
-			filepath.Join(opts.runtimeDir, "sing-box.json"),
-			filepath.Join(opts.runtimeDir, "xray.json"),
-			filepath.Join(opts.runtimeDir, syncedInboundsFileName),
-		},
-		Restart: restartedUnits,
+		NodeID:   req.Node.ID,
+		Host:     host,
+		Uploaded: uploadedFiles,
+		Restart:  restartedUnits,
 	}, nil
 }
 
