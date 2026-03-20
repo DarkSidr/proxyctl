@@ -5452,6 +5452,7 @@ func panelInboundFromForm(r *http.Request, base domain.Inbound) (domain.Inbound,
 
 	base.Type = domain.Protocol(typeRaw)
 	base.Engine = resolvedEngine
+	base.Transport = transport
 	base.NodeID = nodeID
 	base.Domain = domainName
 	base.Port = port
@@ -5503,7 +5504,6 @@ func panelInboundFromForm(r *http.Request, base domain.Inbound) (domain.Inbound,
 	if base.Type == domain.ProtocolHysteria2 {
 		base.TLSEnabled = true
 	}
-	base.Transport = transport
 	base.Path = path
 	base.SNI = sni
 	base.Enabled = panelFormBool(r.FormValue("enabled"))
