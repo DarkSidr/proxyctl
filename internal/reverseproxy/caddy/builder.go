@@ -24,6 +24,12 @@ const caddyTemplateFallback = `{{- if .ContactEmail }}{
 {{ .Address }} {
   root * {{ .DecoyRoot }}
 
+{{- if and .PanelPath .PanelPort }}
+  handle {{ .PanelPath }}* {
+    reverse_proxy 127.0.0.1:{{ .PanelPort }}
+  }
+{{- end }}
+
   handle_path /sub/* {
     root * {{ .SubscriptionRoot }}
     try_files {path} {path}.txt =404
@@ -66,8 +72,10 @@ type Route struct {
 
 // BuildRequest contains node and inbound data needed for Caddyfile generation.
 type BuildRequest struct {
-	Node     domain.Node
-	Inbounds []domain.Inbound
+	Node      domain.Node
+	Inbounds  []domain.Inbound
+	PanelPath string // if non-empty, inject panel reverse-proxy route (e.g. "/mi0a34mkrs3akogd")
+	PanelPort string // panel listen port on 127.0.0.1 (e.g. "20443")
 }
 
 // BuildResult contains generated Caddyfile and derived route metadata.
@@ -143,6 +151,8 @@ func (b *Builder) Build(req BuildRequest) (BuildResult, error) {
 			DecoyRoot:        b.cfg.Paths.DecoySiteDir,
 			SubscriptionRoot: filepath.Join(b.cfg.Paths.Subscription, "public"),
 			Routes:           make([]caddyRouteData, 0, len(routes)),
+			PanelPath:        strings.TrimSpace(req.PanelPath),
+			PanelPort:        strings.TrimSpace(req.PanelPort),
 		}
 		for idx, route := range routes {
 			site.Routes = append(site.Routes, caddyRouteData{
@@ -223,6 +233,8 @@ type caddySiteData struct {
 	DecoyRoot        string
 	SubscriptionRoot string
 	Routes           []caddyRouteData
+	PanelPath        string
+	PanelPort        string
 }
 
 type caddyRouteData struct {

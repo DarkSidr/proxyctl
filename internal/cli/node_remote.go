@@ -407,10 +407,23 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 // Returns nil when no caddy configuration is needed (non-fatal errors are
 // suppressed so that caddy issues do not block the overall apply pipeline).
 func syncPrimaryNodeCaddy(ctx context.Context, primaryNode domain.Node, inbounds []domain.Inbound, appCfg config.AppConfig) error {
-	caddyResult, err := caddy.New(appCfg).Build(caddy.BuildRequest{
+	buildReq := caddy.BuildRequest{
 		Node:     primaryNode,
 		Inbounds: inbounds,
-	})
+	}
+	// Preserve panel route: read panel-admin.env and inject into Caddyfile so
+	// sync does not wipe the reverse-proxy route that install.sh added.
+	if panelInfo, panelErr := readPanelAccessInfo(panelCredentialsPathFromConfig(appCfg.Paths.ConfigFile)); panelErr == nil {
+		if p := strings.TrimSpace(panelInfo.Path); p != "" {
+			buildReq.PanelPath = p
+		}
+		if port := strings.TrimSpace(panelInfo.Port); port != "" {
+			buildReq.PanelPort = port
+		} else {
+			buildReq.PanelPort = "20443"
+		}
+	}
+	caddyResult, err := caddy.New(appCfg).Build(buildReq)
 	if err != nil {
 		// No caddy config needed for this node (e.g. no TLS inbounds).
 		return nil

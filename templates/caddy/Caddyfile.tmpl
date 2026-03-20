@@ -7,6 +7,12 @@
 {{ .Address }} {
   root * {{ .DecoyRoot }}
 
+{{- if and .PanelPath .PanelPort }}
+  handle {{ .PanelPath }}* {
+    reverse_proxy 127.0.0.1:{{ .PanelPort }}
+  }
+{{- end }}
+
   handle_path /sub/* {
     root * {{ .SubscriptionRoot }}
     try_files {path} {path}.txt =404
