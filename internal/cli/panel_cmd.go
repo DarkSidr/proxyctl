@@ -63,6 +63,11 @@ type panelInboundView struct {
 	RealityServer      string
 	RealityServerPort  int
 	VLESSFlow          string
+	SniffingEnabled    bool
+	SniffingHTTP       bool
+	SniffingTLS        bool
+	SniffingQUIC       bool
+	SniffingFakeDNS    bool
 	Version            string
 }
 
@@ -1249,6 +1254,22 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           </div>
         </div>
       </div>
+      <div class="frow">
+        <span class="flabel">Sniffing</span>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="inSniffingEnabled" style="width:auto">
+          <span style="font-size:0.85rem;color:var(--muted)">detect protocol &amp; redirect</span>
+        </label>
+      </div>
+      <div id="mSniffingRow" class="frow hidden">
+        <span class="flabel">Detect</span>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.85rem"><input type="checkbox" id="inSniffingHTTP" checked style="width:auto"> HTTP</label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.85rem"><input type="checkbox" id="inSniffingTLS" checked style="width:auto"> TLS</label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.85rem"><input type="checkbox" id="inSniffingQUIC" style="width:auto"> QUIC</label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.85rem"><input type="checkbox" id="inSniffingFakeDNS" style="width:auto"> FakeDNS</label>
+        </div>
+      </div>
       <div class="modal-ftr">
         <button type="button" class="btn secondary" id="cancelInboundEditBtn">Cancel</button>
         <button type="button" class="btn" id="createInboundBtn">Create</button>
@@ -1667,6 +1688,17 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (realitySpider) realitySpider.value = "";
       const vlessFlow = document.getElementById("inVlessFlow");
       if (vlessFlow) vlessFlow.value = "xtls-rprx-vision";
+      const sniffEn = document.getElementById("inSniffingEnabled");
+      if (sniffEn) sniffEn.checked = false;
+      document.getElementById("mSniffingRow")?.classList.add("hidden");
+      const sniffHTTP = document.getElementById("inSniffingHTTP");
+      if (sniffHTTP) sniffHTTP.checked = true;
+      const sniffTLS = document.getElementById("inSniffingTLS");
+      if (sniffTLS) sniffTLS.checked = true;
+      const sniffQUIC = document.getElementById("inSniffingQUIC");
+      if (sniffQUIC) sniffQUIC.checked = false;
+      const sniffFake = document.getElementById("inSniffingFakeDNS");
+      if (sniffFake) sniffFake.checked = false;
       const path = document.getElementById("inPath");
       if (path) path.value = "";
       updateInboundDomainFromNode(true);
@@ -1746,6 +1778,17 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (realitySpider) realitySpider.value = String(inbound.RealitySpiderX || "").trim();
       const vlessFlow = document.getElementById("inVlessFlow");
       if (vlessFlow) vlessFlow.value = String(inbound.VLESSFlow || "xtls-rprx-vision").trim() || "xtls-rprx-vision";
+      const sniffEn = document.getElementById("inSniffingEnabled");
+      if (sniffEn) sniffEn.checked = !!inbound.SniffingEnabled;
+      const sniffHTTP = document.getElementById("inSniffingHTTP");
+      if (sniffHTTP) sniffHTTP.checked = !!inbound.SniffingHTTP;
+      const sniffTLS = document.getElementById("inSniffingTLS");
+      if (sniffTLS) sniffTLS.checked = !!inbound.SniffingTLS;
+      const sniffQUIC = document.getElementById("inSniffingQUIC");
+      if (sniffQUIC) sniffQUIC.checked = !!inbound.SniffingQUIC;
+      const sniffFake = document.getElementById("inSniffingFakeDNS");
+      if (sniffFake) sniffFake.checked = !!inbound.SniffingFakeDNS;
+      document.getElementById("mSniffingRow")?.classList.toggle("hidden", !inbound.SniffingEnabled);
       updateInboundCreateFieldVisibility(false);
       updateInboundTargetToSni(true);
       updateInboundAdvancedVisibility();
@@ -2395,6 +2438,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const realityShortID = (document.getElementById("inRealityShortID").value || "").trim();
       const realitySpiderX = (document.getElementById("inRealitySpiderX").value || "").trim();
       const vlessFlow = (document.getElementById("inVlessFlow").value || "").trim();
+      const sniffingEnabled = !!document.getElementById("inSniffingEnabled")?.checked;
+      const sniffingHTTP = !!document.getElementById("inSniffingHTTP")?.checked;
+      const sniffingTLS = !!document.getElementById("inSniffingTLS")?.checked;
+      const sniffingQUIC = !!document.getElementById("inSniffingQUIC")?.checked;
+      const sniffingFakeDNS = !!document.getElementById("inSniffingFakeDNS")?.checked;
       if (!port) {
         const suggested = getSuggestedInboundPort(type, transport);
         if (suggested > 0) {
@@ -2424,6 +2472,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           reality_short_id: realityShortID,
           reality_spider_x: realitySpiderX,
           vless_flow: vlessFlow,
+          sniffing_enabled: sniffingEnabled ? "1" : "0",
+          sniffing_http: sniffingHTTP ? "1" : "0",
+          sniffing_tls: sniffingTLS ? "1" : "0",
+          sniffing_quic: sniffingQUIC ? "1" : "0",
+          sniffing_fakedns: sniffingFakeDNS ? "1" : "0",
           enabled: editingInboundID ? (editingInboundEnabled ? "1" : "0") : "1",
         };
         if (isEdit) {
@@ -2588,6 +2641,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     document.getElementById("inRealityClearKeys").addEventListener("click", () => {
       document.getElementById("inRealityPublicKey").value = "";
       document.getElementById("inRealityPrivateKey").value = "";
+    });
+    document.getElementById("inSniffingEnabled").addEventListener("change", () => {
+      const on = !!document.getElementById("inSniffingEnabled").checked;
+      document.getElementById("mSniffingRow")?.classList.toggle("hidden", !on);
     });
     document.getElementById("inLinkTargetSni").addEventListener("change", () => {
       if (document.getElementById("inLinkTargetSni").checked) {
@@ -3579,6 +3636,11 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			RealityServer:      strings.TrimSpace(inbound.RealityServer),
 			RealityServerPort:  inbound.RealityServerPort,
 			VLESSFlow:          strings.TrimSpace(inbound.VLESSFlow),
+			SniffingEnabled:    inbound.SniffingEnabled,
+			SniffingHTTP:       inbound.SniffingHTTP,
+			SniffingTLS:        inbound.SniffingTLS,
+			SniffingQUIC:       inbound.SniffingQUIC,
+			SniffingFakeDNS:    inbound.SniffingFakeDNS,
 			Version:            panelInboundVersion(inbound),
 		})
 		if inbound.Enabled {
@@ -5506,6 +5568,11 @@ func panelInboundFromForm(r *http.Request, base domain.Inbound) (domain.Inbound,
 	}
 	base.Path = path
 	base.SNI = sni
+	base.SniffingEnabled = panelFormBool(r.FormValue("sniffing_enabled"))
+	base.SniffingHTTP = panelFormBool(r.FormValue("sniffing_http"))
+	base.SniffingTLS = panelFormBool(r.FormValue("sniffing_tls"))
+	base.SniffingQUIC = panelFormBool(r.FormValue("sniffing_quic"))
+	base.SniffingFakeDNS = panelFormBool(r.FormValue("sniffing_fakedns"))
 	base.Enabled = panelFormBool(r.FormValue("enabled"))
 	return base, nil
 }
@@ -5565,6 +5632,11 @@ func panelInboundVersion(inbound domain.Inbound) string {
 		strings.TrimSpace(inbound.RealityServer),
 		strconv.Itoa(inbound.RealityServerPort),
 		strings.TrimSpace(inbound.VLESSFlow),
+		strconv.FormatBool(inbound.SniffingEnabled),
+		strconv.FormatBool(inbound.SniffingHTTP),
+		strconv.FormatBool(inbound.SniffingTLS),
+		strconv.FormatBool(inbound.SniffingQUIC),
+		strconv.FormatBool(inbound.SniffingFakeDNS),
 		strings.TrimSpace(inbound.TLSCertPath),
 		strings.TrimSpace(inbound.TLSKeyPath),
 		inbound.CreatedAt.UTC().Format(time.RFC3339Nano),

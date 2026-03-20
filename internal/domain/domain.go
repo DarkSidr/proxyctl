@@ -93,6 +93,11 @@ type Inbound struct {
 	RealityServer      string
 	RealityServerPort  int
 	VLESSFlow          string
+	SniffingEnabled    bool
+	SniffingHTTP       bool
+	SniffingTLS        bool
+	SniffingQUIC       bool
+	SniffingFakeDNS    bool
 	Enabled            bool
 	CreatedAt          time.Time
 }

@@ -251,9 +251,10 @@ func (r *inboundRepository) Create(ctx context.Context, inbound domain.Inbound) 
 			id, type, engine, node_id, domain, port, tls_enabled, tls_cert_path, tls_key_path, transport, path, sni,
 			reality_enabled, reality_public_key, reality_private_key, reality_short_id,
 			reality_fingerprint, reality_spider_x, reality_server, reality_server_port, vless_flow,
+			sniffing_enabled, sniffing_http, sniffing_tls, sniffing_quic, sniffing_fakedns,
 			enabled, created_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		inbound.ID,
 		inbound.Type,
 		inbound.Engine,
@@ -275,6 +276,11 @@ func (r *inboundRepository) Create(ctx context.Context, inbound domain.Inbound) 
 		inbound.RealityServer,
 		inbound.RealityServerPort,
 		inbound.VLESSFlow,
+		boolToInt(inbound.SniffingEnabled),
+		boolToInt(inbound.SniffingHTTP),
+		boolToInt(inbound.SniffingTLS),
+		boolToInt(inbound.SniffingQUIC),
+		boolToInt(inbound.SniffingFakeDNS),
 		boolToInt(inbound.Enabled),
 		inbound.CreatedAt.Format(time.RFC3339Nano),
 	)
@@ -291,6 +297,7 @@ func (r *inboundRepository) List(ctx context.Context) ([]domain.Inbound, error) 
 			id, type, engine, node_id, COALESCE(domain, ''), port, tls_enabled, COALESCE(tls_cert_path, ''), COALESCE(tls_key_path, ''), COALESCE(transport, ''), COALESCE(path, ''), COALESCE(sni, ''),
 			reality_enabled, COALESCE(reality_public_key, ''), COALESCE(reality_private_key, ''), COALESCE(reality_short_id, ''),
 			COALESCE(reality_fingerprint, ''), COALESCE(reality_spider_x, ''), COALESCE(reality_server, ''), reality_server_port, COALESCE(vless_flow, ''),
+			COALESCE(sniffing_enabled, 0), COALESCE(sniffing_http, 0), COALESCE(sniffing_tls, 0), COALESCE(sniffing_quic, 0), COALESCE(sniffing_fakedns, 0),
 			enabled, created_at
 		FROM inbounds ORDER BY created_at ASC, id ASC`,
 	)
@@ -302,11 +309,16 @@ func (r *inboundRepository) List(ctx context.Context) ([]domain.Inbound, error) 
 	inbounds := make([]domain.Inbound, 0)
 	for rows.Next() {
 		var (
-			inbound        domain.Inbound
-			tls            int
-			realityEnabled int
-			enabled        int
-			createdAt      string
+			inbound           domain.Inbound
+			tls               int
+			realityEnabled    int
+			sniffingEnabled   int
+			sniffingHTTP      int
+			sniffingTLS       int
+			sniffingQUIC      int
+			sniffingFakeDNS   int
+			enabled           int
+			createdAt         string
 		)
 		if err := rows.Scan(
 			&inbound.ID,
@@ -330,6 +342,11 @@ func (r *inboundRepository) List(ctx context.Context) ([]domain.Inbound, error) 
 			&inbound.RealityServer,
 			&inbound.RealityServerPort,
 			&inbound.VLESSFlow,
+			&sniffingEnabled,
+			&sniffingHTTP,
+			&sniffingTLS,
+			&sniffingQUIC,
+			&sniffingFakeDNS,
 			&enabled,
 			&createdAt,
 		); err != nil {
@@ -337,6 +354,11 @@ func (r *inboundRepository) List(ctx context.Context) ([]domain.Inbound, error) 
 		}
 		inbound.TLSEnabled = intToBool(tls)
 		inbound.RealityEnabled = intToBool(realityEnabled)
+		inbound.SniffingEnabled = intToBool(sniffingEnabled)
+		inbound.SniffingHTTP = intToBool(sniffingHTTP)
+		inbound.SniffingTLS = intToBool(sniffingTLS)
+		inbound.SniffingQUIC = intToBool(sniffingQUIC)
+		inbound.SniffingFakeDNS = intToBool(sniffingFakeDNS)
 		inbound.Enabled = intToBool(enabled)
 		inbound.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 		if err != nil {
@@ -375,7 +397,8 @@ func (r *inboundRepository) Update(ctx context.Context, inbound domain.Inbound) 
 			type = ?, engine = ?, node_id = ?, domain = ?, port = ?, tls_enabled = ?, tls_cert_path = ?, tls_key_path = ?,
 			transport = ?, path = ?, sni = ?, reality_enabled = ?, reality_public_key = ?, reality_private_key = ?,
 			reality_short_id = ?, reality_fingerprint = ?, reality_spider_x = ?, reality_server = ?, reality_server_port = ?,
-			vless_flow = ?, enabled = ?
+			vless_flow = ?, sniffing_enabled = ?, sniffing_http = ?, sniffing_tls = ?, sniffing_quic = ?, sniffing_fakedns = ?,
+			enabled = ?
 		WHERE id = ?`,
 		inbound.Type,
 		inbound.Engine,
@@ -397,6 +420,11 @@ func (r *inboundRepository) Update(ctx context.Context, inbound domain.Inbound) 
 		inbound.RealityServer,
 		inbound.RealityServerPort,
 		inbound.VLESSFlow,
+		boolToInt(inbound.SniffingEnabled),
+		boolToInt(inbound.SniffingHTTP),
+		boolToInt(inbound.SniffingTLS),
+		boolToInt(inbound.SniffingQUIC),
+		boolToInt(inbound.SniffingFakeDNS),
 		boolToInt(inbound.Enabled),
 		inbound.ID,
 	)

@@ -252,7 +252,28 @@ func buildXHTTPInbound(node domain.Node, inbound domain.Inbound, credentials []d
 			},
 			TLSSettings: tlsCfg,
 		},
+		Sniffing: buildSniffing(inbound),
 	}, clients, nil
+}
+
+func buildSniffing(inbound domain.Inbound) *sniffingConfig {
+	if !inbound.SniffingEnabled {
+		return nil
+	}
+	var dest []string
+	if inbound.SniffingHTTP {
+		dest = append(dest, "http")
+	}
+	if inbound.SniffingTLS {
+		dest = append(dest, "tls")
+	}
+	if inbound.SniffingQUIC {
+		dest = append(dest, "quic")
+	}
+	if inbound.SniffingFakeDNS {
+		dest = append(dest, "fakedns")
+	}
+	return &sniffingConfig{Enabled: true, DestOverride: dest}
 }
 
 func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []domain.Credential) (inboundConfig, []renderer.ClientArtifact, error) {
@@ -337,6 +358,7 @@ func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []d
 			Security:        "reality",
 			RealitySettings: realityCfg,
 		},
+		Sniffing: buildSniffing(inbound),
 	}, clients, nil
 }
 
