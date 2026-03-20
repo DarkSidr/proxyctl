@@ -21,7 +21,16 @@ type Migrator interface {
 type UserRepository interface {
 	Create(ctx context.Context, user domain.User) (domain.User, error)
 	List(ctx context.Context) ([]domain.User, error)
+	Update(ctx context.Context, user domain.User) (domain.User, error)
 	Delete(ctx context.Context, userID string) (bool, error)
+}
+
+// UserTrafficRepository defines persistence operations for per-user traffic counters.
+type UserTrafficRepository interface {
+	Upsert(ctx context.Context, userID string, addRX, addTX int64) error
+	List(ctx context.Context) ([]domain.UserTrafficRecord, error)
+	ResetUser(ctx context.Context, userID string) error
+	ResetAll(ctx context.Context) error
 }
 
 // NodeRepository defines persistence operations for nodes.
@@ -64,5 +73,6 @@ type Store interface {
 	Inbounds() InboundRepository
 	Credentials() CredentialRepository
 	Subscriptions() SubscriptionRepository
+	UserTraffic() UserTrafficRepository
 	Close() error
 }

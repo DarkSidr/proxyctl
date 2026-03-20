@@ -99,6 +99,15 @@ var schemaMigrations = []string{
 		END`,
 	`ALTER TABLE nodes ADD COLUMN ssh_user TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE nodes ADD COLUMN ssh_port INTEGER NOT NULL DEFAULT 22`,
+	`ALTER TABLE users ADD COLUMN expires_at TEXT`,
+	`ALTER TABLE users ADD COLUMN traffic_limit_bytes INTEGER NOT NULL DEFAULT 0`,
+	`CREATE TABLE IF NOT EXISTS user_traffic_stats (
+		user_id    TEXT PRIMARY KEY,
+		rx_bytes   INTEGER NOT NULL DEFAULT 0,
+		tx_bytes   INTEGER NOT NULL DEFAULT 0,
+		updated_at TEXT NOT NULL,
+		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+	)`,
 	`CREATE TRIGGER IF NOT EXISTS trg_nodes_single_primary_update
 		BEFORE UPDATE ON nodes
 		FOR EACH ROW

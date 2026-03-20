@@ -20,6 +20,8 @@ type credentialRepository struct{ db *sql.DB }
 
 type subscriptionRepository struct{ db *sql.DB }
 
+type userTrafficRepository struct{ db *sql.DB }
+
 func (r *userRepository) Create(ctx context.Context, user domain.User) (domain.User, error) {
 	if user.ID == "" {
 		user.ID = newID()
@@ -28,13 +30,21 @@ func (r *userRepository) Create(ctx context.Context, user domain.User) (domain.U
 		user.CreatedAt = time.Now().UTC()
 	}
 
+	var expiresAt *string
+	if user.ExpiresAt != nil {
+		s := user.ExpiresAt.UTC().Format(time.RFC3339)
+		expiresAt = &s
+	}
+
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO users (id, name, enabled, created_at) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO users (id, name, enabled, created_at, expires_at, traffic_limit_bytes) VALUES (?, ?, ?, ?, ?, ?)`,
 		user.ID,
 		user.Name,
 		boolToInt(user.Enabled),
 		user.CreatedAt.Format(time.RFC3339Nano),
+		expiresAt,
+		user.TrafficLimitBytes,
 	)
 	if err != nil {
 		return domain.User{}, fmt.Errorf("insert user: %w", err)
@@ -43,7 +53,7 @@ func (r *userRepository) Create(ctx context.Context, user domain.User) (domain.U
 }
 
 func (r *userRepository) List(ctx context.Context) ([]domain.User, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, name, enabled, created_at FROM users ORDER BY created_at ASC, id ASC`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, name, enabled, created_at, expires_at, traffic_limit_bytes FROM users ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -52,11 +62,13 @@ func (r *userRepository) List(ctx context.Context) ([]domain.User, error) {
 	users := make([]domain.User, 0)
 	for rows.Next() {
 		var (
-			user      domain.User
-			enabled   int
-			createdAt string
+			user              domain.User
+			enabled           int
+			createdAt         string
+			expiresAt         *string
+			trafficLimitBytes int64
 		)
-		if err := rows.Scan(&user.ID, &user.Name, &enabled, &createdAt); err != nil {
+		if err := rows.Scan(&user.ID, &user.Name, &enabled, &createdAt, &expiresAt, &trafficLimitBytes); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
 		user.Enabled = intToBool(enabled)
@@ -64,6 +76,14 @@ func (r *userRepository) List(ctx context.Context) ([]domain.User, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse user created_at: %w", err)
 		}
+		if expiresAt != nil {
+			t, parseErr := time.Parse(time.RFC3339, *expiresAt)
+			if parseErr == nil {
+				t = t.UTC()
+				user.ExpiresAt = &t
+			}
+		}
+		user.TrafficLimitBytes = trafficLimitBytes
 		users = append(users, user)
 	}
 
@@ -71,6 +91,37 @@ func (r *userRepository) List(ctx context.Context) ([]domain.User, error) {
 		return nil, fmt.Errorf("iterate users: %w", err)
 	}
 	return users, nil
+}
+
+func (r *userRepository) Update(ctx context.Context, user domain.User) (domain.User, error) {
+	if user.ID == "" {
+		return domain.User{}, fmt.Errorf("user id is required")
+	}
+	var expiresAt *string
+	if user.ExpiresAt != nil {
+		s := user.ExpiresAt.UTC().Format(time.RFC3339)
+		expiresAt = &s
+	}
+	result, err := r.db.ExecContext(
+		ctx,
+		`UPDATE users SET name=?, enabled=?, expires_at=?, traffic_limit_bytes=? WHERE id=?`,
+		user.Name,
+		boolToInt(user.Enabled),
+		expiresAt,
+		user.TrafficLimitBytes,
+		user.ID,
+	)
+	if err != nil {
+		return domain.User{}, fmt.Errorf("update user: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return domain.User{}, fmt.Errorf("update user rows affected: %w", err)
+	}
+	if affected == 0 {
+		return domain.User{}, sql.ErrNoRows
+	}
+	return user, nil
 }
 
 func (r *userRepository) Delete(ctx context.Context, userID string) (bool, error) {
@@ -667,4 +718,61 @@ func (r *subscriptionRepository) DeleteByUserID(ctx context.Context, userID stri
 		return false, fmt.Errorf("delete subscription rows affected: %w", err)
 	}
 	return affected > 0, nil
+}
+
+func (r *userTrafficRepository) Upsert(ctx context.Context, userID string, addRX, addTX int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO user_traffic_stats (user_id, rx_bytes, tx_bytes, updated_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(user_id) DO UPDATE SET
+		     rx_bytes = rx_bytes + excluded.rx_bytes,
+		     tx_bytes = tx_bytes + excluded.tx_bytes,
+		     updated_at = excluded.updated_at`,
+		userID, addRX, addTX, time.Now().UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert user traffic: %w", err)
+	}
+	return nil
+}
+
+func (r *userTrafficRepository) List(ctx context.Context) ([]domain.UserTrafficRecord, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT user_id, rx_bytes, tx_bytes, updated_at FROM user_traffic_stats`)
+	if err != nil {
+		return nil, fmt.Errorf("list user traffic: %w", err)
+	}
+	defer rows.Close()
+
+	records := make([]domain.UserTrafficRecord, 0)
+	for rows.Next() {
+		var (
+			rec       domain.UserTrafficRecord
+			updatedAt string
+		)
+		if err := rows.Scan(&rec.UserID, &rec.RXBytes, &rec.TXBytes, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan user traffic: %w", err)
+		}
+		rec.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		records = append(records, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate user traffic: %w", err)
+	}
+	return records, nil
+}
+
+func (r *userTrafficRepository) ResetUser(ctx context.Context, userID string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM user_traffic_stats WHERE user_id = ?`, userID)
+	if err != nil {
+		return fmt.Errorf("reset user traffic: %w", err)
+	}
+	return nil
+}
+
+func (r *userTrafficRepository) ResetAll(ctx context.Context) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM user_traffic_stats`)
+	if err != nil {
+		return fmt.Errorf("reset all user traffic: %w", err)
+	}
+	return nil
 }

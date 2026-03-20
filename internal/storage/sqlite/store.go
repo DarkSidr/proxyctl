@@ -21,6 +21,7 @@ type Store struct {
 	inbounds      *inboundRepository
 	credentials   *credentialRepository
 	subscriptions *subscriptionRepository
+	userTraffic   *userTrafficRepository
 }
 
 var _ storage.Store = (*Store)(nil)
@@ -50,6 +51,7 @@ func Open(path string) (*Store, error) {
 	store.inbounds = &inboundRepository{db: db}
 	store.credentials = &credentialRepository{db: db}
 	store.subscriptions = &subscriptionRepository{db: db}
+	store.userTraffic = &userTrafficRepository{db: db}
 
 	return store, nil
 }
@@ -85,6 +87,8 @@ func (s *Store) Inbounds() storage.InboundRepository { return s.inbounds }
 func (s *Store) Credentials() storage.CredentialRepository { return s.credentials }
 
 func (s *Store) Subscriptions() storage.SubscriptionRepository { return s.subscriptions }
+
+func (s *Store) UserTraffic() storage.UserTrafficRepository { return s.userTraffic }
 
 func (s *Store) Close() error {
 	if s.db == nil {

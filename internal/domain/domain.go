@@ -54,10 +54,20 @@ const (
 
 // User describes one managed account.
 type User struct {
-	ID        string
-	Name      string
-	Enabled   bool
-	CreatedAt time.Time
+	ID                string
+	Name              string
+	Enabled           bool
+	CreatedAt         time.Time
+	ExpiresAt         *time.Time // nil = no expiry
+	TrafficLimitBytes int64      // 0 = unlimited
+}
+
+// UserTrafficRecord holds accumulated traffic counters for a user.
+type UserTrafficRecord struct {
+	UserID    string
+	RXBytes   int64
+	TXBytes   int64
+	UpdatedAt time.Time
 }
 
 // Node describes a managed node in proxyctl.

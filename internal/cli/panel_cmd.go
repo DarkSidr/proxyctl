@@ -79,11 +79,15 @@ type panelInboundView struct {
 }
 
 type panelUserView struct {
-	ID        string
-	Name      string
-	Enabled   bool
-	CreatedAt time.Time
-	Version   string
+	ID                string
+	Name              string
+	Enabled           bool
+	CreatedAt         time.Time
+	ExpiresAt         *time.Time
+	TrafficLimitBytes int64
+	UsedRXBytes       int64
+	UsedTXBytes       int64
+	Version           string
 }
 
 type panelCredentialView struct {
@@ -1082,6 +1086,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     .frow .flabel { font-size: 0.78rem; color: var(--muted); }
     .frow input, .frow select { width: 100%; }
     .frow-inline { display: flex; gap: 8px; align-items: center; }
+    .modal-box { background: #0f172a; border: 1px solid var(--line); border-radius: 14px; padding: 20px; max-width: 460px; margin: 20px auto; }
+    .modal-box h3 { margin: 0 0 14px; font-size: 0.95rem; font-weight: 600; }
+    .form-grid { display: grid; grid-template-columns: 130px 1fr; gap: 8px 12px; align-items: center; }
+    .err-msg { color: #fb7185; font-size: 0.8rem; margin-top: 6px; padding: 6px; background: rgba(251,113,133,0.08); border-radius: 6px; }
     .sec-tabs { display: flex; gap: 4px; }
     .sec-tab { border: 1px solid var(--line); background: rgba(15,23,42,0.55); color: var(--muted); border-radius: 8px; padding: 5px 16px; cursor: pointer; font-size: 0.8rem; transition: all 0.15s; }
     .sec-tab.active { border-color: var(--brand); color: var(--brand); background: rgba(34,211,238,0.08); }
@@ -1305,9 +1313,37 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>name</th><th>id</th><th>actions</th></tr></thead>
+          <thead><tr><th>name</th><th>expiry</th><th>limit</th><th>used</th><th>status</th><th>actions</th></tr></thead>
           <tbody id="usersBody"></tbody>
         </table>
+      </div>
+      <div id="userEditModal" class="modal hidden">
+        <div class="modal-box">
+          <h3>edit user</h3>
+          <div class="form-grid">
+            <label>name</label><input id="ueModalName" type="text">
+            <label>expires (YYYY-MM-DD)</label>
+            <div class="row"><input id="ueModalExpires" type="date"><button class="btn secondary" id="ueModalExpiresClear">clear</button></div>
+            <label>traffic limit</label>
+            <div class="row"><input id="ueModalTrafficVal" type="number" min="0" style="width:100px">
+              <select id="ueModalTrafficUnit">
+                <option value="1">B</option>
+                <option value="1048576">MB</option>
+                <option value="1073741824" selected>GB</option>
+                <option value="1099511627776">TB</option>
+              </select>
+              <span class="muted" style="align-self:center">(0 = unlimited)</span>
+            </div>
+            <label>enabled</label><input id="ueModalEnabled" type="checkbox" checked>
+          </div>
+          <div class="row" style="margin-top:12px;gap:8px">
+            <button id="ueModalSave" class="btn">save</button>
+            <button id="ueModalResetTraffic" class="btn warn">reset traffic</button>
+            <button id="ueModalDelete" class="btn err">delete</button>
+            <button id="ueModalCancel" class="btn secondary">cancel</button>
+          </div>
+          <div id="ueModalErr" class="err-msg hidden"></div>
+        </div>
       </div>
     </section>
 
@@ -2671,27 +2707,134 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const subDetails = Array.isArray(snapshot.SubscriptionDetails) ? snapshot.SubscriptionDetails : [];
       refreshInboundSniList(nodes, inbounds);
       updateInboundCreateFieldVisibility(false);
-      document.getElementById("usersBody").innerHTML = users.map((u) => (
-        '<tr>' +
+      function fmtBytes(b) {
+        if (!b || b === 0) return "0";
+        const units = ["B","KB","MB","GB","TB"];
+        let i = 0; let v = b;
+        while (v >= 1024 && i < units.length-1) { v /= 1024; i++; }
+        return v.toFixed(1)+units[i];
+      }
+      function userStatus(u) {
+        if (!u.Enabled) return '<span class="badge-err">disabled</span>';
+        if (u.ExpiresAt && new Date(u.ExpiresAt) < new Date())
+          return '<span class="badge-err">expired</span>';
+        if (u.TrafficLimitBytes > 0 && (u.UsedRXBytes + u.UsedTXBytes) >= u.TrafficLimitBytes)
+          return '<span class="badge-err">over limit</span>';
+        return '<span class="badge-ok">active</span>';
+      }
+      document.getElementById("usersBody").innerHTML = users.map((u) => {
+        const expiry = u.ExpiresAt ? esc(u.ExpiresAt.slice(0,10)) : '<span class="muted">∞</span>';
+        const limit = u.TrafficLimitBytes > 0 ? esc(fmtBytes(u.TrafficLimitBytes)) : '<span class="muted">∞</span>';
+        const usedTotal = (u.UsedRXBytes||0) + (u.UsedTXBytes||0);
+        const used = usedTotal > 0
+          ? esc(fmtBytes(usedTotal))+' <span class="muted">(↓'+esc(fmtBytes(u.UsedRXBytes||0))+' ↑'+esc(fmtBytes(u.UsedTXBytes||0))+')</span>'
+          : '<span class="muted">—</span>';
+        return '<tr>' +
           '<td>'+esc(u.Name)+'</td>' +
-          '<td class="mono muted">'+esc(u.ID)+'</td>' +
-          '<td><button class="btn err" data-user-id="'+esc(u.ID)+'" data-user-version="'+esc(u.Version)+'">delete</button></td>' +
-        '</tr>'
-      )).join("");
+          '<td>'+expiry+'</td>' +
+          '<td>'+limit+'</td>' +
+          '<td>'+used+'</td>' +
+          '<td>'+userStatus(u)+'</td>' +
+          '<td><button class="btn secondary" data-user-edit-id="'+esc(u.ID)+'">edit</button></td>' +
+        '</tr>';
+      }).join("");
 
-      document.querySelectorAll("[data-user-id]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          try {
-            await postForm(cfg.usersActionPath, {
-              op: "delete",
-              user_id: btn.getAttribute("data-user-id"),
-              version: btn.getAttribute("data-user-version"),
-            });
-          } catch (e) {
-            showOp("error", String(e));
+      // User edit modal logic
+      let ueCurrentUser = null;
+      document.querySelectorAll("[data-user-edit-id]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const uid = btn.getAttribute("data-user-edit-id");
+          ueCurrentUser = users.find((u) => u.ID === uid) || null;
+          if (!ueCurrentUser) return;
+          const u = ueCurrentUser;
+          document.getElementById("ueModalName").value = u.Name || "";
+          document.getElementById("ueModalExpires").value = u.ExpiresAt ? u.ExpiresAt.slice(0,10) : "";
+          document.getElementById("ueModalEnabled").checked = !!u.Enabled;
+          // Try to detect unit for traffic limit
+          const tlb = u.TrafficLimitBytes || 0;
+          let unitEl = document.getElementById("ueModalTrafficUnit");
+          let valEl = document.getElementById("ueModalTrafficVal");
+          if (tlb === 0) {
+            valEl.value = 0;
+            unitEl.value = "1073741824";
+          } else if (tlb % 1099511627776 === 0) {
+            unitEl.value = "1099511627776"; valEl.value = tlb / 1099511627776;
+          } else if (tlb % 1073741824 === 0) {
+            unitEl.value = "1073741824"; valEl.value = tlb / 1073741824;
+          } else if (tlb % 1048576 === 0) {
+            unitEl.value = "1048576"; valEl.value = tlb / 1048576;
+          } else {
+            unitEl.value = "1"; valEl.value = tlb;
           }
+          document.getElementById("ueModalErr").classList.add("hidden");
+          document.getElementById("userEditModal").classList.remove("hidden");
         });
       });
+      document.getElementById("ueModalCancel").onclick = () => {
+        document.getElementById("userEditModal").classList.add("hidden");
+        ueCurrentUser = null;
+      };
+      document.getElementById("ueModalExpiresClear").onclick = () => {
+        document.getElementById("ueModalExpires").value = "";
+      };
+      document.getElementById("ueModalSave").onclick = async () => {
+        if (!ueCurrentUser) return;
+        const errEl = document.getElementById("ueModalErr");
+        errEl.classList.add("hidden");
+        const trafficVal = parseFloat(document.getElementById("ueModalTrafficVal").value) || 0;
+        const trafficUnit = parseInt(document.getElementById("ueModalTrafficUnit").value) || 1;
+        const trafficBytes = Math.floor(trafficVal * trafficUnit);
+        try {
+          await postForm(cfg.usersActionPath, {
+            op: "update",
+            user_id: ueCurrentUser.ID,
+            version: ueCurrentUser.Version,
+            name: document.getElementById("ueModalName").value,
+            enabled: document.getElementById("ueModalEnabled").checked ? "1" : "0",
+            expires_at: document.getElementById("ueModalExpires").value,
+            traffic_limit_bytes: String(trafficBytes),
+          });
+          document.getElementById("userEditModal").classList.add("hidden");
+          ueCurrentUser = null;
+        } catch (e) {
+          errEl.textContent = String(e);
+          errEl.classList.remove("hidden");
+        }
+      };
+      document.getElementById("ueModalResetTraffic").onclick = async () => {
+        if (!ueCurrentUser) return;
+        const errEl = document.getElementById("ueModalErr");
+        errEl.classList.add("hidden");
+        try {
+          await postForm(cfg.usersActionPath, {
+            op: "reset_traffic",
+            user_id: ueCurrentUser.ID,
+          });
+          document.getElementById("userEditModal").classList.add("hidden");
+          ueCurrentUser = null;
+        } catch (e) {
+          errEl.textContent = String(e);
+          errEl.classList.remove("hidden");
+        }
+      };
+      document.getElementById("ueModalDelete").onclick = async () => {
+        if (!ueCurrentUser) return;
+        const errEl = document.getElementById("ueModalErr");
+        errEl.classList.add("hidden");
+        if (!confirm("Delete user "+ueCurrentUser.Name+"?")) return;
+        try {
+          await postForm(cfg.usersActionPath, {
+            op: "delete",
+            user_id: ueCurrentUser.ID,
+            version: ueCurrentUser.Version,
+          });
+          document.getElementById("userEditModal").classList.add("hidden");
+          ueCurrentUser = null;
+        } catch (e) {
+          errEl.textContent = String(e);
+          errEl.classList.remove("hidden");
+        }
+      };
 
       const sshWarn = (snapshot && snapshot.SSHKeyWarning) ? snapshot.SSHKeyWarning : "";
       const sshWarnEl = document.getElementById("nodesSshWarning");
@@ -4308,6 +4451,32 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "panel auth: enabled (login page)")
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "terminate with Ctrl+C")
+
+			// Background: collect traffic from xray and sing-box every 30s.
+			go func() {
+				t := time.NewTicker(30 * time.Second)
+				defer t.Stop()
+				for {
+					select {
+					case <-t.C:
+						_ = panelCollectXrayTraffic(context.Background(), resolvedDB, "127.0.0.1:10090")
+						_ = panelCollectSingboxTraffic(context.Background(), resolvedDB, "127.0.0.1:10091")
+					}
+				}
+			}()
+
+			// Background: enforce user expiry and traffic limits every 60s.
+			go func() {
+				t := time.NewTicker(60 * time.Second)
+				defer t.Stop()
+				for {
+					select {
+					case <-t.C:
+						panelEnforceUserPolicy(context.Background(), resolvedDB, ops)
+					}
+				}
+			}()
+
 			return httpServer.ListenAndServe()
 		},
 	}
@@ -4460,17 +4629,28 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		suggestedPorts[key] = suggestWizardPort(item.protocol, item.transport, usedPorts, hostPortBusy)
 	}
 
+	trafficRows, _ := store.UserTraffic().List(ctx)
+	trafficByUser := make(map[string]domain.UserTrafficRecord, len(trafficRows))
+	for _, t := range trafficRows {
+		trafficByUser[t.UserID] = t
+	}
+
 	userRows := make([]panelUserView, 0, len(users))
 	userByID := make(map[string]domain.User, len(users))
 	enabledUsers := 0
 	for _, user := range users {
 		userByID[user.ID] = user
+		t := trafficByUser[user.ID]
 		userRows = append(userRows, panelUserView{
-			ID:        user.ID,
-			Name:      user.Name,
-			Enabled:   user.Enabled,
-			CreatedAt: user.CreatedAt,
-			Version:   panelUserVersion(user),
+			ID:                user.ID,
+			Name:              user.Name,
+			Enabled:           user.Enabled,
+			CreatedAt:         user.CreatedAt,
+			ExpiresAt:         user.ExpiresAt,
+			TrafficLimitBytes: user.TrafficLimitBytes,
+			UsedRXBytes:       t.RXBytes,
+			UsedTXBytes:       t.TXBytes,
+			Version:           panelUserVersion(user),
 		})
 		if user.Enabled {
 			enabledUsers++
@@ -5141,6 +5321,134 @@ func panelResetUserTraffic(runtimeDir, userID string) error {
 		return err
 	}
 	return os.WriteFile(path, out, 0o644)
+}
+
+// panelCollectXrayTraffic queries xray stats API and upserts per-user traffic into DB.
+func panelCollectXrayTraffic(ctx context.Context, dbPath, addr string) error {
+	cmd := exec.CommandContext(ctx, "xray", "api", "statsquery",
+		"--server="+addr, "--pattern=user>>>", "--reset")
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("xray stats query: %w", err)
+	}
+	return panelParseAndUpsertStats(ctx, dbPath, out)
+}
+
+// panelCollectSingboxTraffic queries sing-box v2ray-compatible stats API.
+func panelCollectSingboxTraffic(ctx context.Context, dbPath, addr string) error {
+	cmd := exec.CommandContext(ctx, "xray", "api", "statsquery",
+		"--server="+addr, "--pattern=user>>>", "--reset")
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("sing-box stats query: %w", err)
+	}
+	return panelParseAndUpsertStats(ctx, dbPath, out)
+}
+
+// panelParseAndUpsertStats parses xray/sing-box API stat JSON and upserts traffic.
+func panelParseAndUpsertStats(ctx context.Context, dbPath string, data []byte) error {
+	var payload struct {
+		Stat []struct {
+			Name  string `json:"name"`
+			Value int64  `json:"value"`
+		} `json:"stat"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return fmt.Errorf("parse stats: %w", err)
+	}
+	if len(payload.Stat) == 0 {
+		return nil
+	}
+
+	// Accumulate: name format = "user>>>userID>>>traffic>>>uplink|downlink"
+	type userTraffic struct{ rx, tx int64 }
+	traffic := make(map[string]*userTraffic)
+	for _, stat := range payload.Stat {
+		parts := strings.Split(stat.Name, ">>>")
+		if len(parts) != 4 {
+			continue
+		}
+		userID := parts[1]
+		direction := parts[3]
+		if _, ok := traffic[userID]; !ok {
+			traffic[userID] = &userTraffic{}
+		}
+		switch direction {
+		case "downlink":
+			traffic[userID].rx += stat.Value
+		case "uplink":
+			traffic[userID].tx += stat.Value
+		}
+	}
+
+	store, err := openStoreWithInit(ctx, dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	for userID, t := range traffic {
+		if t.rx == 0 && t.tx == 0 {
+			continue
+		}
+		if err := store.UserTraffic().Upsert(ctx, userID, t.rx, t.tx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// panelEnforceUserPolicy disables users that have exceeded their expiry or traffic limit.
+func panelEnforceUserPolicy(ctx context.Context, dbPath string, ops *panelOperationFeed) {
+	store, err := openStoreWithInit(ctx, dbPath)
+	if err != nil {
+		return
+	}
+	defer store.Close()
+
+	users, err := store.Users().List(ctx)
+	if err != nil {
+		return
+	}
+	trafficRows, _ := store.UserTraffic().List(ctx)
+	trafficByUser := make(map[string]domain.UserTrafficRecord, len(trafficRows))
+	for _, t := range trafficRows {
+		trafficByUser[t.UserID] = t
+	}
+
+	now := time.Now().UTC()
+	var changedNodeIDs []string
+	for _, user := range users {
+		if !user.Enabled {
+			continue
+		}
+		disabled := false
+		reason := ""
+		if user.ExpiresAt != nil && now.After(*user.ExpiresAt) {
+			disabled = true
+			reason = "expired"
+		}
+		if !disabled && user.TrafficLimitBytes > 0 {
+			t := trafficByUser[user.ID]
+			if t.RXBytes+t.TXBytes >= user.TrafficLimitBytes {
+				disabled = true
+				reason = "traffic limit exceeded"
+			}
+		}
+		if disabled {
+			user.Enabled = false
+			if _, updateErr := store.Users().Update(ctx, user); updateErr == nil {
+				ops.set("ok", fmt.Sprintf("user %s disabled: %s", user.Name, reason))
+				changedNodeIDs = append(changedNodeIDs, "all")
+			}
+		}
+	}
+	if len(changedNodeIDs) > 0 {
+		// Sync all nodes since we don't know which ones have credentials for the affected users.
+		go func() {
+			_, _, _ = panelSyncWorkerNodesByIDs(context.Background(), dbPath, "", nil)
+		}()
+	}
 }
 
 func panelRunSystemctl(ctx context.Context, subcmd, unit string) (string, error) {
@@ -5976,6 +6284,78 @@ func panelHandleUserAction(ctx context.Context, dbPath string, r *http.Request, 
 			return fmt.Errorf("create user: %w", err)
 		}
 		ops.set("ok", fmt.Sprintf("user created: %s (%s)", created.Name, created.ID))
+		return nil
+	case "update":
+		userID := strings.TrimSpace(r.FormValue("user_id"))
+		version := strings.TrimSpace(r.FormValue("version"))
+		if userID == "" {
+			return fmt.Errorf("user id is required")
+		}
+		users, err := store.Users().List(ctx)
+		if err != nil {
+			return fmt.Errorf("list users: %w", err)
+		}
+		var current domain.User
+		found := false
+		for _, user := range users {
+			if user.ID == userID {
+				current = user
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("user %q not found", userID)
+		}
+		if version != panelUserVersion(current) {
+			return fmt.Errorf("user %q changed since page load; refresh and retry", userID)
+		}
+		name := strings.TrimSpace(r.FormValue("name"))
+		if name == "" {
+			name = current.Name
+		}
+		var expiresAt *time.Time
+		if expiresStr := strings.TrimSpace(r.FormValue("expires_at")); expiresStr != "" {
+			t, parseErr := time.Parse("2006-01-02", expiresStr)
+			if parseErr != nil {
+				t, parseErr = time.Parse(time.RFC3339, expiresStr)
+			}
+			if parseErr != nil {
+				return fmt.Errorf("invalid expires_at format: %s", expiresStr)
+			}
+			t = t.UTC()
+			expiresAt = &t
+		}
+		trafficLimitBytes := int64(0)
+		if tlStr := strings.TrimSpace(r.FormValue("traffic_limit_bytes")); tlStr != "" {
+			v, parseErr := strconv.ParseInt(tlStr, 10, 64)
+			if parseErr != nil {
+				return fmt.Errorf("invalid traffic_limit_bytes: %s", tlStr)
+			}
+			trafficLimitBytes = v
+		}
+		updated := domain.User{
+			ID:                userID,
+			Name:              name,
+			Enabled:           panelFormBool(r.FormValue("enabled")),
+			CreatedAt:         current.CreatedAt,
+			ExpiresAt:         expiresAt,
+			TrafficLimitBytes: trafficLimitBytes,
+		}
+		if _, err := store.Users().Update(ctx, updated); err != nil {
+			return fmt.Errorf("update user: %w", err)
+		}
+		ops.set("ok", fmt.Sprintf("user updated: %s (%s)", updated.Name, updated.ID))
+		return nil
+	case "reset_traffic":
+		userID := strings.TrimSpace(r.FormValue("user_id"))
+		if userID == "" {
+			return fmt.Errorf("user id is required")
+		}
+		if err := store.UserTraffic().ResetUser(ctx, userID); err != nil {
+			return fmt.Errorf("reset user traffic: %w", err)
+		}
+		ops.set("ok", fmt.Sprintf("user traffic reset: %s", userID))
 		return nil
 	case "delete":
 		userID := strings.TrimSpace(r.FormValue("user_id"))
@@ -6890,11 +7270,17 @@ func panelFormBool(v string) bool {
 }
 
 func panelUserVersion(user domain.User) string {
+	expiresStr := ""
+	if user.ExpiresAt != nil {
+		expiresStr = user.ExpiresAt.UTC().Format(time.RFC3339)
+	}
 	s := strings.Join([]string{
 		strings.TrimSpace(user.ID),
 		strings.TrimSpace(user.Name),
 		strconv.FormatBool(user.Enabled),
 		user.CreatedAt.UTC().Format(time.RFC3339Nano),
+		expiresStr,
+		strconv.FormatInt(user.TrafficLimitBytes, 10),
 	}, "|")
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:8])

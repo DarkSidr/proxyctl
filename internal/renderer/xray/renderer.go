@@ -52,14 +52,42 @@ func (r *Renderer) Render(ctx context.Context, req renderer.BuildRequest) (rende
 	}, nil
 }
 
+type xrayAPIConfig struct {
+	Tag      string   `json:"tag"`
+	Services []string `json:"services"`
+}
+
+type xrayPolicyLevel struct {
+	StatsUserUplink   bool `json:"statsUserUplink"`
+	StatsUserDownlink bool `json:"statsUserDownlink"`
+}
+
+type xrayPolicy struct {
+	Levels map[string]xrayPolicyLevel `json:"levels"`
+}
+
 type configDoc struct {
+	Stats     *struct{}        `json:"stats,omitempty"`
+	API       *xrayAPIConfig   `json:"api,omitempty"`
+	Policy    *xrayPolicy      `json:"policy,omitempty"`
 	Inbounds  []inboundConfig  `json:"inbounds"`
 	Outbounds []outboundConfig `json:"outbounds"`
+	Routing   *routingConfig   `json:"routing,omitempty"`
+}
+
+type routingConfig struct {
+	Rules []routingRule `json:"rules"`
+}
+
+type routingRule struct {
+	Type        string   `json:"type"`
+	InboundTag  []string `json:"inboundTag"`
+	OutboundTag string   `json:"outboundTag"`
 }
 
 type outboundConfig struct {
 	Tag      string `json:"tag"`
-	Protocol string `json:"protocol"`
+	Protocol string `json:"protocol,omitempty"`
 }
 
 type inboundConfig struct {
@@ -79,8 +107,9 @@ type inboundSettings struct {
 }
 
 type clientConfig struct {
-	ID   string `json:"id"`
-	Flow string `json:"flow,omitempty"`
+	ID    string `json:"id"`
+	Email string `json:"email,omitempty"`
+	Flow  string `json:"flow,omitempty"`
 }
 
 type streamSettings struct {
@@ -179,10 +208,36 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 		}
 	}
 
+	emptyStats := struct{}{}
+	apiInbound := inboundConfig{
+		Tag:      "xray-api-in",
+		Listen:   "127.0.0.1",
+		Port:     10090,
+		Protocol: "dokodemo-door",
+		Settings: inboundSettings{Decryption: "none"},
+	}
+	allInbounds := append(cfgInbounds, apiInbound)
+
 	return configDoc{
-		Inbounds: cfgInbounds,
+		Stats: &emptyStats,
+		API: &xrayAPIConfig{
+			Tag:      "api",
+			Services: []string{"StatsService"},
+		},
+		Policy: &xrayPolicy{
+			Levels: map[string]xrayPolicyLevel{
+				"0": {StatsUserUplink: true, StatsUserDownlink: true},
+			},
+		},
+		Inbounds: allInbounds,
 		Outbounds: []outboundConfig{
 			{Tag: "direct", Protocol: "freedom"},
+			{Tag: "api", Protocol: ""},
+		},
+		Routing: &routingConfig{
+			Rules: []routingRule{
+				{Type: "field", InboundTag: []string{"xray-api-in"}, OutboundTag: "api"},
+			},
 		},
 	}, clients, nil
 }
@@ -201,7 +256,7 @@ func buildXHTTPInbound(node domain.Node, inbound domain.Inbound, credentials []d
 		if cred.Kind != domain.CredentialKindUUID || secret == "" {
 			continue
 		}
-		cfgClients = append(cfgClients, clientConfig{ID: secret})
+		cfgClients = append(cfgClients, clientConfig{ID: secret, Email: cred.UserID})
 		clients = append(clients, renderer.ClientArtifact{
 			Protocol:     domain.ProtocolXHTTP,
 			InboundID:    inbound.ID,
@@ -319,8 +374,9 @@ func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []d
 			continue
 		}
 		cfgClients = append(cfgClients, clientConfig{
-			ID:   secret,
-			Flow: realityFlow,
+			ID:    secret,
+			Email: cred.UserID,
+			Flow:  realityFlow,
 		})
 		clients = append(clients, renderer.ClientArtifact{
 			Protocol:     domain.ProtocolVLESS,

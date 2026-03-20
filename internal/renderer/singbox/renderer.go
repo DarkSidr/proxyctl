@@ -52,10 +52,25 @@ func (r *Renderer) Render(ctx context.Context, req renderer.BuildRequest) (rende
 	}, nil
 }
 
+type sbExperimental struct {
+	V2RayAPI *sbV2RayAPI `json:"v2ray_api,omitempty"`
+}
+
+type sbV2RayAPI struct {
+	Listen string       `json:"listen"`
+	Stats  sbV2RayStats `json:"stats"`
+}
+
+type sbV2RayStats struct {
+	Enabled bool     `json:"enabled"`
+	Users   []string `json:"users"`
+}
+
 type configDoc struct {
-	Inbounds  []inboundConfig  `json:"inbounds"`
-	Outbounds []outboundConfig `json:"outbounds"`
-	Route     routeConfig      `json:"route"`
+	Inbounds     []inboundConfig  `json:"inbounds"`
+	Outbounds    []outboundConfig `json:"outbounds"`
+	Route        routeConfig      `json:"route"`
+	Experimental *sbExperimental  `json:"experimental,omitempty"`
 }
 
 type outboundConfig struct {
@@ -95,6 +110,7 @@ type vlessUser struct {
 }
 
 type hysteria2User struct {
+	Name     string `json:"name"`
 	Password string `json:"password"`
 }
 
@@ -113,6 +129,19 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 	sort.Slice(inbounds, func(i, j int) bool {
 		return inbounds[i].ID < inbounds[j].ID
 	})
+
+	// Collect unique user IDs from all credentials for v2ray API stats.
+	seenUserIDs := make(map[string]struct{})
+	for _, cred := range req.Credentials {
+		if cred.UserID != "" {
+			seenUserIDs[cred.UserID] = struct{}{}
+		}
+	}
+	userIDs := make([]string, 0, len(seenUserIDs))
+	for uid := range seenUserIDs {
+		userIDs = append(userIDs, uid)
+	}
+	sort.Strings(userIDs)
 
 	var (
 		cfgInbounds []inboundConfig
@@ -147,12 +176,26 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 		}
 	}
 
+	var experimental *sbExperimental
+	if len(userIDs) > 0 {
+		experimental = &sbExperimental{
+			V2RayAPI: &sbV2RayAPI{
+				Listen: "127.0.0.1:10091",
+				Stats: sbV2RayStats{
+					Enabled: true,
+					Users:   userIDs,
+				},
+			},
+		}
+	}
+
 	return configDoc{
 		Inbounds: cfgInbounds,
 		Outbounds: []outboundConfig{
 			{Type: "direct", Tag: "direct"},
 		},
-		Route: routeConfig{Final: "direct"},
+		Route:        routeConfig{Final: "direct"},
+		Experimental: experimental,
 	}, clients, nil
 }
 
@@ -229,7 +272,7 @@ func buildHysteria2Inbound(node domain.Node, inbound domain.Inbound, credentials
 		if cred.Kind != domain.CredentialKindPassword || strings.TrimSpace(cred.Secret) == "" {
 			continue
 		}
-		users = append(users, hysteria2User{Password: strings.TrimSpace(cred.Secret)})
+		users = append(users, hysteria2User{Name: cred.UserID, Password: strings.TrimSpace(cred.Secret)})
 		clients = append(clients, renderer.ClientArtifact{
 			Protocol:     domain.ProtocolHysteria2,
 			InboundID:    inbound.ID,
