@@ -2340,8 +2340,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           '<td class="row">' +
             '<button class="btn secondary" data-node-edit-id="'+esc(n.ID)+'">edit</button>' +
             '<button class="btn secondary"'+dis+' data-node-test-id="'+esc(n.ID)+'" data-node-test-version="'+esc(n.Version)+'">test</button>' +
-            '<button class="btn secondary"'+dis+' data-node-sshkey-id="'+esc(n.ID)+'" data-node-sshkey-version="'+esc(n.Version)+'">setup ssh key</button>' +
-            '<button class="btn secondary"'+dis+' data-node-bootstrap-id="'+esc(n.ID)+'" data-node-bootstrap-version="'+esc(n.Version)+'">bootstrap</button>' +
+            (n.Role !== 'primary' ? '<button class="btn secondary"'+dis+' data-node-sshkey-id="'+esc(n.ID)+'" data-node-sshkey-version="'+esc(n.Version)+'">setup ssh key</button>' : '') +
+            (n.Role !== 'primary' ? '<button class="btn secondary"'+dis+' data-node-bootstrap-id="'+esc(n.ID)+'" data-node-bootstrap-version="'+esc(n.Version)+'">bootstrap</button>' : '') +
             '<button class="btn '+(n.Enabled ? 'warn' : '')+'"'+dis+' data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
             '<button class="btn err"'+dis+' data-node-delete-id="'+esc(n.ID)+'" data-node-delete-version="'+esc(n.Version)+'">delete</button>' +
           '</td>' +
@@ -5515,6 +5515,7 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		}
 		if action == "test" {
 			if current.Role == domain.NodeRolePrimary {
+				setNodeSyncStatus(current.ID, true, "primary: local check ok")
 				ops.set("ok", fmt.Sprintf("node test ok: %s (%s) | primary node: local control-plane check (ssh skipped)", current.Name, current.Host))
 				return "", "", nil
 			}
@@ -5522,26 +5523,33 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 				msg := strings.ToLower(strings.TrimSpace(testErr.Error()))
 				if strings.Contains(msg, "proxyctl is not installed") {
 					if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), current, ""); bootErr != nil {
+						setNodeSyncStatus(current.ID, false, fmt.Sprintf("proxyctl missing, bootstrap failed: %v", bootErr))
 						ops.set("error", fmt.Sprintf("node test failed: %s (%s) | proxyctl missing and bootstrap failed: %v", current.Name, current.Host, bootErr))
 						return "", "", nil
 					}
 					if recheckErr := panelTestNodeConnectivityWithPassword(ctx, current, ""); recheckErr != nil {
+						setNodeSyncStatus(current.ID, false, fmt.Sprintf("recheck after bootstrap failed: %v", recheckErr))
 						ops.set("error", fmt.Sprintf("node test failed after bootstrap: %s (%s) | %v", current.Name, current.Host, recheckErr))
 						return "", "", nil
 					}
 					if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{current.ID}); syncErr != nil {
+						setNodeSyncStatus(current.ID, false, fmt.Sprintf("bootstrap ok, sync failed: %v", syncErr))
 						ops.set("error", fmt.Sprintf("node test ok after bootstrap (%s), but node sync failed: %v", current.ID, syncErr))
 						return "", "", nil
 					} else if synced > 0 || cleaned > 0 {
+						setNodeSyncStatus(current.ID, true, fmt.Sprintf("bootstrap completed, sync: synced=%d cleaned=%d", synced, cleaned))
 						ops.set("ok", fmt.Sprintf("node test ok: %s (%s) | proxyctl bootstrap completed | node sync: synced=%d cleaned=%d", current.Name, current.Host, synced, cleaned))
 						return "", "", nil
 					}
+					setNodeSyncStatus(current.ID, true, "bootstrap completed")
 					ops.set("ok", fmt.Sprintf("node test ok: %s (%s) | proxyctl bootstrap completed", current.Name, current.Host))
 					return "", "", nil
 				}
+				setNodeSyncStatus(current.ID, false, testErr.Error())
 				ops.set("error", fmt.Sprintf("node test failed: %s (%s) | %v", current.Name, current.Host, testErr))
 				return "", "", nil
 			}
+			setNodeSyncStatus(current.ID, true, "connectivity ok")
 			ops.set("ok", fmt.Sprintf("node test ok: %s (%s)", current.Name, current.Host))
 			return "", "", nil
 		}
