@@ -215,6 +215,10 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 		Port:     10090,
 		Protocol: "dokodemo-door",
 		Settings: inboundSettings{Decryption: "none"},
+		StreamSettings: &streamSettings{
+			Network:  "tcp",
+			Security: "none",
+		},
 	}
 	allInbounds := append(cfgInbounds, apiInbound)
 
