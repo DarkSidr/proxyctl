@@ -1649,26 +1649,33 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const sniEl = document.getElementById("inSni");
       if (!transportSel || !pathEl || !engineEl || !secEl || !targetEl || !linkWrapEl || !linkEl || !sniEl) return;
 
-      if (type === "vless" && secEl.value === "reality") {
-        setTransportOptions(["tcp"]);
-        transportSel.disabled = true;
-        engineEl.value = "xray";
-        engineEl.disabled = true;
-      } else {
-        engineEl.disabled = false;
-      }
-
       if (type === "hysteria2") {
+        engineEl.value = "sing-box";
+        engineEl.disabled = true;
         setTransportOptions(["udp"]);
         transportSel.disabled = true;
         secEl.value = "tls";
         secEl.disabled = true;
       } else if (type === "xhttp") {
+        engineEl.value = "xray";
+        engineEl.disabled = true;
         setTransportOptions(["xhttp"]);
         transportSel.disabled = true;
         if (secEl.value === "reality") secEl.value = "tls";
         secEl.disabled = false;
+      } else if (type === "vless") {
+        engineEl.value = "xray";
+        engineEl.disabled = true;
+        if (secEl.value === "reality") {
+          setTransportOptions(["tcp"]);
+          transportSel.disabled = true;
+        } else {
+          setTransportOptions(["tcp", "ws", "grpc"]);
+          transportSel.disabled = false;
+        }
+        secEl.disabled = false;
       } else {
+        engineEl.disabled = false;
         if (secEl.value === "reality") {
           setTransportOptions(["tcp"]);
           transportSel.disabled = true;

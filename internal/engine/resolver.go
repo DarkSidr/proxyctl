@@ -21,10 +21,9 @@ type ProtocolRule struct {
 
 var protocolMatrix = map[domain.Protocol]ProtocolRule{
 	domain.ProtocolVLESS: {
-		DefaultEngine: domain.EngineSingBox,
+		DefaultEngine: domain.EngineXray,
 		SupportedEngines: map[domain.Engine]struct{}{
-			domain.EngineSingBox: {},
-			domain.EngineXray:    {},
+			domain.EngineXray: {},
 		},
 		AllowedTransports: map[string]struct{}{
 			"tcp":  {},
