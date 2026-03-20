@@ -6,6 +6,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"database/sql"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -43,6 +44,9 @@ import (
 	"proxyctl/internal/storage/sqlite"
 	subscriptionservice "proxyctl/internal/subscription/service"
 )
+
+//go:embed scripts/proxyctl-uninstall.sh
+var embeddedUninstallScript string
 
 const defaultUpdateInstallURL = "https://raw.githubusercontent.com/DarkSidr/proxyctl/main/install.sh"
 const defaultLatestReleaseAPIURL = "https://api.github.com/repos/DarkSidr/proxyctl/releases/latest"
@@ -390,11 +394,30 @@ func newUninstallCmd() *cobra.Command {
 			if scriptPath == "" {
 				return fmt.Errorf("--script-path is required")
 			}
-			if _, err := os.Stat(scriptPath); err != nil {
-				return fmt.Errorf("uninstall script not found at %q", scriptPath)
-			}
 			if !yes {
 				return fmt.Errorf("refusing to run uninstall without --yes")
+			}
+
+			// If the script is missing (e.g. old bootstrap that didn't install it),
+			// write the embedded copy to a temp file and run that instead.
+			runPath := scriptPath
+			if _, err := os.Stat(scriptPath); err != nil {
+				tmp, tmpErr := os.CreateTemp("", "proxyctl-uninstall-*.sh")
+				if tmpErr != nil {
+					return fmt.Errorf("create temp uninstall script: %w", tmpErr)
+				}
+				defer os.Remove(tmp.Name())
+				if _, wErr := tmp.WriteString(embeddedUninstallScript); wErr != nil {
+					tmp.Close()
+					return fmt.Errorf("write temp uninstall script: %w", wErr)
+				}
+				if err := tmp.Chmod(0700); err != nil {
+					tmp.Close()
+					return fmt.Errorf("chmod temp uninstall script: %w", err)
+				}
+				tmp.Close()
+				runPath = tmp.Name()
+				fmt.Fprintf(cmd.OutOrStdout(), "uninstall script not found at %q — using embedded fallback\n", scriptPath)
 			}
 
 			uninstallArgs := []string{"--yes"}
@@ -402,7 +425,7 @@ func newUninstallCmd() *cobra.Command {
 				uninstallArgs = append(uninstallArgs, "--remove-runtime-packages")
 			}
 
-			uninstallCmd := exec.CommandContext(cmd.Context(), scriptPath, uninstallArgs...)
+			uninstallCmd := exec.CommandContext(cmd.Context(), runPath, uninstallArgs...)
 			uninstallCmd.Stdout = cmd.OutOrStdout()
 			uninstallCmd.Stderr = cmd.ErrOrStderr()
 			uninstallCmd.Stdin = cmd.InOrStdin()
