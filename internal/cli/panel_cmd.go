@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -247,6 +248,12 @@ type nodeSyncRecord struct {
 }
 
 var panelNodeSyncCache sync.Map // key: nodeID string → value: nodeSyncRecord
+
+// panelTrafficCollection controls whether traffic stats goroutines are active.
+// Default true; toggled via settings.
+var panelTrafficCollection atomic.Bool
+
+func init() { panelTrafficCollection.Store(true) }
 
 // dashMu guards delta-metric state used to compute per-second speeds
 // and traffic reset baselines.
@@ -984,17 +991,18 @@ var panelLoginTmpl = template.Must(template.New("panel-login").Parse(`<!doctype 
 </html>`))
 
 type panelAppData struct {
-	BasePath            string
-	LegacyPath          string
-	LogoutPath          string
-	SnapshotPath        string
-	DashboardActionPath string
-	SettingsActionPath  string
-	UsersActionPath     string
-	NodesActionPath     string
-	InboundsActionPath  string
-	SubsActionPath      string
-	ContactEmail        string
+	BasePath                 string
+	LegacyPath               string
+	LogoutPath               string
+	SnapshotPath             string
+	DashboardActionPath      string
+	SettingsActionPath       string
+	UsersActionPath          string
+	NodesActionPath          string
+	InboundsActionPath       string
+	SubsActionPath           string
+	ContactEmail             string
+	TrafficCollectionEnabled bool
 }
 
 var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html>
@@ -1387,6 +1395,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         <button id="saveAcmeBtn" class="btn">save ACME email</button>
       </div>
       <div class="pad muted">used by caddy tls/acme and new node bootstrap flows</div>
+      <div class="pad row" style="align-items:center;gap:10px;margin-top:8px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="trafficCollectionChk" class="cb"{{if .TrafficCollectionEnabled}} checked{{end}}>
+          collect traffic stats from primary node (xray + sing-box APIs, every 30s)
+        </label>
+        <button id="saveTrafficCollectionBtn" class="btn secondary">save</button>
+      </div>
+      <div class="pad muted">when enabled, proxyctl polls local xray/sing-box stats API and accumulates per-user RX/TX counters in the database</div>
     </section>
   </div>
 
@@ -3376,6 +3392,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         showOp("error", String(e));
       }
     });
+    document.getElementById("saveTrafficCollectionBtn").addEventListener("click", async () => {
+      const enabled = document.getElementById("trafficCollectionChk").checked ? "1" : "0";
+      try {
+        await postForm(cfg.settingsActionPath, { op: "set_traffic_collection", enabled });
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && document.getElementById("liveMode")?.checked) {
         pollSnapshotSilently();
@@ -3624,17 +3648,18 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				}
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				_ = panelAppTmpl.Execute(w, panelAppData{
-					BasePath:            basePath,
-					LegacyPath:          legacyDashboardPath,
-					LogoutPath:          logoutPath,
-					SnapshotPath:        apiSnapshotPath,
-					DashboardActionPath: dashboardActionPath,
-					SettingsActionPath:  settingsActionPath,
-					UsersActionPath:     usersActionPath,
-					NodesActionPath:     nodesActionPath,
-					InboundsActionPath:  inboundsActionPath,
-					SubsActionPath:      subsActionPath,
-					ContactEmail:        strings.TrimSpace(cfg.Public.ContactEmail),
+					BasePath:                 basePath,
+					LegacyPath:               legacyDashboardPath,
+					LogoutPath:               logoutPath,
+					SnapshotPath:             apiSnapshotPath,
+					DashboardActionPath:      dashboardActionPath,
+					SettingsActionPath:       settingsActionPath,
+					UsersActionPath:          usersActionPath,
+					NodesActionPath:          nodesActionPath,
+					InboundsActionPath:       inboundsActionPath,
+					SubsActionPath:           subsActionPath,
+					ContactEmail:             strings.TrimSpace(cfg.Public.ContactEmail),
+					TrafficCollectionEnabled: panelTrafficCollection.Load(),
 				})
 			})
 			if appAliasPath != appPath {
@@ -4452,6 +4477,11 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "terminate with Ctrl+C")
 
+			// Load traffic collection setting from config.
+			if strings.TrimSpace(configPathValue) != "" {
+				panelTrafficCollection.Store(loadTrafficCollectionEnabled(strings.TrimSpace(configPathValue)))
+			}
+
 			// Background: collect traffic from xray and sing-box every 30s.
 			go func() {
 				t := time.NewTicker(30 * time.Second)
@@ -4459,8 +4489,10 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				for {
 					select {
 					case <-t.C:
-						_ = panelCollectXrayTraffic(context.Background(), resolvedDB, "127.0.0.1:10090")
-						_ = panelCollectSingboxTraffic(context.Background(), resolvedDB, "127.0.0.1:10091")
+						if panelTrafficCollection.Load() {
+							_ = panelCollectXrayTraffic(context.Background(), resolvedDB, "127.0.0.1:10090")
+							_ = panelCollectSingboxTraffic(context.Background(), resolvedDB, "127.0.0.1:10091")
+						}
 					}
 				}
 			}()
@@ -7145,6 +7177,20 @@ func panelHandleSettingsAction(r *http.Request, configPath *string, ops *panelOp
 			ops.set("ok", "acme contact email cleared")
 		} else {
 			ops.set("ok", "acme contact email saved: "+email)
+		}
+		return nil
+	case "set_traffic_collection":
+		enabled := panelFormBool(r.FormValue("enabled"))
+		panelTrafficCollection.Store(enabled)
+		if configPath != nil && strings.TrimSpace(*configPath) != "" {
+			if err := setConfigTrafficCollectionEnabled(strings.TrimSpace(*configPath), enabled); err != nil {
+				return err
+			}
+		}
+		if enabled {
+			ops.set("ok", "traffic stats collection enabled")
+		} else {
+			ops.set("ok", "traffic stats collection disabled")
 		}
 		return nil
 	default:

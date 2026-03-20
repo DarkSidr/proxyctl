@@ -2320,6 +2320,73 @@ func setConfigContactEmail(configPath, email string) error {
 	return nil
 }
 
+func loadTrafficCollectionEnabled(configPath string) bool {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return true
+	}
+	root := map[string]any{}
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return true
+	}
+	panelRaw, ok := root["panel"]
+	if !ok || panelRaw == nil {
+		return true
+	}
+	panelMap, ok := panelRaw.(map[string]any)
+	if !ok {
+		return true
+	}
+	v, ok := panelMap["traffic_collection_enabled"]
+	if !ok {
+		return true
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return true
+	}
+	return b
+}
+
+func setConfigTrafficCollectionEnabled(configPath string, enabled bool) error {
+	info, statErr := os.Stat(configPath)
+	if statErr != nil {
+		return fmt.Errorf("stat config %q: %w", configPath, statErr)
+	}
+	mode := info.Mode().Perm()
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		return fmt.Errorf("read config %q: %w", configPath, readErr)
+	}
+
+	root := map[string]any{}
+	if len(raw) > 0 {
+		if err := yaml.Unmarshal(raw, &root); err != nil {
+			return fmt.Errorf("parse config %q: %w", configPath, err)
+		}
+	}
+
+	panelRaw, ok := root["panel"]
+	if !ok || panelRaw == nil {
+		panelRaw = map[string]any{}
+		root["panel"] = panelRaw
+	}
+	panelMap, ok := panelRaw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("config key panel is not an object")
+	}
+	panelMap["traffic_collection_enabled"] = enabled
+
+	rendered, err := yaml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("encode config %q: %w", configPath, err)
+	}
+	if err := os.WriteFile(configPath, rendered, mode); err != nil {
+		return fmt.Errorf("write config %q: %w", configPath, err)
+	}
+	return nil
+}
+
 func reissueCaddyCertificate(ctx context.Context, out io.Writer, configPath string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
