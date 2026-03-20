@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -452,7 +453,39 @@ func syncPrimaryNodeCaddy(ctx context.Context, primaryNode domain.Node, inbounds
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("reload caddy for primary node: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	// Wait for caddy to obtain TLS certificates before returning, so that
+	// xray/sing-box (started immediately after) can load them successfully.
+	waitForCaddyCerts(ctx, caddyResult.Domains)
 	return nil
+}
+
+// waitForCaddyCerts polls /caddy/certificates/*/domain/domain.crt for each
+// domain until all certs exist or the deadline is reached (60 s).
+func waitForCaddyCerts(ctx context.Context, domains []string) {
+	if len(domains) == 0 {
+		return
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		allFound := true
+		for _, domain := range domains {
+			pattern := filepath.Join("/caddy/certificates/*", domain, domain+".crt")
+			matches, err := filepath.Glob(pattern)
+			if err != nil || len(matches) == 0 {
+				allFound = false
+				break
+			}
+		}
+		if allFound {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func cleanupSingleNodeRuntime(ctx context.Context, node domain.Node, opts nodeSyncOptions, appCfg config.AppConfig) (nodeSyncResult, error) {

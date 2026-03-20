@@ -1379,6 +1379,7 @@ EOT
     if [[ -n "${SELECTED_CONTACT_EMAIL}" ]]; then
       caddy_content="$(cat <<EOT
 {
+  acme_ca https://acme-v02.api.letsencrypt.org/directory
   email ${SELECTED_CONTACT_EMAIL}
 }
 
@@ -1390,6 +1391,10 @@ EOT
 )"
     else
       caddy_content="$(cat <<EOT
+{
+  acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
 ${SELECTED_PUBLIC_DOMAIN} {
   root * /etc/proxy-orchestrator/runtime/decoy-site
   file_server
