@@ -309,16 +309,16 @@ func (r *inboundRepository) List(ctx context.Context) ([]domain.Inbound, error) 
 	inbounds := make([]domain.Inbound, 0)
 	for rows.Next() {
 		var (
-			inbound           domain.Inbound
-			tls               int
-			realityEnabled    int
-			sniffingEnabled   int
-			sniffingHTTP      int
-			sniffingTLS       int
-			sniffingQUIC      int
-			sniffingFakeDNS   int
-			enabled           int
-			createdAt         string
+			inbound         domain.Inbound
+			tls             int
+			realityEnabled  int
+			sniffingEnabled int
+			sniffingHTTP    int
+			sniffingTLS     int
+			sniffingQUIC    int
+			sniffingFakeDNS int
+			enabled         int
+			createdAt       string
 		)
 		if err := rows.Scan(
 			&inbound.ID,
