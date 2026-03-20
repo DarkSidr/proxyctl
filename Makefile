@@ -7,11 +7,14 @@ GOMODCACHE ?= $(CURDIR)/.cache/go-mod
 
 GOENV = GOCACHE=$(GOCACHE) GOMODCACHE=$(GOMODCACHE)
 
+VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || git describe --tags 2>/dev/null || echo dev)
+LDFLAGS = -X proxyctl/internal/cli.Version=$(VERSION)
+
 .PHONY: build test vet fmt fmt-check check smoke-help clean-cache
 
 build:
 	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)"
-	@$(GOENV) $(GO) build $(GOFLAGS) $(PKG)
+	@$(GOENV) $(GO) build -ldflags="$(LDFLAGS)" $(GOFLAGS) $(PKG)
 
 test:
 	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)"
@@ -33,6 +36,10 @@ fmt-check:
 	fi
 
 check: fmt-check vet test build
+
+build-binary:
+	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)"
+	@$(GOENV) $(GO) build -ldflags="$(LDFLAGS)" -o proxyctl ./cmd/proxyctl/
 
 smoke-help:
 	@mkdir -p "$(GOCACHE)" "$(GOMODCACHE)"
