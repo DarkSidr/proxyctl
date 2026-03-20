@@ -1084,6 +1084,12 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     .sec-hdr { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
     .sec-hdr h2 { margin: 0; font-size: 0.95rem; }
     @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+    /* Custom checkbox (for tables) */
+    input[type="checkbox"].cb { appearance: none; -webkit-appearance: none; width: 16px; height: 16px; border: 1.5px solid rgba(148,163,184,0.25); border-radius: 4px; background: rgba(15,23,42,0.5); cursor: pointer; transition: all 0.15s; position: relative; vertical-align: middle; flex-shrink: 0; }
+    input[type="checkbox"].cb:checked { background: rgba(34,211,238,0.15); border-color: #22d3ee; }
+    input[type="checkbox"].cb:checked::after { content: ""; position: absolute; left: 4px; top: 1px; width: 5px; height: 9px; border: 2px solid #22d3ee; border-top: none; border-left: none; transform: rotate(45deg); }
+    input[type="checkbox"].cb:indeterminate { background: rgba(34,211,238,0.1); border-color: #22d3ee; }
+    input[type="checkbox"].cb:indeterminate::after { content: ""; position: absolute; left: 3px; top: 6px; width: 8px; height: 2px; background: #22d3ee; }
     /* Toggle switch */
     .toggle { position: relative; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; vertical-align: middle; }
     .toggle input[type="checkbox"] { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
@@ -1223,7 +1229,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         <!-- User traffic table -->
         <div class="table-wrap" style="margin-top:10px">
           <table>
-            <thead><tr><th>user</th><th>rx</th><th>tx</th><th>total</th><th></th></tr></thead>
+            <thead><tr><th>user</th><th>↓ downloaded</th><th>↑ uploaded</th><th>total</th><th></th></tr></thead>
             <tbody id="userTrafficBody"></tbody>
           </table>
         </div>
@@ -2290,14 +2296,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         '<div class="label" style="margin-bottom:8px">selected profile inbounds</div>',
         '<div class="table-wrap">',
         '<table>',
-        '<thead><tr><th><input type="checkbox" id="subInboundAll"></th><th>label</th><th>node</th><th>domain</th><th>port</th><th>type</th><th>transport</th><th>path</th><th>sni</th><th>enabled</th></tr></thead>',
+        '<thead><tr><th><input type="checkbox" class="cb" id="subInboundAll"></th><th>label</th><th>node</th><th>domain</th><th>port</th><th>type</th><th>transport</th><th>path</th><th>sni</th><th>enabled</th></tr></thead>',
         '<tbody>',
         inbounds.map((i) => {
           const checked = selected.has(String(i.ID)) ? ' checked' : '';
           const label = [String(i.Type || "").trim(), String(i.Domain || "").trim() + ":" + String(i.Port || "")].join(" ").trim();
           return (
             '<tr>' +
-              '<td><input type="checkbox" data-sub-inbound-id="'+esc(i.ID)+'"'+checked+'></td>' +
+              '<td><input type="checkbox" class="cb" data-sub-inbound-id="'+esc(i.ID)+'"'+checked+'></td>' +
               '<td>'+esc(label)+'</td>' +
               '<td>'+esc(i.NodeName || i.NodeID || "")+'</td>' +
               '<td>'+esc(i.Domain || "")+'</td>' +
@@ -2320,6 +2326,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         const checkedCount = boxes.filter((el) => el.checked).length;
         if (allBox) {
           allBox.checked = boxes.length > 0 && checkedCount === boxes.length;
+          allBox.indeterminate = checkedCount > 0 && checkedCount < boxes.length;
         }
       };
       pick.querySelectorAll("[data-sub-inbound-id]").forEach((box) => {
@@ -2454,8 +2461,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       // Speed card
       const speedEl = document.getElementById("dashSpeed");
       if (speedEl) speedEl.innerHTML = statRows([
-        ["rx", fmtBytes(dash.NetRXSpeed||0) + "/s"],
-        ["tx", fmtBytes(dash.NetTXSpeed||0) + "/s"],
+        ["↓ download", fmtBytes(dash.NetRXSpeed||0) + "/s"],
+        ["↑ upload",   fmtBytes(dash.NetTXSpeed||0) + "/s"],
       ]);
 
       // Traffic & connections card
@@ -2467,11 +2474,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
             '<button class="btn-xs danger" id="resetTotalTrafficBtn">reset</button>' +
           '</div>' +
           statRows([
-            ["rx",        fmtBytes(dash.TotalRXBytes||0)],
-            ["tx",        fmtBytes(dash.TotalTXBytes||0)],
-            ["total",     fmtBytes(dash.TotalBytes||0)],
-            ["tcp conns", String(dash.TCPConns||0)],
-            ["udp conns", String(dash.UDPConns||0)],
+            ["↓ downloaded",     fmtBytes(dash.TotalRXBytes||0)],
+            ["↑ uploaded",       fmtBytes(dash.TotalTXBytes||0)],
+            ["total",            fmtBytes(dash.TotalBytes||0)],
+            ["TCP connections",  String(dash.TCPConns||0)],
+            ["UDP connections",  String(dash.UDPConns||0)],
           ]);
         document.getElementById("resetTotalTrafficBtn")?.addEventListener("click", async () => {
           try { await postForm(cfg.dashboardActionPath, { action: "reset_total_traffic" }); }
@@ -2500,7 +2507,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         });
       }
       const metaEl = document.getElementById("trafficMeta");
-      if (metaEl) metaEl.textContent = "traffic source: " + (dash.TrafficSource || "none");
+      if (metaEl) {
+        const src = dash.TrafficSource || "none";
+        if (src === "none") {
+          metaEl.innerHTML = '<span style="color:var(--muted)">per-user traffic stats are not available — requires xray stats API integration</span>';
+        } else {
+          metaEl.textContent = "per-user stats source: " + src;
+        }
+      }
     }
 
     function render() {
