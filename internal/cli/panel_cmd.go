@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
@@ -145,15 +146,24 @@ type panelUserTrafficView struct {
 type panelDashboardView struct {
 	ProxyctlVersion string
 	Load1           float64
+	Load5           float64
+	Load15          float64
 	CPUCores        int
+	CPUPercent      float64
 	MemUsedBytes    uint64
 	MemTotalBytes   uint64
+	SwapUsedBytes   uint64
+	SwapTotalBytes  uint64
 	DiskUsedBytes   uint64
 	DiskTotalBytes  uint64
 	UptimeSeconds   uint64
 	TotalRXBytes    uint64
 	TotalTXBytes    uint64
 	TotalBytes      uint64
+	NetRXSpeed      uint64
+	NetTXSpeed      uint64
+	TCPConns        int
+	UDPConns        int
 	UserTraffic     []panelUserTrafficView
 	TrafficSource   string
 }
@@ -189,6 +199,9 @@ type panelPageData struct {
 	InboundsActionPath  string
 	SubsActionPath      string
 	AppPath             string
+	XrayUnit            string
+	SingBoxUnit         string
+	CaddyUnit           string
 }
 
 type panelOperationFeed struct {
@@ -226,6 +239,16 @@ type nodeSyncRecord struct {
 }
 
 var panelNodeSyncCache sync.Map // key: nodeID string → value: nodeSyncRecord
+
+// dashMu guards delta-metric state used to compute per-second speeds.
+var (
+	dashMu       sync.Mutex
+	prevNetRX    uint64
+	prevNetTX    uint64
+	prevNetAt    time.Time
+	prevCPUIdle  uint64
+	prevCPUTotal uint64
+)
 
 // nodeJob tracks a background SSH operation per node.
 type nodeJob struct {
@@ -1054,6 +1077,35 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     .sec-hdr { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
     .sec-hdr h2 { margin: 0; font-size: 0.95rem; }
     @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+    /* Dashboard gauges */
+    .dash-gauges { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+    .gauge { flex: 1 1 140px; min-width: 130px; max-width: 200px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    .gauge-ring { position: relative; width: 96px; height: 96px; }
+    .gauge-ring svg { width: 96px; height: 96px; transform: rotate(-90deg); }
+    .gauge-ring circle { fill: none; stroke-width: 10; }
+    .gauge-track { stroke: rgba(148,163,184,0.12); }
+    .gauge-fill { stroke-linecap: round; transition: stroke-dashoffset 0.6s ease; }
+    .gauge-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .gauge-pct { font-size: 1.1rem; font-weight: 700; }
+    .gauge-name { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .gauge-sub { font-size: 0.7rem; color: var(--muted); }
+    /* Dashboard grid */
+    .dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin-top: 10px; }
+    .dash-card { border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 12px 14px; }
+    .dash-card h3 { margin: 0 0 10px; font-size: 0.85rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    .service-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid rgba(148,163,184,0.1); }
+    .service-row:last-child { border-bottom: none; }
+    .service-name { flex: 1; font-size: 0.82rem; }
+    .badge-ok { background: rgba(52,211,153,0.15); color: #34d399; border-radius: 6px; padding: 2px 7px; font-size: 0.72rem; font-weight: 600; }
+    .badge-err { background: rgba(251,113,133,0.15); color: #fb7185; border-radius: 6px; padding: 2px 7px; font-size: 0.72rem; font-weight: 600; }
+    .badge-warn { background: rgba(251,191,36,0.15); color: #fbbf24; border-radius: 6px; padding: 2px 7px; font-size: 0.72rem; font-weight: 600; }
+    .btn-xs { border: 1px solid var(--line); background: rgba(15,23,42,0.55); color: var(--muted); border-radius: 6px; padding: 3px 8px; cursor: pointer; font-size: 0.72rem; }
+    .btn-xs:hover { color: var(--text); border-color: var(--brand); }
+    .btn-xs.danger:hover { border-color: var(--err); color: var(--err); }
+    .stat-row { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0; font-size: 0.82rem; border-bottom: 1px solid rgba(148,163,184,0.08); }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-label { color: var(--muted); }
+    .stat-value { font-weight: 600; }
   </style>
 </head>
 <body>
@@ -1068,7 +1120,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     <div id="op" class="op" style="display:none"></div>
     <div id="counts" class="grid"></div>
     <div class="tabs">
-      <button type="button" class="tab active" data-tab="runtime">runtime</button>
+      <button type="button" class="tab active" data-tab="dashboard">dashboard</button>
       <button type="button" class="tab" data-tab="nodes">nodes</button>
       <button type="button" class="tab" data-tab="inbounds">inbounds</button>
       <button type="button" class="tab" data-tab="users">users</button>
@@ -1077,30 +1129,90 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       <button type="button" class="tab" data-tab="settings">settings</button>
     </div>
 
-    <section class="sec" data-tab-section="runtime">
-      <h2>runtime actions</h2>
-      <div class="pad row">
-        <button id="askTrafficBtn" class="btn secondary">ask traffic now</button>
-        <label class="row" style="gap:6px">
-          <input id="liveMode" type="checkbox" checked>
-          <span class="label">live</span>
-        </label>
-        <select id="liveInterval">
-          <option value="3000">3s</option>
-          <option value="5000" selected>5s</option>
-          <option value="10000">10s</option>
-        </select>
+    <section class="sec" data-tab-section="dashboard">
+      <div class="sec-hdr">
+        <h2>dashboard</h2>
+        <div class="row" style="gap:8px">
+          <label class="row" style="gap:6px">
+            <input id="liveMode" type="checkbox" checked>
+            <span class="label">live</span>
+          </label>
+          <select id="liveInterval">
+            <option value="3000">3s</option>
+            <option value="5000" selected>5s</option>
+            <option value="10000">10s</option>
+          </select>
+          <button id="askTrafficBtn" class="btn secondary">refresh now</button>
+        </div>
       </div>
       <div class="pad">
-        <div class="grid" id="dashCards"></div>
+        <!-- Gauges row -->
+        <div class="dash-gauges" id="dashGauges">
+          <div class="gauge">
+            <div class="gauge-ring">
+              <svg viewBox="0 0 96 96"><circle class="gauge-track" cx="48" cy="48" r="43"/><circle class="gauge-fill" id="gaugeCPUArc" cx="48" cy="48" r="43" stroke="#22d3ee" stroke-dasharray="270.2 270.2" stroke-dashoffset="270.2"/></svg>
+              <div class="gauge-center"><span class="gauge-pct" id="gaugeCPUPct">0%</span></div>
+            </div>
+            <span class="gauge-name">CPU</span>
+            <span class="gauge-sub" id="gaugeCPUSub">0 cores</span>
+          </div>
+          <div class="gauge">
+            <div class="gauge-ring">
+              <svg viewBox="0 0 96 96"><circle class="gauge-track" cx="48" cy="48" r="43"/><circle class="gauge-fill" id="gaugeRAMArc" cx="48" cy="48" r="43" stroke="#34d399" stroke-dasharray="270.2 270.2" stroke-dashoffset="270.2"/></svg>
+              <div class="gauge-center"><span class="gauge-pct" id="gaugeRAMPct">0%</span></div>
+            </div>
+            <span class="gauge-name">RAM</span>
+            <span class="gauge-sub" id="gaugeRAMSub">0 / 0</span>
+          </div>
+          <div class="gauge">
+            <div class="gauge-ring">
+              <svg viewBox="0 0 96 96"><circle class="gauge-track" cx="48" cy="48" r="43"/><circle class="gauge-fill" id="gaugeSwapArc" cx="48" cy="48" r="43" stroke="#a78bfa" stroke-dasharray="270.2 270.2" stroke-dashoffset="270.2"/></svg>
+              <div class="gauge-center"><span class="gauge-pct" id="gaugeSwapPct">0%</span></div>
+            </div>
+            <span class="gauge-name">Swap</span>
+            <span class="gauge-sub" id="gaugeSwapSub">0 / 0</span>
+          </div>
+          <div class="gauge">
+            <div class="gauge-ring">
+              <svg viewBox="0 0 96 96"><circle class="gauge-track" cx="48" cy="48" r="43"/><circle class="gauge-fill" id="gaugeDiskArc" cx="48" cy="48" r="43" stroke="#fb923c" stroke-dasharray="270.2 270.2" stroke-dashoffset="270.2"/></svg>
+              <div class="gauge-center"><span class="gauge-pct" id="gaugeDiskPct">0%</span></div>
+            </div>
+            <span class="gauge-name">Disk</span>
+            <span class="gauge-sub" id="gaugeDiskSub">0 / 0</span>
+          </div>
+        </div>
+        <!-- Grid -->
+        <div class="dash-grid">
+          <!-- Services -->
+          <div class="dash-card">
+            <h3>services</h3>
+            <div id="dashServices"></div>
+          </div>
+          <!-- System info -->
+          <div class="dash-card">
+            <h3>system</h3>
+            <div id="dashSystem"></div>
+          </div>
+          <!-- Network speed -->
+          <div class="dash-card">
+            <h3>network speed</h3>
+            <div id="dashSpeed"></div>
+          </div>
+          <!-- Traffic & connections -->
+          <div class="dash-card">
+            <h3>traffic &amp; connections</h3>
+            <div id="dashTraffic"></div>
+          </div>
+        </div>
+        <!-- User traffic table -->
+        <div class="table-wrap" style="margin-top:10px">
+          <table>
+            <thead><tr><th>user</th><th>rx</th><th>tx</th><th>total</th></tr></thead>
+            <tbody id="userTrafficBody"></tbody>
+          </table>
+        </div>
+        <div class="pad muted" id="trafficMeta"></div>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>user</th><th>rx</th><th>tx</th><th>total</th></tr></thead>
-          <tbody id="userTrafficBody"></tbody>
-        </table>
-      </div>
-      <div class="pad muted" id="trafficMeta"></div>
     </section>
 
     <section class="sec" data-tab-section="nodes">
@@ -2227,39 +2339,145 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         .map((el) => (el.getAttribute("data-sub-inbound-id") || "").trim())
         .filter(Boolean);
     }
-    function render() {
-      if (!snapshot) return;
-      syncOpFromSnapshot();
 
-      const c = snapshot.Counts || {};
-      const dash = snapshot.Dashboard || {};
-      document.getElementById("counts").innerHTML = [
-        ["users", c.UsersTotal],
-        ["enabled users", c.UsersEnabled],
-        ["inbounds", c.InboundsTotal],
-        ["active inbounds", c.InboundsActive],
-      ].map(([k, v]) => '<div class="card"><div class="label">'+esc(k)+'</div><div class="value">'+esc(v)+'</div></div>').join("");
-      const dashCardsEl = document.getElementById("dashCards");
-      if (dashCardsEl) dashCardsEl.innerHTML = [
-        ["proxyctl", dash.ProxyctlVersion || "dev"],
-        ["cpu load (1m)", dash.Load1 ?? 0],
-        ["cpu cores", dash.CPUCores ?? 0],
-        ["memory", fmtBytes(dash.MemUsedBytes) + " / " + fmtBytes(dash.MemTotalBytes)],
-        ["disk", fmtBytes(dash.DiskUsedBytes) + " / " + fmtBytes(dash.DiskTotalBytes)],
-        ["uptime", fmtUptime(dash.UptimeSeconds)],
-        ["traffic total", fmtBytes(dash.TotalBytes)],
-        ["traffic rx/tx", fmtBytes(dash.TotalRXBytes) + " / " + fmtBytes(dash.TotalTXBytes)],
-      ].map(([k, v]) => '<div class="card"><div class="label">'+esc(k)+'</div><div class="value">'+esc(v)+'</div></div>').join("");
+    // ── Dashboard rendering ──────────────────────────────────────────────────
+    const CIRC = 2 * Math.PI * 43; // circumference for r=43
+    function setGauge(arcID, pctID, subID, pct, label, sub) {
+      const arc = document.getElementById(arcID);
+      const pctEl = document.getElementById(pctID);
+      const subEl = document.getElementById(subID);
+      if (!arc || !pctEl) return;
+      const clamped = Math.max(0, Math.min(100, pct));
+      const offset = CIRC * (1 - clamped / 100);
+      arc.style.strokeDasharray = CIRC.toFixed(1) + " " + CIRC.toFixed(1);
+      arc.style.strokeDashoffset = offset.toFixed(1);
+      pctEl.textContent = label;
+      if (subEl) subEl.textContent = sub;
+    }
+    function statRows(pairs) {
+      return pairs.map(([k, v]) =>
+        '<div class="stat-row"><span class="stat-label">'+esc(k)+'</span><span class="stat-value">'+esc(v)+'</span></div>'
+      ).join("");
+    }
+    function renderDashboard(snap) {
+      const dash = snap.Dashboard || {};
+      const units = Array.isArray(snap.Units) ? snap.Units : [];
+
+      // CPU gauge
+      const cpuPct = Number(dash.CPUPercent || 0);
+      setGauge("gaugeCPUArc", "gaugeCPUPct", "gaugeCPUSub",
+        cpuPct, cpuPct.toFixed(1)+"%", (dash.CPUCores || 0)+" cores · load "+((dash.Load1||0).toFixed(2)));
+
+      // RAM gauge
+      const ramTotal = Number(dash.MemTotalBytes || 0);
+      const ramUsed = Number(dash.MemUsedBytes || 0);
+      const ramPct = ramTotal > 0 ? (ramUsed / ramTotal * 100) : 0;
+      setGauge("gaugeRAMArc", "gaugeRAMPct", "gaugeRAMSub",
+        ramPct, ramPct.toFixed(1)+"%", fmtBytes(ramUsed)+" / "+fmtBytes(ramTotal));
+
+      // Swap gauge
+      const swapTotal = Number(dash.SwapTotalBytes || 0);
+      const swapUsed = Number(dash.SwapUsedBytes || 0);
+      const swapPct = swapTotal > 0 ? (swapUsed / swapTotal * 100) : 0;
+      setGauge("gaugeSwapArc", "gaugeSwapPct", "gaugeSwapSub",
+        swapPct, swapTotal > 0 ? swapPct.toFixed(1)+"%" : "—",
+        swapTotal > 0 ? fmtBytes(swapUsed)+" / "+fmtBytes(swapTotal) : "no swap");
+
+      // Disk gauge
+      const diskTotal = Number(dash.DiskTotalBytes || 0);
+      const diskUsed = Number(dash.DiskUsedBytes || 0);
+      const diskPct = diskTotal > 0 ? (diskUsed / diskTotal * 100) : 0;
+      setGauge("gaugeDiskArc", "gaugeDiskPct", "gaugeDiskSub",
+        diskPct, diskPct.toFixed(1)+"%", fmtBytes(diskUsed)+" / "+fmtBytes(diskTotal));
+
+      // Services card
+      const svcEl = document.getElementById("dashServices");
+      if (svcEl) {
+        const svcUnits = [
+          { name: "xray",     unit: snap.XrayUnit || "proxyctl-xray.service" },
+          { name: "sing-box", unit: snap.SingBoxUnit || "proxyctl-sing-box.service" },
+          { name: "caddy",    unit: snap.CaddyUnit || "proxyctl-caddy.service" },
+        ];
+        svcEl.innerHTML = svcUnits.map(({name, unit}) => {
+          const st = units.find((u) => u.Unit === unit) || {};
+          const active = (st.Active || "").toLowerCase();
+          let badge = '<span class="badge-warn">'+esc(active||"unknown")+'</span>';
+          if (active === "active") badge = '<span class="badge-ok">active</span>';
+          else if (active === "inactive" || active === "failed") badge = '<span class="badge-err">'+esc(active)+'</span>';
+          return '<div class="service-row">' +
+            '<span class="service-name">'+esc(name)+'</span>' +
+            badge +
+            '<button class="btn-xs" data-svc-action="restart_unit" data-svc-unit="'+esc(unit)+'">restart</button>' +
+            '<button class="btn-xs danger" data-svc-action="stop_unit" data-svc-unit="'+esc(unit)+'">stop</button>' +
+            '</div>';
+        }).join("");
+        svcEl.querySelectorAll("[data-svc-action]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            try {
+              await postForm(cfg.dashboardActionPath, {
+                action: btn.getAttribute("data-svc-action"),
+                unit: btn.getAttribute("data-svc-unit"),
+              });
+            } catch(e) { showOp("error", String(e)); }
+          });
+        });
+      }
+
+      // System card
+      const sysEl = document.getElementById("dashSystem");
+      if (sysEl) sysEl.innerHTML = statRows([
+        ["uptime",    fmtUptime(dash.UptimeSeconds)],
+        ["load 1m",   (dash.Load1||0).toFixed(2)],
+        ["load 5m",   (dash.Load5||0).toFixed(2)],
+        ["load 15m",  (dash.Load15||0).toFixed(2)],
+        ["version",   dash.ProxyctlVersion || "dev"],
+      ]);
+
+      // Speed card
+      const speedEl = document.getElementById("dashSpeed");
+      if (speedEl) speedEl.innerHTML = statRows([
+        ["rx", fmtBytes(dash.NetRXSpeed||0) + "/s"],
+        ["tx", fmtBytes(dash.NetTXSpeed||0) + "/s"],
+      ]);
+
+      // Traffic & connections card
+      const trafEl = document.getElementById("dashTraffic");
+      if (trafEl) trafEl.innerHTML = statRows([
+        ["total rx",    fmtBytes(dash.TotalRXBytes||0)],
+        ["total tx",    fmtBytes(dash.TotalTXBytes||0)],
+        ["total",       fmtBytes(dash.TotalBytes||0)],
+        ["tcp conns",   String(dash.TCPConns||0)],
+        ["udp conns",   String(dash.UDPConns||0)],
+      ]);
+
+      // User traffic table
       const userTraffic = Array.isArray(dash.UserTraffic) ? dash.UserTraffic : [];
-      document.getElementById("userTrafficBody").innerHTML = userTraffic.map((u) => (
+      const utEl = document.getElementById("userTrafficBody");
+      if (utEl) utEl.innerHTML = userTraffic.map((u) =>
         '<tr>' +
           '<td>'+esc(u.UserName || u.UserID)+'</td>' +
           '<td>'+esc(fmtBytes(u.RXBytes))+'</td>' +
           '<td>'+esc(fmtBytes(u.TXBytes))+'</td>' +
           '<td>'+esc(fmtBytes(u.TotalBytes))+'</td>' +
         '</tr>'
-      )).join("");
-      document.getElementById("trafficMeta").textContent = "traffic source: " + (dash.TrafficSource || "none");
+      ).join("");
+      const metaEl = document.getElementById("trafficMeta");
+      if (metaEl) metaEl.textContent = "traffic source: " + (dash.TrafficSource || "none");
+    }
+
+    function render() {
+      if (!snapshot) return;
+      syncOpFromSnapshot();
+
+      const c = snapshot.Counts || {};
+      document.getElementById("counts").innerHTML = [
+        ["users", c.UsersTotal],
+        ["enabled users", c.UsersEnabled],
+        ["inbounds", c.InboundsTotal],
+        ["active inbounds", c.InboundsActive],
+      ].map(([k, v]) => '<div class="card"><div class="label">'+esc(k)+'</div><div class="value">'+esc(v)+'</div></div>').join("");
+
+      renderDashboard(snapshot);
 
       const users = Array.isArray(snapshot.Users) ? snapshot.Users : [];
       const nodes = Array.isArray(snapshot.Nodes) ? snapshot.Nodes : [];
@@ -2940,10 +3158,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       renderSubInboundPick(inbounds);
     });
     document.querySelectorAll("[data-tab]").forEach((btn) => {
-      btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab") || "runtime"));
+      btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab") || "dashboard"));
     });
     lastOpSeenKey = loadLastOpSeenKey();
-    setTab("runtime");
+    setTab("dashboard");
     restoreLivePrefs();
     startLivePolling();
 
@@ -3058,6 +3276,9 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						SNIPresets:          snapshot.sniPresets,
 						Dashboard:           snapshot.dashboard,
 						ContactEmail:        strings.TrimSpace(cfg.Public.ContactEmail),
+						XrayUnit:            cfg.Runtime.XrayUnit,
+						SingBoxUnit:         cfg.Runtime.SingBoxUnit,
+						CaddyUnit:           cfg.Runtime.CaddyUnit,
 					}
 					data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 					w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -3135,6 +3356,9 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					SSHKeyWarning:       snapshot.sshKeyWarning,
 					Dashboard:           snapshot.dashboard,
 					ContactEmail:        strings.TrimSpace(cfg.Public.ContactEmail),
+					XrayUnit:            cfg.Runtime.XrayUnit,
+					SingBoxUnit:         cfg.Runtime.SingBoxUnit,
+					CaddyUnit:           cfg.Runtime.CaddyUnit,
 				}
 				data.OperationStatus, data.OperationMessage, data.OperationAt = ops.snapshot()
 				panelWriteJSON(w, http.StatusOK, data)
@@ -3171,6 +3395,33 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						ops.set("error", "apply failed: "+panelErrWithOutput(runErr, out))
 					} else {
 						ops.set("ok", "apply completed: "+panelSummarizeOutput(out))
+					}
+				case "restart_unit", "stop_unit", "start_unit":
+					unit := strings.TrimSpace(r.FormValue("unit"))
+					allowed := map[string]bool{
+						cfg.Runtime.XrayUnit:    true,
+						cfg.Runtime.SingBoxUnit: true,
+						cfg.Runtime.CaddyUnit:   true,
+						cfg.Runtime.NginxUnit:   true,
+					}
+					if unit == "" || !allowed[unit] {
+						ops.set("error", "unit not allowed: "+unit)
+						break
+					}
+					var subcmd string
+					switch action {
+					case "restart_unit":
+						subcmd = "restart"
+					case "stop_unit":
+						subcmd = "stop"
+					case "start_unit":
+						subcmd = "start"
+					}
+					out, runErr := panelRunSystemctl(r.Context(), subcmd, unit)
+					if runErr != nil {
+						ops.set("error", subcmd+" "+unit+" failed: "+panelErrWithOutput(runErr, out))
+					} else {
+						ops.set("ok", subcmd+" "+unit+" ok")
 					}
 				default:
 					ops.set("error", "unknown dashboard action")
@@ -4219,14 +4470,18 @@ func panelWizardSNIPresets() []string {
 }
 
 func buildPanelDashboard(cfg config.AppConfig, users []panelUserView) panelDashboardView {
-	load1, _ := panelLoadAvg1()
+	load1, load5, load15, _ := panelLoadAvg()
 	if math.IsNaN(load1) || math.IsInf(load1, 0) {
 		load1 = 0
 	}
+	cpuPct := panelCPUPercent()
 	memUsed, memTotal, _ := panelMemoryUsage()
+	swapUsed, swapTotal, _ := panelSwapUsage()
 	diskUsed, diskTotal, _ := panelDiskUsage(cfg.Paths.StateDir)
 	uptime, _ := panelUptimeSeconds()
 	totalRX, totalTX, _ := panelNetTotals()
+	rxSpeed, txSpeed := panelNetSpeed()
+	tcpConns, udpConns := panelNetConnections()
 	userTraffic, source := panelUserTraffic(cfg.Paths.RuntimeDir, users)
 	totalUserBytes := uint64(0)
 	for _, item := range userTraffic {
@@ -4239,30 +4494,27 @@ func buildPanelDashboard(cfg config.AppConfig, users []panelUserView) panelDashb
 	return panelDashboardView{
 		ProxyctlVersion: strings.TrimSpace(Version),
 		Load1:           load1,
+		Load5:           load5,
+		Load15:          load15,
 		CPUCores:        runtime.NumCPU(),
+		CPUPercent:      cpuPct,
 		MemUsedBytes:    memUsed,
 		MemTotalBytes:   memTotal,
+		SwapUsedBytes:   swapUsed,
+		SwapTotalBytes:  swapTotal,
 		DiskUsedBytes:   diskUsed,
 		DiskTotalBytes:  diskTotal,
 		UptimeSeconds:   uptime,
 		TotalRXBytes:    totalRX,
 		TotalTXBytes:    totalTX,
 		TotalBytes:      totalBytes,
+		NetRXSpeed:      rxSpeed,
+		NetTXSpeed:      txSpeed,
+		TCPConns:        tcpConns,
+		UDPConns:        udpConns,
 		UserTraffic:     userTraffic,
 		TrafficSource:   source,
 	}
-}
-
-func panelLoadAvg1() (float64, error) {
-	data, err := os.ReadFile("/proc/loadavg")
-	if err != nil {
-		return 0, err
-	}
-	fields := strings.Fields(string(data))
-	if len(fields) == 0 {
-		return 0, fmt.Errorf("invalid /proc/loadavg")
-	}
-	return strconv.ParseFloat(fields[0], 64)
 }
 
 func panelMemoryUsage() (used uint64, total uint64, err error) {
@@ -4364,6 +4616,167 @@ func panelNetTotals() (rx uint64, tx uint64, err error) {
 	return rx, tx, nil
 }
 
+// panelLoadAvg returns 1m, 5m, 15m load averages.
+func panelLoadAvg() (load1, load5, load15 float64, err error) {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 3 {
+		return 0, 0, 0, fmt.Errorf("invalid /proc/loadavg")
+	}
+	load1, _ = strconv.ParseFloat(fields[0], 64)
+	load5, _ = strconv.ParseFloat(fields[1], 64)
+	load15, _ = strconv.ParseFloat(fields[2], 64)
+	return load1, load5, load15, nil
+}
+
+// panelSwapUsage reads SwapTotal/SwapFree from /proc/meminfo.
+func panelSwapUsage() (used, total uint64, err error) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, 0, err
+	}
+	var swapTotalKB, swapFreeKB uint64
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "SwapTotal:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				swapTotalKB, _ = strconv.ParseUint(fields[1], 10, 64)
+			}
+		}
+		if strings.HasPrefix(line, "SwapFree:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				swapFreeKB, _ = strconv.ParseUint(fields[1], 10, 64)
+			}
+		}
+	}
+	total = swapTotalKB * 1024
+	if swapTotalKB > swapFreeKB {
+		used = (swapTotalKB - swapFreeKB) * 1024
+	}
+	return used, total, nil
+}
+
+// panelCPUPercent computes CPU usage percent via delta from /proc/stat.
+func panelCPUPercent() float64 {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0
+	}
+	var fields []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "cpu ") {
+			fields = strings.Fields(line)
+			break
+		}
+	}
+	// cpu user nice system idle iowait irq softirq steal
+	if len(fields) < 5 {
+		return 0
+	}
+	vals := make([]uint64, len(fields)-1)
+	for i, f := range fields[1:] {
+		vals[i], _ = strconv.ParseUint(f, 10, 64)
+	}
+	// total = sum of all, idle = vals[3]
+	var total uint64
+	for _, v := range vals {
+		total += v
+	}
+	idle := vals[3]
+
+	dashMu.Lock()
+	pIdle := prevCPUIdle
+	pTotal := prevCPUTotal
+	prevCPUIdle = idle
+	prevCPUTotal = total
+	dashMu.Unlock()
+
+	if pTotal == 0 || total <= pTotal {
+		return 0
+	}
+	dTotal := total - pTotal
+	dIdle := idle - pIdle
+	if dTotal == 0 {
+		return 0
+	}
+	pct := 100.0 * float64(dTotal-dIdle) / float64(dTotal)
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	return math.Round(pct*10) / 10
+}
+
+// panelNetSpeed computes RX/TX bytes-per-second via delta from /proc/net/dev.
+func panelNetSpeed() (rxSpeed, txSpeed uint64) {
+	rx, tx, err := panelNetTotals()
+	if err != nil {
+		return 0, 0
+	}
+	now := time.Now()
+
+	dashMu.Lock()
+	pRX := prevNetRX
+	pTX := prevNetTX
+	pAt := prevNetAt
+	prevNetRX = rx
+	prevNetTX = tx
+	prevNetAt = now
+	dashMu.Unlock()
+
+	if pAt.IsZero() {
+		return 0, 0
+	}
+	elapsed := now.Sub(pAt).Seconds()
+	if elapsed <= 0 {
+		return 0, 0
+	}
+	if rx >= pRX {
+		rxSpeed = uint64(float64(rx-pRX) / elapsed)
+	}
+	if tx >= pTX {
+		txSpeed = uint64(float64(tx-pTX) / elapsed)
+	}
+	return rxSpeed, txSpeed
+}
+
+// panelNetConnections counts rows in /proc/net/tcp*, /proc/net/udp*.
+func panelNetConnections() (tcp, udp int) {
+	for _, p := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		// first line is header
+		for _, l := range lines[1:] {
+			if strings.TrimSpace(l) != "" {
+				tcp++
+			}
+		}
+	}
+	for _, p := range []string{"/proc/net/udp", "/proc/net/udp6"} {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		for _, l := range lines[1:] {
+			if strings.TrimSpace(l) != "" {
+				udp++
+			}
+		}
+	}
+	return tcp, udp
+}
+
 func panelUserTraffic(runtimeDir string, users []panelUserView) ([]panelUserTrafficView, string) {
 	rows := make([]panelUserTrafficView, 0, len(users))
 	for _, u := range users {
@@ -4417,6 +4830,12 @@ func panelUserTraffic(runtimeDir string, users []panelUserView) ([]panelUserTraf
 		}
 	}
 	return rows, "user-traffic.json"
+}
+
+func panelRunSystemctl(ctx context.Context, subcmd, unit string) (string, error) {
+	cmd := exec.CommandContext(ctx, "systemctl", subcmd, unit)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }
 
 func panelExecuteCommand(ctx context.Context, cmd *cobra.Command, args []string) (string, error) {
