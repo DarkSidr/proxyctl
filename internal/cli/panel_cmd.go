@@ -954,6 +954,26 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     .muted { color: var(--muted); }
     .hidden { display: none !important; }
     a { color: #67e8f9; }
+    /* Modal */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(2,6,23,0.75); z-index: 200; display: flex; align-items: center; justify-content: center; padding: 16px; backdrop-filter: blur(4px); }
+    .modal { background: #0f172a; border: 1px solid var(--line); border-radius: 14px; width: 100%; max-width: 520px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 24px 64px rgba(0,0,0,0.6); }
+    .modal-hdr { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+    .modal-hdr h3 { margin: 0; font-size: 0.95rem; font-weight: 600; }
+    .modal-close { background: none; border: none; color: var(--muted); font-size: 1.4rem; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: 6px; }
+    .modal-close:hover { color: var(--text); background: rgba(148,163,184,0.1); }
+    .modal-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; flex: 1; }
+    .modal-ftr { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; flex-shrink: 0; }
+    .frow { display: flex; flex-direction: column; gap: 4px; }
+    .frow .flabel { font-size: 0.78rem; color: var(--muted); }
+    .frow input, .frow select { width: 100%; }
+    .frow-inline { display: flex; gap: 8px; align-items: center; }
+    .sec-tabs { display: flex; gap: 4px; }
+    .sec-tab { border: 1px solid var(--line); background: rgba(15,23,42,0.55); color: var(--muted); border-radius: 8px; padding: 5px 16px; cursor: pointer; font-size: 0.8rem; transition: all 0.15s; }
+    .sec-tab.active { border-color: var(--brand); color: var(--brand); background: rgba(34,211,238,0.08); }
+    .modal-block { display: flex; flex-direction: column; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: rgba(15,23,42,0.5); }
+    .modal-block-hdr { font-size: 0.78rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
+    .sec-hdr { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .sec-hdr h2 { margin: 0; font-size: 0.95rem; }
   </style>
 </head>
 <body>
@@ -1026,68 +1046,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </section>
 
     <section class="sec" data-tab-section="inbounds">
-      <h2>inbounds</h2>
-      <div class="pad row">
-        <select id="inType">
-          <option value="vless">vless</option>
-          <option value="hysteria2">hysteria2</option>
-          <option value="xhttp">xhttp</option>
-        </select>
-        <select id="inTransport">
-          <option value="tcp">tcp</option>
-          <option value="ws">ws</option>
-          <option value="grpc">grpc</option>
-          <option value="udp">udp</option>
-          <option value="xhttp">xhttp</option>
-        </select>
-        <select id="inEngine">
-          <option value="">auto</option>
-          <option value="sing-box">sing-box</option>
-          <option value="xray">xray</option>
-        </select>
-        <select id="inMode">
-          <option value="basic">mode: basic</option>
-          <option value="advanced">mode: advanced</option>
-        </select>
-        <select id="inNode"></select>
-        <input id="inDomain" type="text" placeholder="domain">
-        <input id="inPort" type="number" min="1" max="65535" placeholder="port">
-        <input id="inPath" type="text" placeholder="path (optional)">
-        <select id="inSecurityMode">
-          <option value="none">security: none</option>
-          <option value="tls">security: tls</option>
-          <option value="reality">security: reality</option>
-        </select>
-        <input id="inTarget" type="text" list="inTargetList" placeholder="target">
-        <label id="inLinkWrap" class="row" style="gap:4px">
-          <input id="inLinkTargetSni" type="checkbox" checked>
-          <span class="label">target -> sni</span>
-        </label>
-        <input id="inSni" type="text" list="inSniList" placeholder="sni value">
-        <datalist id="inTargetList"></datalist>
-        <datalist id="inSniList"></datalist>
-        <button id="createInboundBtn" class="btn">create inbound</button>
-        <button id="cancelInboundEditBtn" type="button" class="btn secondary hidden">cancel edit</button>
-      </div>
-      <div id="inAdvancedBlock" class="pad row hidden">
-        <select id="inBrowserPreset">
-          <option value="">browser preset: custom</option>
-          <option value="chrome">chrome</option>
-          <option value="firefox">firefox</option>
-          <option value="safari">safari</option>
-        </select>
-        <input id="inRealityServer" type="text" placeholder="reality target host (dest)">
-        <input id="inRealityServerPort" type="number" min="1" max="65535" placeholder="reality target port">
-        <select id="inRealityFingerprint">
-          <option value="chrome">fingerprint: chrome</option>
-          <option value="firefox">fingerprint: firefox</option>
-          <option value="safari">fingerprint: safari</option>
-        </select>
-        <input id="inRealityPublicKey" type="text" placeholder="reality public key">
-        <input id="inRealityPrivateKey" type="text" placeholder="reality private key">
-        <input id="inRealityShortID" type="text" placeholder="reality short id">
-        <input id="inRealitySpiderX" type="text" placeholder="reality spiderX (optional)">
-        <input id="inVlessFlow" type="text" placeholder="vless flow (default xtls-rprx-vision)">
+      <div class="sec-hdr">
+        <h2>inbounds</h2>
+        <button class="btn" id="openCreateInboundBtn">+ create inbound</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -1425,22 +1386,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (force) inboundSniManualOverride = false;
     }
     function updateInboundAdvancedVisibility() {
-      const mode = (document.getElementById("inMode")?.value || "basic").trim().toLowerCase();
-      const sec = document.getElementById("inSecurityMode");
-      const adv = document.getElementById("inAdvancedBlock");
-      if (adv) adv.classList.toggle("hidden", mode !== "advanced");
-      const type = (document.getElementById("inType")?.value || "").trim().toLowerCase();
-      if (sec) {
-        if (type === "hysteria2") {
-          sec.value = "tls";
-          sec.disabled = true;
-        } else if (type === "xhttp") {
-          if (sec.value === "reality") sec.value = "tls";
-          sec.disabled = false;
-        } else {
-          sec.disabled = false;
-        }
-      }
+      // no-op: advanced block replaced by modal layout
     }
     function applyBrowserPreset() {
       const preset = (document.getElementById("inBrowserPreset")?.value || "").trim().toLowerCase();
@@ -1488,13 +1434,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
     }
     function resetInboundCreateDefaults() {
+      closeInboundModal();
       editingInboundID = "";
       editingInboundVersion = "";
       editingInboundEnabled = true;
       const createBtn = document.getElementById("createInboundBtn");
-      if (createBtn) createBtn.textContent = "create inbound";
+      if (createBtn) createBtn.textContent = "Create";
       const cancelBtn = document.getElementById("cancelInboundEditBtn");
-      if (cancelBtn) cancelBtn.classList.add("hidden");
+      if (cancelBtn) cancelBtn.textContent = "Cancel";
       const target = document.getElementById("inTarget");
       if (target) target.value = "";
       const link = document.getElementById("inLinkTargetSni");
@@ -1536,6 +1483,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       editingInboundID = String(inbound.ID || "").trim();
       editingInboundVersion = String(inbound.Version || "").trim();
       editingInboundEnabled = !!inbound.Enabled;
+      const modalTitle = document.getElementById("inboundModalTitle");
+      if (modalTitle) modalTitle.textContent = "Edit Inbound";
+      const createBtn = document.getElementById("createInboundBtn");
+      if (createBtn) createBtn.textContent = "Save";
+      openInboundModal();
       document.getElementById("inType").value = String(inbound.Type || "vless").trim() || "vless";
       updateInboundCreateFieldVisibility(true);
       const transportEl = document.getElementById("inTransport");
@@ -1576,11 +1528,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
       const modeEl = document.getElementById("inMode");
       if (modeEl) modeEl.value = inbound.RealityEnabled ? "advanced" : "basic";
-      const secEl = document.getElementById("inSecurityMode");
-      if (secEl) {
-        if (inbound.RealityEnabled) secEl.value = "reality";
-        else if (inbound.TLS) secEl.value = "tls";
-        else secEl.value = "none";
+      {
+        const activeSec = inbound.RealityEnabled ? "reality" : (inbound.TLS ? "tls" : "none");
+        setModalSecTab(activeSec);
       }
       const realityServer = document.getElementById("inRealityServer");
       if (realityServer) realityServer.value = String(inbound.RealityServer || "").trim();
@@ -1638,81 +1588,83 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
     }
     function updateInboundCreateFieldVisibility(forcePort) {
-      const type = (document.getElementById("inType").value || "").trim().toLowerCase();
+      const type = (document.getElementById("inType")?.value || "").trim().toLowerCase();
+      const secEl = document.getElementById("inSecurityMode");
+      const engineEl = document.getElementById("inEngine");
       const transportSel = document.getElementById("inTransport");
       const pathEl = document.getElementById("inPath");
-      const engineEl = document.getElementById("inEngine");
-      const secEl = document.getElementById("inSecurityMode");
-      const targetEl = document.getElementById("inTarget");
-      const linkWrapEl = document.getElementById("inLinkWrap");
-      const linkEl = document.getElementById("inLinkTargetSni");
-      const sniEl = document.getElementById("inSni");
-      if (!transportSel || !pathEl || !engineEl || !secEl || !targetEl || !linkWrapEl || !linkEl || !sniEl) return;
+      const mTransportRow = document.getElementById("mTransportRow");
+      const mPathRow = document.getElementById("mPathRow");
+      const mSecurityRow = document.getElementById("mSecurityRow");
+      const mSecTabReality = document.getElementById("mSecTabReality");
+      const mRealityBlock = document.getElementById("mRealityBlock");
+
+      const sec = (secEl?.value || "none").trim().toLowerCase();
 
       if (type === "hysteria2") {
-        engineEl.value = "sing-box";
-        engineEl.disabled = true;
-        setTransportOptions(["udp"]);
-        transportSel.disabled = true;
-        secEl.value = "tls";
-        secEl.disabled = true;
+        if (engineEl) engineEl.value = "sing-box";
+        if (secEl) secEl.value = "tls";
+        if (mTransportRow) mTransportRow.classList.add("hidden");
+        if (mPathRow) mPathRow.classList.add("hidden");
+        if (mSecurityRow) mSecurityRow.classList.add("hidden");
+        if (mRealityBlock) mRealityBlock.classList.add("hidden");
+        setModalSecTab("tls");
       } else if (type === "xhttp") {
-        engineEl.value = "xray";
-        engineEl.disabled = true;
-        setTransportOptions(["xhttp"]);
-        transportSel.disabled = true;
-        if (secEl.value === "reality") secEl.value = "tls";
-        secEl.disabled = false;
-      } else if (type === "vless") {
-        engineEl.value = "xray";
-        engineEl.disabled = true;
-        if (secEl.value === "reality") {
-          setTransportOptions(["tcp"]);
-          transportSel.disabled = true;
-        } else {
-          setTransportOptions(["tcp", "ws", "grpc"]);
-          transportSel.disabled = false;
+        if (engineEl) engineEl.value = "xray";
+        if (mTransportRow) mTransportRow.classList.add("hidden");
+        if (mPathRow) mPathRow.classList.remove("hidden");
+        if (mSecurityRow) mSecurityRow.classList.remove("hidden");
+        if (mSecTabReality) mSecTabReality.classList.add("hidden");
+        if (sec === "reality") {
+          if (secEl) secEl.value = "tls";
+          setModalSecTab("tls");
         }
-        secEl.disabled = false;
+        if (mRealityBlock) mRealityBlock.classList.add("hidden");
+        if (!pathEl?.value) { if (pathEl) pathEl.value = "/xhttp"; }
       } else {
-        engineEl.disabled = false;
-        if (secEl.value === "reality") {
+        // vless
+        if (engineEl) engineEl.value = "xray";
+        if (mTransportRow) mTransportRow.classList.remove("hidden");
+        if (mSecurityRow) mSecurityRow.classList.remove("hidden");
+        if (mSecTabReality) mSecTabReality.classList.remove("hidden");
+        if (sec === "reality") {
           setTransportOptions(["tcp"]);
-          transportSel.disabled = true;
+          if (transportSel) transportSel.disabled = true;
+          if (mRealityBlock) mRealityBlock.classList.remove("hidden");
+          if (mPathRow) mPathRow.classList.add("hidden");
         } else {
           setTransportOptions(["tcp", "ws", "grpc"]);
-          transportSel.disabled = false;
+          if (transportSel) transportSel.disabled = false;
+          if (mRealityBlock) mRealityBlock.classList.add("hidden");
+          const transport = (transportSel?.value || "").trim().toLowerCase();
+          const pathNeeded = transport === "ws" || transport === "grpc";
+          if (mPathRow) mPathRow.classList.toggle("hidden", !pathNeeded);
+          if (pathNeeded && pathEl && !pathEl.value) {
+            if (transport === "ws") pathEl.value = "/ws";
+            if (transport === "grpc") pathEl.value = "grpc";
+          }
         }
-        secEl.disabled = false;
       }
 
-      const transport = (transportSel.value || "").trim().toLowerCase();
-      const pathNeeded = transport === "ws" || transport === "grpc" || transport === "xhttp";
-      pathEl.classList.toggle("hidden", !pathNeeded);
-      if (!pathNeeded) {
-        pathEl.value = "";
-      } else if (!(pathEl.value || "").trim()) {
-        if (transport === "ws") pathEl.value = "/ws";
-        if (transport === "grpc") pathEl.value = "grpc";
-        if (transport === "xhttp") pathEl.value = "/xhttp";
-      }
-      const sniSupported = type === "vless" || type === "hysteria2";
-      targetEl.classList.toggle("hidden", !sniSupported);
-      linkWrapEl.classList.toggle("hidden", !sniSupported);
-      sniEl.classList.toggle("hidden", !sniSupported);
-      targetEl.disabled = !sniSupported;
-      linkEl.disabled = !sniSupported;
-      sniEl.disabled = !sniSupported;
-      if (!sniSupported) {
-        targetEl.value = "";
-        linkEl.checked = true;
-        sniEl.value = "";
-        inboundSniManualOverride = false;
-      }
       updateInboundPortSuggestion(!!forcePort);
-      updateInboundSniInputState();
       updateInboundTargetToSni(false);
-      updateInboundAdvancedVisibility();
+    }
+    function openInboundModal() {
+      const modal = document.getElementById("inboundModal");
+      if (modal) modal.classList.remove("hidden");
+    }
+    function closeInboundModal() {
+      const modal = document.getElementById("inboundModal");
+      if (modal) modal.classList.add("hidden");
+    }
+    function setModalSecTab(sec) {
+      const secEl = document.getElementById("inSecurityMode");
+      if (secEl) secEl.value = sec;
+      document.querySelectorAll(".sec-tab").forEach((btn) => {
+        btn.classList.toggle("active", btn.getAttribute("data-sec") === sec);
+      });
+      const mRealityBlock = document.getElementById("mRealityBlock");
+      if (mRealityBlock) mRealityBlock.classList.toggle("hidden", sec !== "reality");
     }
     function currentSubUserID() {
       const subUserSel = document.getElementById("subUser");
@@ -2411,9 +2363,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     });
     document.getElementById("inType").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
     document.getElementById("inTransport").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
-    document.getElementById("inMode").addEventListener("change", () => updateInboundAdvancedVisibility());
-    document.getElementById("inSecurityMode").addEventListener("change", () => updateInboundCreateFieldVisibility(true));
-    document.getElementById("inBrowserPreset").addEventListener("change", () => applyBrowserPreset());
     document.getElementById("inTarget").addEventListener("input", () => {
       updateInboundTargetToSni(false);
     });
@@ -2431,6 +2380,28 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     });
     document.getElementById("inNode").addEventListener("change", () => {
       updateInboundDomainFromNode(true);
+    });
+    document.getElementById("openCreateInboundBtn").addEventListener("click", () => {
+      resetInboundCreateDefaults();
+      const modalTitle = document.getElementById("inboundModalTitle");
+      if (modalTitle) modalTitle.textContent = "Create Inbound";
+      const createBtn = document.getElementById("createInboundBtn");
+      if (createBtn) createBtn.textContent = "Create";
+      openInboundModal();
+      updateInboundCreateFieldVisibility(true);
+    });
+    document.getElementById("closeInboundModalBtn").addEventListener("click", () => {
+      resetInboundCreateDefaults();
+    });
+    document.getElementById("inboundModal").addEventListener("click", (e) => {
+      if (e.target === document.getElementById("inboundModal")) resetInboundCreateDefaults();
+    });
+    document.getElementById("mSecTabs").addEventListener("click", (e) => {
+      const btn = e.target.closest(".sec-tab");
+      if (!btn) return;
+      const sec = btn.getAttribute("data-sec") || "none";
+      setModalSecTab(sec);
+      updateInboundCreateFieldVisibility(false);
     });
     document.getElementById("subUser").addEventListener("change", () => {
       render();
@@ -2458,6 +2429,137 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
 
     getSnapshot().catch((e) => showOp("error", String(e)));
   </script>
+
+  <!-- Inbound modal -->
+  <div id="inboundModal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-hdr">
+        <h3 id="inboundModalTitle">Create Inbound</h3>
+        <button class="modal-close" id="closeInboundModalBtn">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <div class="frow">
+          <span class="flabel">Protocol</span>
+          <select id="inType">
+            <option value="vless">VLESS &mdash; xray</option>
+            <option value="xhttp">XHTTP &mdash; xray</option>
+            <option value="hysteria2">Hysteria2 &mdash; sing-box</option>
+          </select>
+        </div>
+        <div class="frow">
+          <span class="flabel">Node</span>
+          <select id="inNode"></select>
+        </div>
+        <div class="frow">
+          <span class="flabel">Domain</span>
+          <input id="inDomain" type="text" placeholder="e.g. swe.darksidr.icu">
+        </div>
+        <div class="frow">
+          <span class="flabel">Port</span>
+          <input id="inPort" type="number" min="1" max="65535" placeholder="e.g. 8443">
+        </div>
+        <div class="frow" id="mTransportRow">
+          <span class="flabel">Transport</span>
+          <select id="inTransport">
+            <option value="tcp">TCP (RAW)</option>
+            <option value="ws">WebSocket</option>
+            <option value="grpc">gRPC</option>
+          </select>
+        </div>
+        <div class="frow hidden" id="mPathRow">
+          <span class="flabel">Path</span>
+          <input id="inPath" type="text" placeholder="/path">
+        </div>
+        <div class="frow" id="mSecurityRow">
+          <span class="flabel">Security</span>
+          <div class="sec-tabs" id="mSecTabs">
+            <button type="button" class="sec-tab active" data-sec="none">None</button>
+            <button type="button" class="sec-tab" data-sec="reality" id="mSecTabReality">Reality</button>
+            <button type="button" class="sec-tab" data-sec="tls">TLS</button>
+          </div>
+        </div>
+        <!-- Hidden fields used by existing form logic -->
+        <select id="inSecurityMode" class="hidden">
+          <option value="none">none</option>
+          <option value="tls">tls</option>
+          <option value="reality">reality</option>
+        </select>
+        <input type="hidden" id="inEngine" value="xray">
+        <select id="inMode" class="hidden">
+          <option value="basic">basic</option>
+          <option value="advanced">advanced</option>
+        </select>
+        <select id="inBrowserPreset" class="hidden">
+          <option value="">custom</option>
+          <option value="chrome">chrome</option>
+          <option value="firefox">firefox</option>
+          <option value="safari">safari</option>
+        </select>
+        <datalist id="inTargetList"></datalist>
+        <datalist id="inSniList"></datalist>
+        <div id="inLinkWrap" class="hidden"></div>
+        <!-- Reality block -->
+        <div id="mRealityBlock" class="modal-block hidden">
+          <div class="modal-block-hdr">Reality Settings</div>
+          <div class="frow">
+            <span class="flabel">Fingerprint (uTLS)</span>
+            <select id="inRealityFingerprint">
+              <option value="chrome">Chrome</option>
+              <option value="firefox">Firefox</option>
+              <option value="safari">Safari</option>
+              <option value="edge">Edge</option>
+              <option value="ios">iOS</option>
+              <option value="random">Random</option>
+            </select>
+          </div>
+          <div class="frow">
+            <span class="flabel">Target (dest)</span>
+            <input id="inTarget" type="text" list="inTargetList" placeholder="www.example.com">
+          </div>
+          <div class="frow">
+            <span class="flabel">SNI</span>
+            <div class="frow-inline">
+              <input id="inSni" type="text" list="inSniList" placeholder="auto from target" style="flex:1">
+              <label style="display:flex;align-items:center;gap:4px;font-size:0.78rem;color:var(--muted);white-space:nowrap;cursor:pointer">
+                <input id="inLinkTargetSni" type="checkbox" checked style="width:auto"> = Target
+              </label>
+            </div>
+          </div>
+          <div class="frow">
+            <span class="flabel">Dest Server</span>
+            <div class="frow-inline">
+              <input id="inRealityServer" type="text" placeholder="www.example.com" style="flex:1">
+              <input id="inRealityServerPort" type="number" min="1" max="65535" value="443" style="width:80px">
+            </div>
+          </div>
+          <div class="frow">
+            <span class="flabel">Short ID <span style="font-weight:normal">(auto if empty)</span></span>
+            <input id="inRealityShortID" type="text" placeholder="e.g. 797e">
+          </div>
+          <div class="frow">
+            <span class="flabel">SpiderX</span>
+            <input id="inRealitySpiderX" type="text" placeholder="/">
+          </div>
+          <div class="frow">
+            <span class="flabel">Public Key</span>
+            <input id="inRealityPublicKey" type="text" placeholder="reality public key">
+          </div>
+          <div class="frow">
+            <span class="flabel">Private Key</span>
+            <input id="inRealityPrivateKey" type="text" placeholder="reality private key">
+          </div>
+          <div class="frow">
+            <span class="flabel">Flow</span>
+            <input id="inVlessFlow" type="text" value="xtls-rprx-vision">
+          </div>
+        </div>
+      </div>
+      <div class="modal-ftr">
+        <button type="button" class="btn secondary" id="cancelInboundEditBtn">Cancel</button>
+        <button type="button" class="btn" id="createInboundBtn">Create</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>`))
 
