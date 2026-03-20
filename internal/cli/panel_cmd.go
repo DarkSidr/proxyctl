@@ -107,17 +107,18 @@ type panelCredentialView struct {
 }
 
 type panelNodeView struct {
-	ID      string
-	Name    string
-	Host    string
-	Role    string
-	SSHUser string
-	SSHPort int
-	Enabled bool
-	Version string
-	SyncOK  *bool // nil = never synced, true = last OK, false = last failed
-	SyncMsg string
-	JobID   string // non-empty = background job in progress
+	ID            string
+	Name          string
+	Host          string
+	Role          string
+	SSHUser       string
+	SSHPort       int
+	Enabled       bool
+	Version       string
+	SyncOK        *bool // nil = never synced, true = last OK, false = last failed
+	SyncMsg       string
+	JobID         string // non-empty = background job in progress
+	RemoteVersion string // proxyctl version on the remote node (empty = not checked)
 }
 
 type panelSubscriptionState struct {
@@ -248,6 +249,8 @@ type nodeSyncRecord struct {
 }
 
 var panelNodeSyncCache sync.Map // key: nodeID string → value: nodeSyncRecord
+
+var panelNodeVersionCache sync.Map // key: nodeID string → value: string (remote proxyctl version)
 
 // panelTrafficCollection controls whether traffic stats goroutines are active.
 // Default true; toggled via settings.
@@ -1602,13 +1605,20 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         </div>
         <div id="ndMaintenanceSection" class="modal-block hidden">
           <div class="modal-block-hdr">maintenance</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+          <div style="display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap">
+            <span class="muted" style="font-size:0.8rem">remote version:</span>
+            <span id="ndRemoteVersion" class="mono" style="font-size:0.82rem">—</span>
+            <button type="button" class="btn secondary" id="ndFetchVersionBtn" style="padding:3px 10px;font-size:0.78rem">check</button>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
             <button type="button" class="btn secondary" id="ndSetupSshKeyBtn">setup ssh key</button>
             <button type="button" class="btn secondary" id="ndBootstrapBtn">bootstrap</button>
+            <button type="button" class="btn warn" id="ndUpdateProxyctlBtn">update proxyctl</button>
           </div>
           <div class="muted" style="font-size:0.75rem;margin-top:8px;line-height:1.5">
             <b>setup ssh key</b> — installs panel public key on node for passwordless sync<br>
-            <b>bootstrap</b> — (re)installs xray / sing-box / caddy on node
+            <b>bootstrap</b> — (re)installs xray / sing-box / caddy on node<br>
+            <b>update proxyctl</b> — runs <code>proxyctl update --force</code> on the remote node
           </div>
         </div>
         <div class="modal-ftr">
@@ -1954,6 +1964,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       document.getElementById("ndPassword").value = "";
       const pwRow = document.getElementById("ndPasswordRow");
       if (pwRow) pwRow.classList.toggle("hidden", isEdit);
+      const remVerEl = document.getElementById("ndRemoteVersion");
+      if (remVerEl) remVerEl.textContent = (node && node.RemoteVersion) ? node.RemoteVersion : "—";
       const maintenanceSection = document.getElementById("ndMaintenanceSection");
       if (maintenanceSection) maintenanceSection.classList.toggle("hidden", !isEdit || role === "primary");
       const modal = document.getElementById("nodeModal");
@@ -3162,6 +3174,36 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         const sshPassword = await promptNodePass("Bootstrap Node", "SSH password for " + label + " (leave empty if key auth works):");
         closeNodeModal();
         await postForm(cfg.nodesActionPath, { op: "bootstrap", node_id: n.id, version: n.version, ssh_password: sshPassword });
+      } catch (e) {
+        if (String(e).includes("cancelled")) return;
+        showOp("error", String(e));
+      }
+    });
+    document.getElementById("ndFetchVersionBtn").addEventListener("click", async () => {
+      const n = getModalNode();
+      if (!n.id) return;
+      const btn = document.getElementById("ndFetchVersionBtn");
+      const vEl = document.getElementById("ndRemoteVersion");
+      btn.disabled = true;
+      vEl.textContent = "checking…";
+      try {
+        await postForm(cfg.nodesActionPath, { op: "fetch_version", node_id: n.id });
+      } catch (e) {
+        vEl.textContent = "error";
+        showOp("error", String(e));
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    document.getElementById("ndUpdateProxyctlBtn").addEventListener("click", async () => {
+      const n = getModalNode();
+      if (!n.id) return;
+      const label = n.host ? (n.name + " (" + n.host + ")") : n.name;
+      if (!confirm("Update proxyctl on " + label + "?\nThis will run proxyctl update --force and restart services.")) return;
+      try {
+        const sshPassword = await promptNodePass("Update proxyctl", "SSH password for " + label + " (leave empty if key auth works):");
+        closeNodeModal();
+        await postForm(cfg.nodesActionPath, { op: "update_proxyctl", node_id: n.id, ssh_password: sshPassword });
       } catch (e) {
         if (String(e).includes("cancelled")) return;
         showOp("error", String(e));
@@ -4584,6 +4626,9 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		if j := getActiveJobForNode(node.ID); j != nil {
 			nv.JobID = j.id
 		}
+		if rv, ok := panelNodeVersionCache.Load(node.ID); ok {
+			nv.RemoteVersion = rv.(string)
+		}
 		nodeRows = append(nodeRows, nv)
 	}
 	sort.Slice(nodeRows, func(i, j int) bool { return nodeRows[i].ID < nodeRows[j].ID })
@@ -5981,6 +6026,78 @@ func panelCleanupNodeRuntime(ctx context.Context, configPath string, node domain
 	return err
 }
 
+// panelFetchNodeRemoteVersion SSHes to the node, runs "proxyctl version", and caches the result.
+func panelFetchNodeRemoteVersion(ctx context.Context, node domain.Node) (string, error) {
+	settings, err := panelNodeSyncSettingsFromEnv()
+	if err != nil {
+		return "", err
+	}
+	if !settings.enabled {
+		return "", fmt.Errorf("auto-node-sync disabled")
+	}
+	if node.SSHUser != "" {
+		settings.opts.sshUser = node.SSHUser
+	}
+	if node.SSHPort > 0 {
+		settings.opts.sshPort = node.SSHPort
+	}
+	host := strings.TrimSpace(node.Host)
+	if host == "" {
+		return "", fmt.Errorf("node %q has empty host", node.ID)
+	}
+	target := fmt.Sprintf("%s@%s", settings.opts.sshUser, host)
+	sshArgs := buildSSHArgs(settings.opts.sshPort, settings.opts.sshKeyPath, settings.opts.strictHostKey)
+	sshArgs = append(sshArgs, target, "proxyctl version 2>/dev/null || proxyctl --version 2>/dev/null || echo unknown")
+	out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, settings.opts.sshPassword)
+	if err != nil {
+		return "", fmt.Errorf("ssh to %s: %w", host, err)
+	}
+	ver := strings.TrimSpace(string(out))
+	if ver == "" {
+		ver = "unknown"
+	}
+	panelNodeVersionCache.Store(node.ID, ver)
+	return ver, nil
+}
+
+// panelUpdateProxyctlOnNode SSHes to the node and runs "proxyctl update --force --restart-services".
+func panelUpdateProxyctlOnNode(ctx context.Context, configPath string, node domain.Node, sshPassword string) error {
+	settings, err := panelNodeSyncSettingsFromEnv()
+	if err != nil {
+		return err
+	}
+	if !settings.enabled {
+		return fmt.Errorf("auto-node-sync disabled")
+	}
+	if strings.TrimSpace(sshPassword) != "" {
+		settings.opts.sshPassword = strings.TrimSpace(sshPassword)
+	}
+	if node.SSHUser != "" {
+		settings.opts.sshUser = node.SSHUser
+	}
+	if node.SSHPort > 0 {
+		settings.opts.sshPort = node.SSHPort
+	}
+	host := strings.TrimSpace(node.Host)
+	if host == "" {
+		return fmt.Errorf("node %q has empty host", node.ID)
+	}
+	prefix := ""
+	if settings.opts.remoteUseSudo {
+		prefix = "sudo "
+	}
+	updateCmd := prefix + "proxyctl update --force --restart-services --ensure-caddy"
+	target := fmt.Sprintf("%s@%s", settings.opts.sshUser, host)
+	sshArgs := buildSSHArgs(settings.opts.sshPort, settings.opts.sshKeyPath, settings.opts.strictHostKey)
+	sshArgs = append(sshArgs, target, updateCmd)
+	if out, runErr := runRemoteExecCombined(ctx, "ssh", sshArgs, settings.opts.sshPassword); runErr != nil {
+		return fmt.Errorf("update proxyctl on %s: %w | %s", host, runErr, strings.TrimSpace(string(out)))
+	}
+	// Refresh cached version after update.
+	_, _ = panelFetchNodeRemoteVersion(ctx, node)
+	return nil
+}
+
 func panelTestNodeConnectivity(ctx context.Context, node domain.Node) error {
 	return panelTestNodeConnectivityWithPassword(ctx, node, "")
 }
@@ -6949,6 +7066,91 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		}
 		ops.set("ok", fmt.Sprintf("node %s: %s", state, updated.Name))
 		return "", "", nil
+	case "fetch_version":
+		nodeID := strings.TrimSpace(r.FormValue("node_id"))
+		if nodeID == "" {
+			return "", "", fmt.Errorf("node id is required")
+		}
+		nodes, err := store.Nodes().List(ctx)
+		if err != nil {
+			return "", "", fmt.Errorf("list nodes: %w", err)
+		}
+		var current domain.Node
+		found := false
+		for _, node := range nodes {
+			if node.ID == nodeID {
+				current = node
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", "", fmt.Errorf("node %q not found", nodeID)
+		}
+		if current.Role == domain.NodeRolePrimary {
+			panelNodeVersionCache.Store(current.ID, Version)
+			ops.set("ok", fmt.Sprintf("version on %s: %s (primary, local)", current.Name, Version))
+			return "", "", nil
+		}
+		job := newNodeJob(current.ID, "fetch_version")
+		snapNode := current
+		go func() {
+			ver, fetchErr := panelFetchNodeRemoteVersion(context.Background(), snapNode)
+			if fetchErr != nil {
+				job.finish(false, fmt.Sprintf("version check failed: %s (%s) | %v", snapNode.Name, snapNode.Host, fetchErr))
+				return
+			}
+			job.finish(true, fmt.Sprintf("version on %s: %s", snapNode.Name, ver))
+		}()
+		ops.set("ok", fmt.Sprintf("fetching version from %s…", current.Name))
+		return job.id, "", nil
+
+	case "update_proxyctl":
+		nodeID := strings.TrimSpace(r.FormValue("node_id"))
+		if nodeID == "" {
+			return "", "", fmt.Errorf("node id is required")
+		}
+		nodes, err := store.Nodes().List(ctx)
+		if err != nil {
+			return "", "", fmt.Errorf("list nodes: %w", err)
+		}
+		var current domain.Node
+		found := false
+		for _, node := range nodes {
+			if node.ID == nodeID {
+				current = node
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", "", fmt.Errorf("node %q not found", nodeID)
+		}
+		if current.Role == domain.NodeRolePrimary {
+			return "", "", fmt.Errorf("use panel self-update for the primary node")
+		}
+		sshPassword := strings.TrimSpace(r.FormValue("ssh_password"))
+		job := newNodeJob(current.ID, "update_proxyctl")
+		snapNode := current
+		cp := strings.TrimSpace(*configPath)
+		go func() {
+			if updateErr := panelUpdateProxyctlOnNode(context.Background(), cp, snapNode, sshPassword); updateErr != nil {
+				job.finish(false, fmt.Sprintf("update failed: %s (%s) | %v", snapNode.Name, snapNode.Host, updateErr))
+				return
+			}
+			// After update, sync the node.
+			if synced, _, syncErr := panelSyncWorkerNodesByIDsWithPassword(context.Background(), dbPath, cp, []string{snapNode.ID}, sshPassword); syncErr != nil {
+				job.finish(true, fmt.Sprintf("proxyctl updated on %s | sync warning: %v", snapNode.Name, syncErr))
+				return
+			} else if synced > 0 {
+				job.finish(true, fmt.Sprintf("proxyctl updated on %s | synced", snapNode.Name))
+				return
+			}
+			job.finish(true, fmt.Sprintf("proxyctl updated on %s", snapNode.Name))
+		}()
+		ops.set("ok", fmt.Sprintf("updating proxyctl on %s — running in background", current.Name))
+		return job.id, "", nil
+
 	default:
 		return "", "", fmt.Errorf("unknown node action")
 	}
