@@ -130,19 +130,6 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 		return inbounds[i].ID < inbounds[j].ID
 	})
 
-	// Collect unique user IDs from all credentials for v2ray API stats.
-	seenUserIDs := make(map[string]struct{})
-	for _, cred := range req.Credentials {
-		if cred.UserID != "" {
-			seenUserIDs[cred.UserID] = struct{}{}
-		}
-	}
-	userIDs := make([]string, 0, len(seenUserIDs))
-	for uid := range seenUserIDs {
-		userIDs = append(userIDs, uid)
-	}
-	sort.Strings(userIDs)
-
 	var (
 		cfgInbounds []inboundConfig
 		clients     []renderer.ClientArtifact
@@ -176,26 +163,12 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 		}
 	}
 
-	var experimental *sbExperimental
-	if len(userIDs) > 0 {
-		experimental = &sbExperimental{
-			V2RayAPI: &sbV2RayAPI{
-				Listen: "127.0.0.1:10091",
-				Stats: sbV2RayStats{
-					Enabled: true,
-					Users:   userIDs,
-				},
-			},
-		}
-	}
-
 	return configDoc{
 		Inbounds: cfgInbounds,
 		Outbounds: []outboundConfig{
 			{Type: "direct", Tag: "direct"},
 		},
-		Route:        routeConfig{Final: "direct"},
-		Experimental: experimental,
+		Route: routeConfig{Final: "direct"},
 	}, clients, nil
 }
 
