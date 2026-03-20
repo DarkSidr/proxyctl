@@ -99,10 +99,13 @@ type panelNodeView struct {
 	Name    string
 	Host    string
 	Role    string
+	SSHUser string
+	SSHPort int
 	Enabled bool
 	Version string
 	SyncOK  *bool // nil = never synced, true = last OK, false = last failed
 	SyncMsg string
+	JobID   string // non-empty = background job in progress
 }
 
 type panelSubscriptionState struct {
@@ -221,6 +224,68 @@ type nodeSyncRecord struct {
 }
 
 var panelNodeSyncCache sync.Map // key: nodeID string → value: nodeSyncRecord
+
+// nodeJob tracks a background SSH operation per node.
+type nodeJob struct {
+	id        string
+	nodeID    string
+	op        string
+	done      bool
+	ok        bool
+	msg       string
+	startedAt time.Time
+	mu        sync.RWMutex
+}
+
+func (j *nodeJob) finish(ok bool, msg string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.done = true
+	j.ok = ok
+	j.msg = strings.TrimSpace(msg)
+}
+
+func (j *nodeJob) jobStatus() (done, ok bool, msg string) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.done, j.ok, j.msg
+}
+
+var panelNodeJobs sync.Map // key: jobID (string) → *nodeJob
+
+func panelNewID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func newNodeJob(nodeID, op string) *nodeJob {
+	j := &nodeJob{
+		id:        panelNewID(),
+		nodeID:    strings.TrimSpace(nodeID),
+		op:        op,
+		startedAt: time.Now().UTC(),
+	}
+	panelNodeJobs.Store(j.id, j)
+	return j
+}
+
+func getActiveJobForNode(nodeID string) *nodeJob {
+	nodeID = strings.TrimSpace(nodeID)
+	var found *nodeJob
+	panelNodeJobs.Range(func(k, v interface{}) bool {
+		j := v.(*nodeJob)
+		if j.nodeID == nodeID {
+			done, _, _ := j.jobStatus()
+			if !done {
+				found = j
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
 
 func setNodeSyncStatus(nodeID string, ok bool, msg string) {
 	panelNodeSyncCache.Store(strings.TrimSpace(nodeID), nodeSyncRecord{ok: ok, msg: strings.TrimSpace(msg), at: time.Now()})
@@ -1004,6 +1069,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     .modal-block-hdr { font-size: 0.78rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
     .sec-hdr { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
     .sec-hdr h2 { margin: 0; font-size: 0.95rem; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
   </style>
 </head>
 <body>
@@ -1057,20 +1123,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </section>
 
     <section class="sec" data-tab-section="nodes">
-      <h2>nodes</h2>
-      <div id="nodesSshWarning" class="hidden" style="margin:4px 0 10px;padding:8px 12px;background:#7a4a00;color:#ffd680;border-radius:6px;font-size:0.85rem"></div>
-      <div class="pad row">
-        <input id="nodeName" type="text" placeholder="node name">
-        <input id="nodeHost" type="text" placeholder="node host/ip">
-        <select id="nodeRole">
-          <option value="node">node</option>
-          <option value="primary">primary</option>
-        </select>
-        <button id="createNodeBtn" class="btn">create node</button>
+      <div class="sec-hdr">
+        <h2>nodes</h2>
+        <button class="btn" id="openAddNodeBtn">+ add node</button>
       </div>
+      <div id="nodesSshWarning" class="hidden" style="margin:4px 0 10px;padding:8px 12px;background:#7a4a00;color:#ffd680;border-radius:6px;font-size:0.85rem"></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>name</th><th>host</th><th>role</th><th>enabled</th><th>actions</th></tr></thead>
+          <thead><tr><th>name</th><th>host</th><th>role</th><th>status</th><th>actions</th></tr></thead>
           <tbody id="nodesBody"></tbody>
         </table>
       </div>
@@ -1303,6 +1363,70 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </div>
   </div>
 
+  <!-- Node modal -->
+  <div id="nodeModal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-hdr">
+        <h3 id="nodeModalTitle">Add Node</h3>
+        <button class="modal-close" id="closeNodeModalBtn">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <div class="frow">
+          <span class="flabel">Name</span>
+          <input id="ndName" type="text" placeholder="e.g. node-01">
+        </div>
+        <div class="frow">
+          <span class="flabel">Host / IP</span>
+          <input id="ndHost" type="text" placeholder="e.g. 1.2.3.4">
+        </div>
+        <div class="frow">
+          <span class="flabel">Role</span>
+          <select id="ndRole">
+            <option value="node">node</option>
+            <option value="primary">primary</option>
+          </select>
+        </div>
+        <div class="frow">
+          <span class="flabel">SSH User</span>
+          <input id="ndSSHUser" type="text" placeholder="root">
+        </div>
+        <div class="frow">
+          <span class="flabel">SSH Port</span>
+          <input id="ndSSHPort" type="number" value="22" min="1" max="65535" style="width:100px">
+        </div>
+        <div class="frow" id="ndPasswordRow">
+          <span class="flabel">Password</span>
+          <input id="ndPassword" type="password" placeholder="for first-time bootstrap (optional, not stored)">
+        </div>
+        <div class="modal-ftr">
+          <button type="button" class="btn secondary" id="cancelNodeModalBtn">Cancel</button>
+          <button type="button" class="btn" id="saveNodeBtn">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Node SSH password prompt modal -->
+  <div id="nodePassModal" class="modal-overlay hidden">
+    <div class="modal" style="max-width:420px">
+      <div class="modal-hdr">
+        <h3 id="nodePassModalTitle">SSH Password</h3>
+        <button class="modal-close" id="closeNodePassModalBtn">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <div id="nodePassModalDesc" class="muted" style="margin-bottom:12px;font-size:0.9rem"></div>
+        <div class="frow">
+          <span class="flabel">Password</span>
+          <input id="nodePassInput" type="password" placeholder="leave empty if SSH key already works">
+        </div>
+        <div class="modal-ftr">
+          <button type="button" class="btn secondary" id="cancelNodePassModalBtn">Cancel</button>
+          <button type="button" class="btn" id="confirmNodePassBtn">Confirm</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     const cfgRaw = {
       basePath: {{printf "%q" .BasePath}},
@@ -1350,6 +1474,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         settingsActionPath: joinPath(basePath, "settings/action"),
         usersActionPath: joinPath(basePath, "users/action"),
         nodesActionPath: joinPath(basePath, "nodes/action"),
+        nodeJobsPath: joinPath(basePath, "api/node-jobs"),
         inboundsActionPath: joinPath(basePath, "inbounds/action"),
         subsActionPath: joinPath(basePath, "subscriptions/action"),
       };
@@ -1364,6 +1489,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     let editingInboundID = "";
     let editingInboundVersion = "";
     let editingInboundEnabled = true;
+    // activeNodeJobs: nodeID → jobID (for showing spinner in the node table)
+    let activeNodeJobs = {};
     let inboundSniManualOverride = false;
     const REALITY_PRESETS = [
       { target: "www.amd.com:443", fingerprint: "chrome" },
@@ -1525,7 +1652,81 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       lastOpSeenKey = [String(out?.status || ""), String(out?.message || ""), String(out?.at || "")].join("|");
       saveLastOpSeenKey(lastOpSeenKey);
       showOp(out.status, out.message);
-      await getSnapshot();
+      if (out.job_id) {
+        const nid = String(out.node_id || "").trim();
+        pollNodeJob(out.job_id, nid);
+      } else {
+        await getSnapshot();
+      }
+    }
+    function pollNodeJob(jobID, nodeID) {
+      if (nodeID) activeNodeJobs[nodeID] = jobID;
+      const poll = async () => {
+        try {
+          const res = await fetch(cfg.nodeJobsPath + "?id=" + encodeURIComponent(jobID), { headers: { "Accept": "application/json" } });
+          if (!res.ok) throw new Error("poll failed: " + res.status);
+          const job = await res.json();
+          if (job.done) {
+            if (job.nodeID && activeNodeJobs[job.nodeID] === jobID) delete activeNodeJobs[job.nodeID];
+            showOp(job.ok ? "ok" : "error", job.msg || "");
+            await getSnapshot();
+          } else {
+            setTimeout(poll, 2000);
+          }
+        } catch (e) {
+          if (nodeID && activeNodeJobs[nodeID] === jobID) delete activeNodeJobs[nodeID];
+          showOp("error", String(e));
+        }
+      };
+      setTimeout(poll, 2000);
+    }
+    // Prompts for SSH password via a modal. Returns a Promise<string>.
+    function promptNodePass(title, desc) {
+      return new Promise((resolve, reject) => {
+        const modal = document.getElementById("nodePassModal");
+        document.getElementById("nodePassModalTitle").textContent = title || "SSH Password";
+        document.getElementById("nodePassModalDesc").textContent = desc || "";
+        document.getElementById("nodePassInput").value = "";
+        modal.classList.remove("hidden");
+        setTimeout(() => { const el = document.getElementById("nodePassInput"); if (el) el.focus(); }, 50);
+        const confirmBtn = document.getElementById("confirmNodePassBtn");
+        const cancelBtn = document.getElementById("cancelNodePassModalBtn");
+        const closeBtn = document.getElementById("closeNodePassModalBtn");
+        function cleanup() {
+          modal.classList.add("hidden");
+          confirmBtn.removeEventListener("click", onConfirm);
+          cancelBtn.removeEventListener("click", onCancel);
+          closeBtn.removeEventListener("click", onCancel);
+          modal.removeEventListener("keydown", onKey);
+        }
+        function onConfirm() { const p = (document.getElementById("nodePassInput").value || "").trim(); cleanup(); resolve(p); }
+        function onCancel() { cleanup(); reject(new Error("cancelled")); }
+        function onKey(e) { if (e.key === "Enter") onConfirm(); if (e.key === "Escape") onCancel(); }
+        confirmBtn.addEventListener("click", onConfirm);
+        cancelBtn.addEventListener("click", onCancel);
+        closeBtn.addEventListener("click", onCancel);
+        modal.addEventListener("keydown", onKey);
+      });
+    }
+    function openNodeModal(node) {
+      const isEdit = !!node;
+      document.getElementById("nodeModalTitle").textContent = isEdit ? "Edit Node" : "Add Node";
+      document.getElementById("ndName").value = node ? (node.Name || "") : "";
+      document.getElementById("ndHost").value = node ? (node.Host || "") : "";
+      document.getElementById("ndRole").value = node ? (node.Role || "node") : "node";
+      document.getElementById("ndSSHUser").value = node ? (node.SSHUser || "") : "";
+      document.getElementById("ndSSHPort").value = node ? (node.SSHPort || 22) : 22;
+      document.getElementById("ndPassword").value = "";
+      const pwRow = document.getElementById("ndPasswordRow");
+      if (pwRow) pwRow.classList.toggle("hidden", isEdit);
+      const modal = document.getElementById("nodeModal");
+      modal.setAttribute("data-node-id", node ? (node.ID || "") : "");
+      modal.setAttribute("data-node-version", node ? (node.Version || "") : "");
+      modal.classList.remove("hidden");
+      setTimeout(() => { const el = document.getElementById("ndName"); if (el) el.focus(); }, 50);
+    }
+    function closeNodeModal() {
+      document.getElementById("nodeModal").classList.add("hidden");
     }
     function syncOpFromSnapshot() {
       const status = String(snapshot?.OperationStatus || "");
@@ -2117,56 +2318,49 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           sshWarnEl.classList.add("hidden");
         }
       }
+      // Merge server-reported active jobs with client-side tracking.
+      nodes.forEach((n) => { if (n.JobID && !activeNodeJobs[n.ID]) activeNodeJobs[n.ID] = n.JobID; });
       document.getElementById("nodesBody").innerHTML = nodes.map((n) => {
-        let dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);margin-right:6px;vertical-align:middle" title="never synced"></span>';
-        if (n.SyncOK === true) dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#4caf50;margin-right:6px;vertical-align:middle" title="last sync OK"></span>';
-        if (n.SyncOK === false) dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f44336;margin-right:6px;vertical-align:middle" title="last sync failed: '+esc(n.SyncMsg || "")+'"></span>';
-        return '<tr>' +
-          '<td><input type="text" data-node-name="'+esc(n.ID)+'" value="'+esc(n.Name)+'"></td>' +
-          '<td>'+dot+'<input type="text" data-node-host="'+esc(n.ID)+'" value="'+esc(n.Host)+'" style="display:inline-block;width:calc(100% - 20px)"></td>' +
-          '<td><select data-node-role="'+esc(n.ID)+'"><option value="primary"'+(String(n.Role) === "primary" ? " selected" : "")+'>primary</option><option value="node"'+(String(n.Role) === "node" ? " selected" : "")+'>node</option></select></td>' +
-          '<td>'+ (n.Enabled ? "yes" : "no") +'</td>' +
+        const running = !!activeNodeJobs[n.ID];
+        let syncBadge = '<span style="color:var(--muted)">—</span>';
+        if (running) {
+          syncBadge = '<span style="display:inline-flex;align-items:center;gap:5px;color:var(--ok)">' +
+            '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);animation:pulse 1.2s ease-in-out infinite"></span>running…</span>';
+        } else if (n.SyncOK === true) {
+          syncBadge = '<span style="color:var(--ok)" title="last sync OK">✓ ok</span>';
+        } else if (n.SyncOK === false) {
+          syncBadge = '<span style="color:var(--err)" title="'+esc(n.SyncMsg || "")+'">✗ error</span>';
+        }
+        const dis = running ? ' disabled' : '';
+        return '<tr id="nrow-'+esc(n.ID)+'">' +
+          '<td>'+esc(n.Name)+'</td>' +
+          '<td>'+esc(n.Host)+'</td>' +
+          '<td><span class="muted">'+esc(n.Role)+'</span></td>' +
+          '<td>'+syncBadge+'</td>' +
           '<td class="row">' +
-            '<button class="btn secondary" data-node-save-id="'+esc(n.ID)+'" data-node-save-version="'+esc(n.Version)+'">save</button>' +
-            '<button class="btn secondary" data-node-test-id="'+esc(n.ID)+'" data-node-test-version="'+esc(n.Version)+'">test</button>' +
-            '<button class="btn secondary" data-node-sshkey-id="'+esc(n.ID)+'" data-node-sshkey-version="'+esc(n.Version)+'">setup ssh key</button>' +
-            '<button class="btn secondary" data-node-bootstrap-id="'+esc(n.ID)+'" data-node-bootstrap-version="'+esc(n.Version)+'">bootstrap</button>' +
-            '<button class="btn '+(n.Enabled ? 'warn' : '')+'" data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
-            '<button class="btn err" data-node-id="'+esc(n.ID)+'" data-node-version="'+esc(n.Version)+'">delete</button>' +
+            '<button class="btn secondary" data-node-edit-id="'+esc(n.ID)+'">edit</button>' +
+            '<button class="btn secondary"'+dis+' data-node-test-id="'+esc(n.ID)+'" data-node-test-version="'+esc(n.Version)+'">test</button>' +
+            '<button class="btn secondary"'+dis+' data-node-sshkey-id="'+esc(n.ID)+'" data-node-sshkey-version="'+esc(n.Version)+'">setup ssh key</button>' +
+            '<button class="btn secondary"'+dis+' data-node-bootstrap-id="'+esc(n.ID)+'" data-node-bootstrap-version="'+esc(n.Version)+'">bootstrap</button>' +
+            '<button class="btn '+(n.Enabled ? 'warn' : '')+'"'+dis+' data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
+            '<button class="btn err"'+dis+' data-node-delete-id="'+esc(n.ID)+'" data-node-delete-version="'+esc(n.Version)+'">delete</button>' +
           '</td>' +
         '</tr>';
       }).join("");
-      document.querySelectorAll("[data-node-save-id]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          try {
-            const id = btn.getAttribute("data-node-save-id") || "";
-            const nameEl = document.querySelector('[data-node-name="'+id+'"]');
-            const hostEl = document.querySelector('[data-node-host="'+id+'"]');
-            const roleEl = document.querySelector('[data-node-role="'+id+'"]');
-            const name = (nameEl && nameEl.value ? nameEl.value : "").trim();
-            const host = (hostEl && hostEl.value ? hostEl.value : "").trim();
-            const role = (roleEl && roleEl.value ? roleEl.value : "").trim();
-            if (!id || !name || !host || !role) return;
-            await postForm(cfg.nodesActionPath, {
-              op: "update",
-              node_id: id,
-              version: btn.getAttribute("data-node-save-version"),
-              name,
-              host,
-              role,
-            });
-          } catch (e) {
-            showOp("error", String(e));
-          }
+      document.querySelectorAll("[data-node-edit-id]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const nodeID = (btn.getAttribute("data-node-edit-id") || "").trim();
+          const node = nodes.find((n) => String(n.ID || "").trim() === nodeID);
+          if (node) openNodeModal(node);
         });
       });
-      document.querySelectorAll("[data-node-id]").forEach((btn) => {
+      document.querySelectorAll("[data-node-delete-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           try {
             await postForm(cfg.nodesActionPath, {
               op: "delete",
-              node_id: btn.getAttribute("data-node-id"),
-              version: btn.getAttribute("data-node-version"),
+              node_id: btn.getAttribute("data-node-delete-id"),
+              version: btn.getAttribute("data-node-delete-version"),
             });
           } catch (e) {
             showOp("error", String(e));
@@ -2194,7 +2388,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
             const nodeName = String(rowNode?.Name || nodeID || "node").trim();
             const nodeHost = String(rowNode?.Host || "").trim();
             const nodeLabel = nodeHost ? (nodeName + " (" + nodeHost + ")") : nodeName;
-            const sshPassword = window.prompt("Root password for node bootstrap: " + nodeLabel + " (optional if SSH key already works):", "") || "";
+            const sshPassword = await promptNodePass("Bootstrap Node", "SSH password for " + nodeLabel + " (leave empty if key auth works):");
             await postForm(cfg.nodesActionPath, {
               op: "bootstrap",
               node_id: nodeID,
@@ -2202,6 +2396,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
               ssh_password: sshPassword,
             });
           } catch (e) {
+            if (String(e).includes("cancelled")) return;
             showOp("error", String(e));
           }
         });
@@ -2214,7 +2409,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
             const nodeName = String(rowNode?.Name || nodeID || "node").trim();
             const nodeHost = String(rowNode?.Host || "").trim();
             const nodeLabel = nodeHost ? (nodeName + " (" + nodeHost + ")") : nodeName;
-            const sshPassword = window.prompt("Root password for SSH key setup on node: " + nodeLabel + " (optional if key auth already works):", "") || "";
+            const sshPassword = await promptNodePass("Setup SSH Key", "SSH password for " + nodeLabel + " (leave empty if key auth already works):");
             await postForm(cfg.nodesActionPath, {
               op: "install_ssh_key",
               node_id: nodeID,
@@ -2222,6 +2417,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
               ssh_password: sshPassword,
             });
           } catch (e) {
+            if (String(e).includes("cancelled")) return;
             showOp("error", String(e));
           }
         });
@@ -2447,15 +2643,30 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         showOp("error", String(e));
       }
     });
-    document.getElementById("createNodeBtn").addEventListener("click", async () => {
-      const name = (document.getElementById("nodeName").value || "").trim();
-      const host = (document.getElementById("nodeHost").value || "").trim();
-      const role = (document.getElementById("nodeRole").value || "").trim();
-      if (!name || !host) return;
+    document.getElementById("openAddNodeBtn").addEventListener("click", () => openNodeModal(null));
+    document.getElementById("closeNodeModalBtn").addEventListener("click", closeNodeModal);
+    document.getElementById("cancelNodeModalBtn").addEventListener("click", closeNodeModal);
+    document.getElementById("nodeModal").addEventListener("click", (e) => {
+      if (e.target === document.getElementById("nodeModal")) closeNodeModal();
+    });
+    document.getElementById("saveNodeBtn").addEventListener("click", async () => {
+      const modal = document.getElementById("nodeModal");
+      const nodeID = (modal.getAttribute("data-node-id") || "").trim();
+      const version = (modal.getAttribute("data-node-version") || "").trim();
+      const name = (document.getElementById("ndName").value || "").trim();
+      const host = (document.getElementById("ndHost").value || "").trim();
+      const role = (document.getElementById("ndRole").value || "node").trim();
+      const sshUser = (document.getElementById("ndSSHUser").value || "").trim();
+      const sshPort = (document.getElementById("ndSSHPort").value || "22").trim();
+      const password = (document.getElementById("ndPassword").value || "").trim();
+      if (!name || !host) { showOp("error", "name and host are required"); return; }
+      closeNodeModal();
       try {
-        await postForm(cfg.nodesActionPath, { op: "create", name, host, role });
-        document.getElementById("nodeName").value = "";
-        document.getElementById("nodeHost").value = "";
+        if (nodeID) {
+          await postForm(cfg.nodesActionPath, { op: "update", node_id: nodeID, version, name, host, role, ssh_user: sshUser, ssh_port: sshPort });
+        } else {
+          await postForm(cfg.nodesActionPath, { op: "create", name, host, role, ssh_user: sshUser, ssh_port: sshPort, ssh_password: password });
+        }
       } catch (e) {
         showOp("error", String(e));
       }
@@ -2818,6 +3029,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			inboundsPath := panelJoin(basePath, "legacy/inbounds")
 			subsPath := panelJoin(basePath, "legacy/subscriptions")
 			apiSnapshotPath := panelJoin(basePath, "api/snapshot")
+			nodeJobsPath := panelJoin(basePath, "api/node-jobs")
 			dashboardActionPath := panelJoin(basePath, "actions")
 			settingsActionPath := panelJoin(basePath, "settings/action")
 			usersActionPath := panelJoin(basePath, "users/action")
@@ -3008,10 +3220,53 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-				if err := panelHandleNodeAction(r.Context(), resolvedDB, r, &configPathValue, &dbPathValue, ops); err != nil {
-					ops.set("error", err.Error())
+				jobID, nodeID, nodeErr := panelHandleNodeAction(r.Context(), resolvedDB, r, &configPathValue, &dbPathValue, ops)
+				if nodeErr != nil {
+					ops.set("error", nodeErr.Error())
 				}
-				panelRespondAction(w, r, legacyDashboardPath, ops)
+				if panelWantsJSON(r) {
+					status, message, at := ops.snapshot()
+					resp := map[string]interface{}{
+						"status":  status,
+						"message": message,
+						"at":      at,
+					}
+					if jobID != "" {
+						resp["job_id"] = jobID
+					}
+					if nodeID != "" {
+						resp["node_id"] = nodeID
+					}
+					panelWriteJSON(w, http.StatusOK, resp)
+					return
+				}
+				http.Redirect(w, r, legacyDashboardPath, http.StatusSeeOther)
+			})
+			panelMux.HandleFunc(nodeJobsPath, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				id := strings.TrimSpace(r.URL.Query().Get("id"))
+				if id == "" {
+					http.Error(w, "id required", http.StatusBadRequest)
+					return
+				}
+				v, ok := panelNodeJobs.Load(id)
+				if !ok {
+					panelWriteJSON(w, http.StatusNotFound, map[string]interface{}{"error": "job not found"})
+					return
+				}
+				j := v.(*nodeJob)
+				done, jok, msg := j.jobStatus()
+				panelWriteJSON(w, http.StatusOK, map[string]interface{}{
+					"id":     j.id,
+					"nodeID": j.nodeID,
+					"op":     j.op,
+					"done":   done,
+					"ok":     jok,
+					"msg":    msg,
+				})
 			})
 			panelMux.HandleFunc(inboundsActionPath, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -3646,6 +3901,8 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			Name:    node.Name,
 			Host:    node.Host,
 			Role:    string(node.Role),
+			SSHUser: node.SSHUser,
+			SSHPort: node.SSHPort,
 			Enabled: node.Enabled,
 			Version: panelNodeVersion(node),
 		}
@@ -3653,6 +3910,9 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			okVal := ok
 			nv.SyncOK = &okVal
 			nv.SyncMsg = msg
+		}
+		if j := getActiveJobForNode(node.ID); j != nil {
+			nv.JobID = j.id
 		}
 		nodeRows = append(nodeRows, nv)
 	}
@@ -4481,10 +4741,19 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 		}
 		targeted++
 
+		// Per-node SSH overrides take priority over env-based defaults.
+		nodeOpts := settings.opts
+		if node.SSHUser != "" {
+			nodeOpts.sshUser = node.SSHUser
+		}
+		if node.SSHPort > 0 {
+			nodeOpts.sshPort = node.SSHPort
+		}
+
 		nodeInbounds := append([]domain.Inbound(nil), inboundsByNode[node.ID]...)
 		sort.Slice(nodeInbounds, func(i, j int) bool { return nodeInbounds[i].ID < nodeInbounds[j].ID })
 		if len(nodeInbounds) == 0 {
-			if _, err := cleanupSingleNodeRuntime(ctx, node, settings.opts, appCfg); err != nil {
+			if _, err := cleanupSingleNodeRuntime(ctx, node, nodeOpts, appCfg); err != nil {
 				setNodeSyncStatus(node.ID, false, err.Error())
 				return synced, cleaned, err
 			}
@@ -4505,7 +4774,7 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 			Node:        node,
 			Inbounds:    nodeInbounds,
 			Credentials: nodeCredentials,
-		}, settings.opts, appCfg); err != nil {
+		}, nodeOpts, appCfg); err != nil {
 			setNodeSyncStatus(node.ID, false, err.Error())
 			return synced, cleaned, err
 		}
@@ -4552,6 +4821,12 @@ func panelTestNodeConnectivityWithPassword(ctx context.Context, node domain.Node
 	if strings.TrimSpace(sshPassword) != "" {
 		settings.opts.sshPassword = strings.TrimSpace(sshPassword)
 	}
+	if node.SSHUser != "" {
+		settings.opts.sshUser = node.SSHUser
+	}
+	if node.SSHPort > 0 {
+		settings.opts.sshPort = node.SSHPort
+	}
 	if _, err := lookPath("ssh"); err != nil {
 		return fmt.Errorf("ssh client is required: %w", err)
 	}
@@ -4583,6 +4858,12 @@ func panelEnsureProxyctlOnNode(ctx context.Context, configPath string, node doma
 	}
 	if strings.TrimSpace(sshPassword) != "" {
 		settings.opts.sshPassword = strings.TrimSpace(sshPassword)
+	}
+	if node.SSHUser != "" {
+		settings.opts.sshUser = node.SSHUser
+	}
+	if node.SSHPort > 0 {
+		settings.opts.sshPort = node.SSHPort
 	}
 	if node.Role != domain.NodeRoleNode || !node.Enabled {
 		return nil
@@ -4634,6 +4915,12 @@ func panelInstallSSHKeyOnNode(ctx context.Context, node domain.Node, sshPassword
 	}
 	if !settings.enabled {
 		return false, "", fmt.Errorf("%s=0, auto-node-sync is disabled", panelEnvAutoNodeSyncEnabled)
+	}
+	if node.SSHUser != "" {
+		settings.opts.sshUser = node.SSHUser
+	}
+	if node.SSHPort > 0 {
+		settings.opts.sshPort = node.SSHPort
 	}
 	if _, err := lookPath("ssh"); err != nil {
 		return false, "", fmt.Errorf("ssh client is required for ssh key setup: %w", err)
@@ -5076,18 +5363,20 @@ func panelSyncErrMissingCredentials(err error) bool {
 		strings.Contains(msg, "requires at least one password credential")
 }
 
-func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, configPath, dbPathFlag *string, ops *panelOperationFeed) error {
+// panelHandleNodeAction handles node CRUD and SSH operations.
+// Returns (jobID, nodeID, error): jobID is non-empty when a background job was started.
+func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, configPath, dbPathFlag *string, ops *panelOperationFeed) (string, string, error) {
 	if err := r.ParseForm(); err != nil {
-		return fmt.Errorf("invalid node action request")
+		return "", "", fmt.Errorf("invalid node action request")
 	}
 	action := strings.TrimSpace(r.FormValue("op"))
 	if action == "" {
-		return fmt.Errorf("node action is required")
+		return "", "", fmt.Errorf("node action is required")
 	}
 
 	store, err := openStoreWithInit(ctx, dbPath)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	defer store.Close()
 
@@ -5096,11 +5385,17 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		name := strings.TrimSpace(r.FormValue("name"))
 		host := strings.TrimSpace(r.FormValue("host"))
 		roleRaw := strings.ToLower(strings.TrimSpace(r.FormValue("role")))
+		sshUser := strings.TrimSpace(r.FormValue("ssh_user"))
+		sshPort := 22
+		if p, pErr := strconv.Atoi(strings.TrimSpace(r.FormValue("ssh_port"))); pErr == nil && p > 0 && p < 65536 {
+			sshPort = p
+		}
+		sshPassword := strings.TrimSpace(r.FormValue("ssh_password"))
 		if name == "" {
-			return fmt.Errorf("node name is required")
+			return "", "", fmt.Errorf("node name is required")
 		}
 		if host == "" {
-			return fmt.Errorf("node host is required")
+			return "", "", fmt.Errorf("node host is required")
 		}
 		role := domain.NodeRoleNode
 		if roleRaw == "" || roleRaw == string(domain.NodeRolePrimary) {
@@ -5110,37 +5405,45 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			Name:    name,
 			Host:    host,
 			Role:    role,
+			SSHUser: sshUser,
+			SSHPort: sshPort,
 			Enabled: true,
 		})
 		if err != nil {
-			return fmt.Errorf("create node: %w", err)
+			return "", "", fmt.Errorf("create node: %w", err)
 		}
 		if created.Role == domain.NodeRoleNode && created.Enabled {
-			if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), created, ""); bootErr != nil {
-				ops.set("error", fmt.Sprintf("node created (%s), but remote bootstrap failed: %v", created.Name, bootErr))
-				return nil
-			}
-			if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{created.ID}); syncErr != nil {
-				ops.set("error", fmt.Sprintf("node created (%s), bootstrap ok, but node sync failed: %v", created.Name, syncErr))
-				return nil
-			} else if synced > 0 || cleaned > 0 {
-				ops.set("ok", fmt.Sprintf("node created: %s (%s) | bootstrap ok | node sync: synced=%d cleaned=%d", created.Name, created.Host, synced, cleaned))
-				return nil
-			}
-			ops.set("ok", fmt.Sprintf("node created: %s (%s) | bootstrap ok", created.Name, created.Host))
-			return nil
+			job := newNodeJob(created.ID, "bootstrap")
+			cp := strings.TrimSpace(*configPath)
+			go func() {
+				if bootErr := panelEnsureProxyctlOnNode(context.Background(), cp, created, sshPassword); bootErr != nil {
+					job.finish(false, fmt.Sprintf("node created (%s), bootstrap failed: %v", created.Name, bootErr))
+					return
+				}
+				if synced, cleaned, syncErr := panelSyncWorkerNodesByIDsWithPassword(context.Background(), dbPath, cp, []string{created.ID}, sshPassword); syncErr != nil {
+					job.finish(false, fmt.Sprintf("node created (%s), bootstrap ok, sync failed: %v", created.Name, syncErr))
+					return
+				} else if synced > 0 || cleaned > 0 {
+					job.finish(true, fmt.Sprintf("node created: %s (%s) | bootstrap ok | synced=%d cleaned=%d", created.Name, created.Host, synced, cleaned))
+					return
+				}
+				job.finish(true, fmt.Sprintf("node created: %s (%s) | bootstrap ok", created.Name, created.Host))
+			}()
+			ops.set("ok", fmt.Sprintf("node created: %s — bootstrap running in background", created.Name))
+			return job.id, created.ID, nil
 		}
 		ops.set("ok", fmt.Sprintf("node created: %s (%s)", created.Name, created.Host))
-		return nil
+		return "", created.ID, nil
+
 	case "install_ssh_key", "bootstrap", "test", "set_enabled", "update", "delete":
 		nodeID := strings.TrimSpace(r.FormValue("node_id"))
 		version := strings.TrimSpace(r.FormValue("version"))
 		if nodeID == "" {
-			return fmt.Errorf("node id is required")
+			return "", "", fmt.Errorf("node id is required")
 		}
 		nodes, err := store.Nodes().List(ctx)
 		if err != nil {
-			return fmt.Errorf("list nodes: %w", err)
+			return "", "", fmt.Errorf("list nodes: %w", err)
 		}
 		var current domain.Node
 		found := false
@@ -5152,84 +5455,95 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			}
 		}
 		if !found {
-			return fmt.Errorf("node %q not found", nodeID)
+			return "", "", fmt.Errorf("node %q not found", nodeID)
 		}
 		if version != panelNodeVersion(current) {
-			return fmt.Errorf("node %q changed since page load; refresh and retry", nodeID)
+			return "", "", fmt.Errorf("node %q changed since page load; refresh and retry", nodeID)
 		}
 		if action == "install_ssh_key" {
 			if current.Role == domain.NodeRolePrimary {
 				ops.set("ok", fmt.Sprintf("ssh key setup skipped: %s (%s) is primary", current.Name, current.Host))
-				return nil
+				return "", "", nil
 			}
 			sshPassword := strings.TrimSpace(r.FormValue("ssh_password"))
-			generated, keyPath, keyErr := panelInstallSSHKeyOnNode(ctx, current, sshPassword)
-			if keyErr != nil {
-				ops.set("error", fmt.Sprintf("ssh key setup failed: %s (%s) | %v", current.Name, current.Host, keyErr))
-				return nil
-			}
-			extra := ""
-			if generated {
-				extra = " | ssh key generated: " + keyPath
-			}
-			ops.set("ok", fmt.Sprintf("ssh key setup ok: %s (%s)%s", current.Name, current.Host, extra))
-			return nil
+			job := newNodeJob(current.ID, "install_ssh_key")
+			snapNode := current
+			go func() {
+				generated, keyPath, keyErr := panelInstallSSHKeyOnNode(context.Background(), snapNode, sshPassword)
+				if keyErr != nil {
+					job.finish(false, fmt.Sprintf("ssh key setup failed: %s (%s) | %v", snapNode.Name, snapNode.Host, keyErr))
+					return
+				}
+				extra := ""
+				if generated {
+					extra = " | key generated: " + keyPath
+				}
+				job.finish(true, fmt.Sprintf("ssh key setup ok: %s (%s)%s", snapNode.Name, snapNode.Host, extra))
+			}()
+			ops.set("ok", fmt.Sprintf("ssh key setup started for %s — running in background", current.Name))
+			return job.id, "", nil
 		}
 		if action == "bootstrap" {
 			if current.Role == domain.NodeRolePrimary {
 				ops.set("ok", fmt.Sprintf("node bootstrap skipped: %s (%s) is primary", current.Name, current.Host))
-				return nil
+				return "", "", nil
 			}
 			sshPassword := strings.TrimSpace(r.FormValue("ssh_password"))
-			if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), current, sshPassword); bootErr != nil {
-				ops.set("error", fmt.Sprintf("node bootstrap failed: %s (%s) | %v", current.Name, current.Host, bootErr))
-				return nil
-			}
-			if testErr := panelTestNodeConnectivityWithPassword(ctx, current, sshPassword); testErr != nil {
-				ops.set("error", fmt.Sprintf("node bootstrap completed, but test failed: %s (%s) | %v", current.Name, current.Host, testErr))
-				return nil
-			}
-			if synced, cleaned, syncErr := panelSyncWorkerNodesByIDsWithPassword(ctx, dbPath, strings.TrimSpace(*configPath), []string{current.ID}, sshPassword); syncErr != nil {
-				ops.set("error", fmt.Sprintf("node bootstrap completed (%s), but node sync failed: %v", current.ID, syncErr))
-				return nil
-			} else if synced > 0 || cleaned > 0 {
-				ops.set("ok", fmt.Sprintf("node bootstrap ok: %s (%s) | node sync: synced=%d cleaned=%d", current.Name, current.Host, synced, cleaned))
-				return nil
-			}
-			ops.set("ok", fmt.Sprintf("node bootstrap ok: %s (%s)", current.Name, current.Host))
-			return nil
+			job := newNodeJob(current.ID, "bootstrap")
+			snapNode := current
+			cp := strings.TrimSpace(*configPath)
+			go func() {
+				if bootErr := panelEnsureProxyctlOnNode(context.Background(), cp, snapNode, sshPassword); bootErr != nil {
+					job.finish(false, fmt.Sprintf("bootstrap failed: %s (%s) | %v", snapNode.Name, snapNode.Host, bootErr))
+					return
+				}
+				if testErr := panelTestNodeConnectivityWithPassword(context.Background(), snapNode, sshPassword); testErr != nil {
+					job.finish(false, fmt.Sprintf("bootstrap ok, but test failed: %s (%s) | %v", snapNode.Name, snapNode.Host, testErr))
+					return
+				}
+				if synced, cleaned, syncErr := panelSyncWorkerNodesByIDsWithPassword(context.Background(), dbPath, cp, []string{snapNode.ID}, sshPassword); syncErr != nil {
+					job.finish(false, fmt.Sprintf("bootstrap ok (%s), sync failed: %v", snapNode.Name, syncErr))
+					return
+				} else if synced > 0 || cleaned > 0 {
+					job.finish(true, fmt.Sprintf("bootstrap ok: %s (%s) | synced=%d cleaned=%d", snapNode.Name, snapNode.Host, synced, cleaned))
+					return
+				}
+				job.finish(true, fmt.Sprintf("bootstrap ok: %s (%s)", snapNode.Name, snapNode.Host))
+			}()
+			ops.set("ok", fmt.Sprintf("bootstrap started for %s — running in background", current.Name))
+			return job.id, "", nil
 		}
 		if action == "test" {
 			if current.Role == domain.NodeRolePrimary {
 				ops.set("ok", fmt.Sprintf("node test ok: %s (%s) | primary node: local control-plane check (ssh skipped)", current.Name, current.Host))
-				return nil
+				return "", "", nil
 			}
 			if testErr := panelTestNodeConnectivityWithPassword(ctx, current, ""); testErr != nil {
 				msg := strings.ToLower(strings.TrimSpace(testErr.Error()))
 				if strings.Contains(msg, "proxyctl is not installed") {
 					if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), current, ""); bootErr != nil {
 						ops.set("error", fmt.Sprintf("node test failed: %s (%s) | proxyctl missing and bootstrap failed: %v", current.Name, current.Host, bootErr))
-						return nil
+						return "", "", nil
 					}
 					if recheckErr := panelTestNodeConnectivityWithPassword(ctx, current, ""); recheckErr != nil {
 						ops.set("error", fmt.Sprintf("node test failed after bootstrap: %s (%s) | %v", current.Name, current.Host, recheckErr))
-						return nil
+						return "", "", nil
 					}
 					if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{current.ID}); syncErr != nil {
 						ops.set("error", fmt.Sprintf("node test ok after bootstrap (%s), but node sync failed: %v", current.ID, syncErr))
-						return nil
+						return "", "", nil
 					} else if synced > 0 || cleaned > 0 {
 						ops.set("ok", fmt.Sprintf("node test ok: %s (%s) | proxyctl bootstrap completed | node sync: synced=%d cleaned=%d", current.Name, current.Host, synced, cleaned))
-						return nil
+						return "", "", nil
 					}
 					ops.set("ok", fmt.Sprintf("node test ok: %s (%s) | proxyctl bootstrap completed", current.Name, current.Host))
-					return nil
+					return "", "", nil
 				}
 				ops.set("error", fmt.Sprintf("node test failed: %s (%s) | %v", current.Name, current.Host, testErr))
-				return nil
+				return "", "", nil
 			}
 			ops.set("ok", fmt.Sprintf("node test ok: %s (%s)", current.Name, current.Host))
-			return nil
+			return "", "", nil
 		}
 
 		if action == "delete" {
@@ -5241,41 +5555,46 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			}
 			deleted, err := store.Nodes().Delete(ctx, nodeID)
 			if err != nil {
-				return fmt.Errorf("delete node: %w", err)
+				return "", "", fmt.Errorf("delete node: %w", err)
 			}
 			if !deleted {
-				return fmt.Errorf("node %q not found", nodeID)
+				return "", "", fmt.Errorf("node %q not found", nodeID)
 			}
 			out, refreshErr := panelRefreshAllSubscriptions(ctx, configPath, dbPathFlag)
 			if refreshErr != nil {
 				if cleanupWarning != "" {
 					ops.set("error", fmt.Sprintf("node deleted (%s), but remote cleanup failed: %s; subscription refresh failed: %s", nodeID, cleanupWarning, panelErrWithOutput(refreshErr, out)))
-					return nil
+					return "", "", nil
 				}
 				ops.set("error", fmt.Sprintf("node deleted (%s), but subscription refresh failed: %s", nodeID, panelErrWithOutput(refreshErr, out)))
-				return nil
+				return "", "", nil
 			}
 			if current.Role == domain.NodeRoleNode {
 				if cleanupWarning != "" {
 					ops.set("ok", fmt.Sprintf("node deleted: %s | warning: remote runtime cleanup failed: %s | subscriptions refreshed: %s", nodeID, cleanupWarning, panelSummarizeOutput(out)))
-					return nil
+					return "", "", nil
 				}
 				ops.set("ok", fmt.Sprintf("node deleted: %s | remote runtime cleaned | subscriptions refreshed: %s", nodeID, panelSummarizeOutput(out)))
-				return nil
+				return "", "", nil
 			}
 			ops.set("ok", fmt.Sprintf("node deleted: %s | subscriptions refreshed: %s", nodeID, panelSummarizeOutput(out)))
-			return nil
+			return "", "", nil
 		}
 		if action == "update" {
 			prevRole := current.Role
 			name := strings.TrimSpace(r.FormValue("name"))
 			host := strings.TrimSpace(r.FormValue("host"))
 			roleRaw := strings.ToLower(strings.TrimSpace(r.FormValue("role")))
+			sshUser := strings.TrimSpace(r.FormValue("ssh_user"))
+			sshPort := current.SSHPort
+			if p, pErr := strconv.Atoi(strings.TrimSpace(r.FormValue("ssh_port"))); pErr == nil && p > 0 && p < 65536 {
+				sshPort = p
+			}
 			if name == "" {
-				return fmt.Errorf("node name is required")
+				return "", "", fmt.Errorf("node name is required")
 			}
 			if host == "" {
-				return fmt.Errorf("node host is required")
+				return "", "", fmt.Errorf("node host is required")
 			}
 			role := domain.NodeRoleNode
 			if roleRaw == "" || roleRaw == string(domain.NodeRolePrimary) {
@@ -5284,69 +5603,71 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			current.Name = name
 			current.Host = host
 			current.Role = role
+			current.SSHUser = sshUser
+			current.SSHPort = sshPort
 			updated, err := store.Nodes().Update(ctx, current)
 			if err != nil {
-				return fmt.Errorf("update node: %w", err)
+				return "", "", fmt.Errorf("update node: %w", err)
 			}
 			if updated.Role == domain.NodeRoleNode && updated.Enabled {
 				if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), updated, ""); bootErr != nil {
 					ops.set("error", fmt.Sprintf("node updated (%s), but remote bootstrap failed: %v", updated.ID, bootErr))
-					return nil
+					return "", "", nil
 				}
 				if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{updated.ID}); syncErr != nil {
 					ops.set("error", fmt.Sprintf("node updated (%s), but node sync failed: %v", updated.ID, syncErr))
-					return nil
+					return "", "", nil
 				} else if synced > 0 || cleaned > 0 {
 					ops.set("ok", fmt.Sprintf("node updated: %s (%s) | node sync: synced=%d cleaned=%d", updated.Name, updated.Host, synced, cleaned))
-					return nil
+					return "", "", nil
 				}
 			}
 			if prevRole == domain.NodeRoleNode && (updated.Role != domain.NodeRoleNode || !updated.Enabled) {
 				if cleanupErr := panelCleanupNodeRuntime(ctx, strings.TrimSpace(*configPath), updated); cleanupErr != nil {
 					ops.set("error", fmt.Sprintf("node updated (%s), but runtime cleanup failed: %v", updated.ID, cleanupErr))
-					return nil
+					return "", "", nil
 				}
 				ops.set("ok", fmt.Sprintf("node updated: %s (%s) | remote runtime cleaned", updated.Name, updated.Host))
-				return nil
+				return "", "", nil
 			}
 			ops.set("ok", fmt.Sprintf("node updated: %s (%s)", updated.Name, updated.Host))
-			return nil
+			return "", "", nil
 		}
 
 		current.Enabled = panelFormBool(r.FormValue("enabled"))
 		updated, err := store.Nodes().Update(ctx, current)
 		if err != nil {
-			return fmt.Errorf("set node enabled: %w", err)
+			return "", "", fmt.Errorf("set node enabled: %w", err)
 		}
 		if updated.Enabled && updated.Role == domain.NodeRoleNode {
 			if bootErr := panelEnsureProxyctlOnNode(ctx, strings.TrimSpace(*configPath), updated, ""); bootErr != nil {
 				ops.set("error", fmt.Sprintf("node enabled (%s), but remote bootstrap failed: %v", updated.ID, bootErr))
-				return nil
+				return "", "", nil
 			}
 			if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{updated.ID}); syncErr != nil {
 				ops.set("error", fmt.Sprintf("node enabled (%s), but node sync failed: %v", updated.ID, syncErr))
-				return nil
+				return "", "", nil
 			} else if synced > 0 || cleaned > 0 {
 				ops.set("ok", fmt.Sprintf("node enabled: %s | node sync: synced=%d cleaned=%d", updated.Name, synced, cleaned))
-				return nil
+				return "", "", nil
 			}
 		}
 		if !updated.Enabled && updated.Role == domain.NodeRoleNode {
 			if cleanupErr := panelCleanupNodeRuntime(ctx, strings.TrimSpace(*configPath), updated); cleanupErr != nil {
 				ops.set("error", fmt.Sprintf("node disabled (%s), but runtime cleanup failed: %v", updated.ID, cleanupErr))
-				return nil
+				return "", "", nil
 			}
 			ops.set("ok", fmt.Sprintf("node disabled: %s | remote runtime cleaned", updated.Name))
-			return nil
+			return "", "", nil
 		}
 		state := "disabled"
 		if updated.Enabled {
 			state = "enabled"
 		}
 		ops.set("ok", fmt.Sprintf("node %s: %s", state, updated.Name))
-		return nil
+		return "", "", nil
 	default:
-		return fmt.Errorf("unknown node action")
+		return "", "", fmt.Errorf("unknown node action")
 	}
 }
 
@@ -5671,6 +5992,8 @@ func panelNodeVersion(node domain.Node) string {
 		strings.TrimSpace(node.Name),
 		strings.TrimSpace(node.Host),
 		strings.TrimSpace(string(node.Role)),
+		strings.TrimSpace(node.SSHUser),
+		strconv.Itoa(node.SSHPort),
 		strconv.FormatBool(node.Enabled),
 		node.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}, "|")

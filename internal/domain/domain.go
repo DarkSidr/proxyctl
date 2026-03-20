@@ -66,6 +66,8 @@ type Node struct {
 	Name      string
 	Host      string
 	Role      NodeRole
+	SSHUser   string
+	SSHPort   int
 	Enabled   bool
 	CreatedAt time.Time
 }

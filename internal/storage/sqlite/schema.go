@@ -97,6 +97,8 @@ var schemaMigrations = []string{
 				SELECT 1 FROM nodes WHERE lower(trim(role)) = 'primary'
 			);
 		END`,
+	`ALTER TABLE nodes ADD COLUMN ssh_user TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE nodes ADD COLUMN ssh_port INTEGER NOT NULL DEFAULT 22`,
 	`CREATE TRIGGER IF NOT EXISTS trg_nodes_single_primary_update
 		BEFORE UPDATE ON nodes
 		FOR EACH ROW
