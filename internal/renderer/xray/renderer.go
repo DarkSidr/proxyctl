@@ -96,7 +96,7 @@ type inboundConfig struct {
 	Port           int              `json:"port"`
 	Protocol       string           `json:"protocol"`
 	Settings       inboundSettings  `json:"settings"`
-	StreamSettings streamSettings   `json:"streamSettings"`
+	StreamSettings *streamSettings  `json:"streamSettings,omitempty"`
 	Sniffing       *sniffingConfig  `json:"sniffing,omitempty"`
 	Allocate       *allocationHints `json:"allocate,omitempty"`
 }
@@ -297,7 +297,7 @@ func buildXHTTPInbound(node domain.Node, inbound domain.Inbound, credentials []d
 			Clients:    cfgClients,
 			Decryption: "none",
 		},
-		StreamSettings: streamSettings{
+		StreamSettings: &streamSettings{
 			Network:  "xhttp",
 			Security: security,
 			XHTTPSettings: &xhttpSettings{
@@ -409,7 +409,7 @@ func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []d
 			Clients:    cfgClients,
 			Decryption: "none",
 		},
-		StreamSettings: streamSettings{
+		StreamSettings: &streamSettings{
 			Network:         "tcp",
 			Security:        "reality",
 			RealitySettings: realityCfg,
