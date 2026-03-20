@@ -1229,6 +1229,13 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
             <input id="inRealitySpiderX" type="text" placeholder="/">
           </div>
           <div class="frow">
+            <span class="flabel"></span>
+            <div class="frow-inline" style="gap:8px">
+              <button type="button" id="inRealityGenKeys" class="btn secondary" style="font-size:0.82rem;padding:4px 12px">⚙ Generate Keys</button>
+              <button type="button" id="inRealityClearKeys" class="btn secondary" style="font-size:0.82rem;padding:4px 12px">✕ Clear</button>
+            </div>
+          </div>
+          <div class="frow">
             <span class="flabel">Public Key</span>
             <input id="inRealityPublicKey" type="text" placeholder="reality public key">
           </div>
@@ -1560,6 +1567,20 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (fpEl) fpEl.value = preset.fingerprint;
       updateDestServerFromTarget();
       updateInboundTargetToSni(false);
+    }
+    async function generateRealityKeyPair() {
+      const toBase64url = (bytes) =>
+        btoa(String.fromCharCode(...bytes))
+          .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+      const keyPair = await crypto.subtle.generateKey(
+        { name: "X25519" }, true, ["deriveKey", "deriveBits"]
+      );
+      const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
+      const privPkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
+      return {
+        publicKey: toBase64url(pubRaw),
+        privateKey: toBase64url(privPkcs8.slice(-32)),
+      };
     }
     function updateInboundAdvancedVisibility() {
       // no-op: advanced block replaced by modal layout
@@ -2548,6 +2569,25 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     });
     document.getElementById("inTargetRegen").addEventListener("click", () => {
       applyRealityPreset(pickRandomRealityPreset());
+    });
+    document.getElementById("inRealityGenKeys").addEventListener("click", async () => {
+      const btn = document.getElementById("inRealityGenKeys");
+      btn.disabled = true;
+      btn.textContent = "Generating…";
+      try {
+        const { publicKey, privateKey } = await generateRealityKeyPair();
+        document.getElementById("inRealityPublicKey").value = publicKey;
+        document.getElementById("inRealityPrivateKey").value = privateKey;
+      } catch (e) {
+        showOp("error", "Key generation failed: " + String(e));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "⚙ Generate Keys";
+      }
+    });
+    document.getElementById("inRealityClearKeys").addEventListener("click", () => {
+      document.getElementById("inRealityPublicKey").value = "";
+      document.getElementById("inRealityPrivateKey").value = "";
     });
     document.getElementById("inLinkTargetSni").addEventListener("change", () => {
       if (document.getElementById("inLinkTargetSni").checked) {
