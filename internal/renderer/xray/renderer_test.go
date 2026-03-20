@@ -80,23 +80,25 @@ func TestRenderBuildsXrayConfigAndClientArtifacts(t *testing.T) {
 	if err := json.Unmarshal(got.PreviewJSON, &cfg); err != nil {
 		t.Fatalf("unmarshal preview: %v", err)
 	}
-	if len(cfg.Inbounds) != 1 {
-		t.Fatalf("inbounds count = %d, want 1", len(cfg.Inbounds))
+	// xray-api-in is always appended; user inbounds come first.
+	if len(cfg.Inbounds) < 1 {
+		t.Fatalf("inbounds count = %d, want >= 1", len(cfg.Inbounds))
 	}
-	if cfg.Inbounds[0].Protocol != "vless" {
-		t.Fatalf("inbound protocol = %q, want vless", cfg.Inbounds[0].Protocol)
+	ib := cfg.Inbounds[0]
+	if ib.Protocol != "vless" {
+		t.Fatalf("inbound protocol = %q, want vless", ib.Protocol)
 	}
-	if cfg.Inbounds[0].StreamSettings.Network != "xhttp" {
-		t.Fatalf("stream network = %q, want xhttp", cfg.Inbounds[0].StreamSettings.Network)
+	if ib.StreamSettings.Network != "xhttp" {
+		t.Fatalf("stream network = %q, want xhttp", ib.StreamSettings.Network)
 	}
-	if cfg.Inbounds[0].StreamSettings.Security != "tls" {
-		t.Fatalf("stream security = %q, want tls", cfg.Inbounds[0].StreamSettings.Security)
+	if ib.StreamSettings.Security != "tls" {
+		t.Fatalf("stream security = %q, want tls", ib.StreamSettings.Security)
 	}
-	if len(cfg.Inbounds[0].StreamSettings.TLS.Certificates) != 1 {
-		t.Fatalf("tls certificates count = %d, want 1", len(cfg.Inbounds[0].StreamSettings.TLS.Certificates))
+	if len(ib.StreamSettings.TLS.Certificates) != 1 {
+		t.Fatalf("tls certificates count = %d, want 1", len(ib.StreamSettings.TLS.Certificates))
 	}
-	if cfg.Inbounds[0].StreamSettings.TLS.Certificates[0].CertificateFile != "/caddy/certificates/acme-v02.api.letsencrypt.org-directory/edge.example.com/edge.example.com.crt" {
-		t.Fatalf("certificateFile = %q, want default caddy path", cfg.Inbounds[0].StreamSettings.TLS.Certificates[0].CertificateFile)
+	if ib.StreamSettings.TLS.Certificates[0].CertificateFile != "/caddy/certificates/acme-v02.api.letsencrypt.org-directory/edge.example.com/edge.example.com.crt" {
+		t.Fatalf("certificateFile = %q, want default caddy path", ib.StreamSettings.TLS.Certificates[0].CertificateFile)
 	}
 	if cfg.Inbounds[0].StreamSettings.TLS.Certificates[0].KeyFile != "/caddy/certificates/acme-v02.api.letsencrypt.org-directory/edge.example.com/edge.example.com.key" {
 		t.Fatalf("keyFile = %q, want default caddy path", cfg.Inbounds[0].StreamSettings.TLS.Certificates[0].KeyFile)
@@ -228,17 +230,19 @@ func TestRenderBuildsVLESSRealityConfigAndClientArtifacts(t *testing.T) {
 	if err := json.Unmarshal(got.PreviewJSON, &cfg); err != nil {
 		t.Fatalf("unmarshal preview: %v", err)
 	}
-	if len(cfg.Inbounds) != 1 {
-		t.Fatalf("inbounds count = %d, want 1", len(cfg.Inbounds))
+	// xray-api-in is always appended; user inbounds come first.
+	if len(cfg.Inbounds) < 1 {
+		t.Fatalf("inbounds count = %d, want >= 1", len(cfg.Inbounds))
 	}
-	if cfg.Inbounds[0].Protocol != "vless" {
-		t.Fatalf("inbound protocol = %q, want vless", cfg.Inbounds[0].Protocol)
+	ib := cfg.Inbounds[0]
+	if ib.Protocol != "vless" {
+		t.Fatalf("inbound protocol = %q, want vless", ib.Protocol)
 	}
-	if cfg.Inbounds[0].StreamSettings.Network != "tcp" {
-		t.Fatalf("stream network = %q, want tcp", cfg.Inbounds[0].StreamSettings.Network)
+	if ib.StreamSettings.Network != "tcp" {
+		t.Fatalf("stream network = %q, want tcp", ib.StreamSettings.Network)
 	}
-	if cfg.Inbounds[0].StreamSettings.Security != "reality" {
-		t.Fatalf("stream security = %q, want reality", cfg.Inbounds[0].StreamSettings.Security)
+	if ib.StreamSettings.Security != "reality" {
+		t.Fatalf("stream security = %q, want reality", ib.StreamSettings.Security)
 	}
 }
 
