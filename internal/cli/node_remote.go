@@ -162,6 +162,9 @@ func newNodeSyncCmd(configPath, dbPath *string) *cobra.Command {
 			if strings.TrimSpace(runtimeDir) == "" {
 				return fmt.Errorf("--runtime-dir is required")
 			}
+			if !cmd.Flags().Changed("remote-sudo") {
+				remoteUseSudo = sshUser != "root"
+			}
 
 			appCfg, err := config.Load(*configPath)
 			if err != nil {
@@ -223,7 +226,7 @@ func newNodeSyncCmd(configPath, dbPath *string) *cobra.Command {
 	cmd.Flags().StringVar(&runtimeDir, "runtime-dir", "/etc/proxy-orchestrator/runtime", "Remote runtime directory for sing-box/xray configs")
 	cmd.Flags().BoolVar(&restart, "restart", true, "Restart required runtime services on remote nodes")
 	cmd.Flags().BoolVar(&strictHostKey, "strict-host-key", false, "Use strict SSH host key checking")
-	cmd.Flags().BoolVar(&remoteUseSudo, "remote-sudo", true, "Use sudo for remote file install and systemctl restart")
+	cmd.Flags().BoolVar(&remoteUseSudo, "remote-sudo", false, "Use sudo for remote file install and systemctl restart (default: auto, false when --ssh-user=root)")
 	return cmd
 }
 
