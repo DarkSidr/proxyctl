@@ -3439,28 +3439,28 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						ops.set("ok", "apply completed: "+panelSummarizeOutput(out))
 					}
 				case "reset_total_traffic":
-				rx, tx, err := panelNetTotals()
-				if err != nil {
-					ops.set("error", "reset traffic: "+err.Error())
-				} else {
-					dashMu.Lock()
-					trafResetRX = rx
-					trafResetTX = tx
-					dashMu.Unlock()
-					ops.set("ok", "traffic counters reset")
-				}
-			case "reset_user_traffic":
-				userID := strings.TrimSpace(r.FormValue("user_id"))
-				if err := panelResetUserTraffic(cfg.Paths.RuntimeDir, userID); err != nil {
-					ops.set("error", "reset user traffic: "+err.Error())
-				} else {
-					if userID == "" {
-						ops.set("ok", "all user traffic reset")
+					rx, tx, err := panelNetTotals()
+					if err != nil {
+						ops.set("error", "reset traffic: "+err.Error())
 					} else {
-						ops.set("ok", "user traffic reset: "+userID)
+						dashMu.Lock()
+						trafResetRX = rx
+						trafResetTX = tx
+						dashMu.Unlock()
+						ops.set("ok", "traffic counters reset")
 					}
-				}
-			case "restart_unit", "stop_unit", "start_unit":
+				case "reset_user_traffic":
+					userID := strings.TrimSpace(r.FormValue("user_id"))
+					if err := panelResetUserTraffic(cfg.Paths.RuntimeDir, userID); err != nil {
+						ops.set("error", "reset user traffic: "+err.Error())
+					} else {
+						if userID == "" {
+							ops.set("ok", "all user traffic reset")
+						} else {
+							ops.set("ok", "user traffic reset: "+userID)
+						}
+					}
+				case "restart_unit", "stop_unit", "start_unit":
 					unit := strings.TrimSpace(r.FormValue("unit"))
 					allowed := map[string]bool{
 						cfg.Runtime.XrayUnit:    true,
