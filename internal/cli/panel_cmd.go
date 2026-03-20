@@ -1895,8 +1895,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (sni) sni.value = "";
       const mode = document.getElementById("inMode");
       if (mode) mode.value = "basic";
-      const sec = document.getElementById("inSecurityMode");
-      if (sec) sec.value = "none";
+      setModalSecTab("none");
       const preset = document.getElementById("inBrowserPreset");
       if (preset) preset.value = "";
       const realityServer = document.getElementById("inRealityServer");

@@ -405,19 +405,14 @@ func cleanupSingleNodeRuntime(ctx context.Context, node domain.Node, opts nodeSy
 }
 
 func requiredRuntimeUnits(req renderer.BuildRequest, appCfg config.AppConfig) []string {
-	required := map[domain.Engine]bool{}
-	for _, inbound := range req.Inbounds {
-		if !inbound.Enabled {
-			continue
-		}
-		required[inbound.Engine] = true
-	}
-
+	// Always restart all configured runtime units so that services whose
+	// engine is no longer used reload the (now-empty) config and release
+	// any ports they were holding from a previous deployment.
 	units := make([]string, 0, 2)
-	if required[domain.EngineSingBox] && strings.TrimSpace(appCfg.Runtime.SingBoxUnit) != "" {
+	if strings.TrimSpace(appCfg.Runtime.SingBoxUnit) != "" {
 		units = append(units, appCfg.Runtime.SingBoxUnit)
 	}
-	if required[domain.EngineXray] && strings.TrimSpace(appCfg.Runtime.XrayUnit) != "" {
+	if strings.TrimSpace(appCfg.Runtime.XrayUnit) != "" {
 		units = append(units, appCfg.Runtime.XrayUnit)
 	}
 	sort.Strings(units)
