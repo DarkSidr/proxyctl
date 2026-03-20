@@ -5775,9 +5775,22 @@ func panelHandleCredentialAction(ctx context.Context, dbPath string, r *http.Req
 			return fmt.Errorf("create credential: %w", err)
 		}
 
+		synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{inbound.NodeID})
 		out, runErr := panelExecuteCommand(ctx, newSubscriptionGenerateCmd(configPath, dbPathFlag), []string{userID})
+		if syncErr != nil && runErr != nil {
+			ops.set("error", fmt.Sprintf("credential created (%s), but node sync failed: %v; subscription generate failed: %s", created.ID, syncErr, panelErrWithOutput(runErr, out)))
+			return nil
+		}
+		if syncErr != nil {
+			ops.set("error", fmt.Sprintf("credential attached: %s (%s) | %s | node sync failed: %v", created.ID, created.Kind, panelSummarizeOutput(out), syncErr))
+			return nil
+		}
 		if runErr != nil {
 			ops.set("error", fmt.Sprintf("credential created (%s), but subscription generate failed: %s", created.ID, panelErrWithOutput(runErr, out)))
+			return nil
+		}
+		if synced > 0 || cleaned > 0 {
+			ops.set("ok", fmt.Sprintf("credential attached: %s (%s) | node sync: synced=%d cleaned=%d | %s", created.ID, created.Kind, synced, cleaned, panelSummarizeOutput(out)))
 			return nil
 		}
 		ops.set("ok", fmt.Sprintf("credential attached: %s (%s) | %s", created.ID, created.Kind, panelSummarizeOutput(out)))
@@ -5822,13 +5835,43 @@ func panelHandleCredentialAction(ctx context.Context, dbPath string, r *http.Req
 			return fmt.Errorf("credential %q not found", credentialID)
 		}
 
+		// Look up nodeID via the inbound (store is still open, inbound was not deleted).
+		nodeIDForSync := ""
+		if inbounds2, listErr := store.Inbounds().List(ctx); listErr == nil {
+			for _, ib := range inbounds2 {
+				if ib.ID == current.InboundID {
+					nodeIDForSync = ib.NodeID
+					break
+				}
+			}
+		}
+		synced, cleaned, syncErr := 0, 0, error(nil)
+		if nodeIDForSync != "" {
+			synced, cleaned, syncErr = panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{nodeIDForSync})
+		}
 		if strings.TrimSpace(userID) == "" {
-			ops.set("ok", fmt.Sprintf("credential detached: %s", credentialID))
+			if syncErr != nil {
+				ops.set("error", fmt.Sprintf("credential detached: %s | node sync failed: %v", credentialID, syncErr))
+			} else {
+				ops.set("ok", fmt.Sprintf("credential detached: %s | node sync: synced=%d cleaned=%d", credentialID, synced, cleaned))
+			}
 			return nil
 		}
 		out, runErr := panelExecuteCommand(ctx, newSubscriptionGenerateCmd(configPath, dbPathFlag), []string{userID})
+		if syncErr != nil && runErr != nil {
+			ops.set("error", fmt.Sprintf("credential detached (%s), but node sync failed: %v; subscription generate failed: %s", credentialID, syncErr, panelErrWithOutput(runErr, out)))
+			return nil
+		}
+		if syncErr != nil {
+			ops.set("error", fmt.Sprintf("credential detached: %s | %s | node sync failed: %v", credentialID, panelSummarizeOutput(out), syncErr))
+			return nil
+		}
 		if runErr != nil {
 			ops.set("error", fmt.Sprintf("credential detached (%s), but subscription generate failed: %s", credentialID, panelErrWithOutput(runErr, out)))
+			return nil
+		}
+		if synced > 0 || cleaned > 0 {
+			ops.set("ok", fmt.Sprintf("credential detached: %s | node sync: synced=%d cleaned=%d | %s", credentialID, synced, cleaned, panelSummarizeOutput(out)))
 			return nil
 		}
 		ops.set("ok", fmt.Sprintf("credential detached: %s | %s", credentialID, panelSummarizeOutput(out)))
