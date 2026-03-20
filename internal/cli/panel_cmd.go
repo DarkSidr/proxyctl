@@ -1907,6 +1907,13 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (sec === "reality") {
         const targetEl = document.getElementById("inTarget");
         if (!(targetEl?.value || "").trim()) applyRealityPreset(pickRandomRealityPreset());
+        const sidEl = document.getElementById("inRealityShortID");
+        if (sidEl && !(sidEl.value || "").trim()) {
+          sidEl.value = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+            .map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 8);
+        }
+        const spiderEl = document.getElementById("inRealitySpiderX");
+        if (spiderEl && !(spiderEl.value || "").trim()) spiderEl.value = "/";
       }
     }
     function currentSubUserID() {

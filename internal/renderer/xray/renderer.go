@@ -394,23 +394,18 @@ func vlessRealityURI(host string, inbound domain.Inbound, credential domain.Cred
 		Host:   fmt.Sprintf("%s:%d", strings.TrimSpace(host), inbound.Port),
 	}
 	q := url.Values{}
-	q.Set("encryption", "none")
 	q.Set("type", "tcp")
+	q.Set("encryption", "none")
 	q.Set("security", "reality")
 	q.Set("pbk", strings.TrimSpace(publicKey))
-	q.Set("headerType", "none")
 	q.Set("fp", strings.TrimSpace(fingerprint))
-	if strings.TrimSpace(flow) != "" {
-		q.Set("flow", strings.TrimSpace(flow))
-	}
 	if strings.TrimSpace(sni) != "" {
 		q.Set("sni", strings.TrimSpace(sni))
 	}
-	if sid := strings.TrimSpace(inbound.RealityShortID); sid != "" {
-		q.Set("sid", sid)
-	}
-	if spx := strings.TrimSpace(inbound.RealitySpiderX); spx != "" {
-		q.Set("spx", normalizePath(spx))
+	q.Set("sid", strings.TrimSpace(inbound.RealityShortID))
+	q.Set("spx", normalizePath(inbound.RealitySpiderX))
+	if strings.TrimSpace(flow) != "" {
+		q.Set("flow", strings.TrimSpace(flow))
 	}
 	u.RawQuery = q.Encode()
 	u.Fragment = clientLabel(credential, inbound.ID)
