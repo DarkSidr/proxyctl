@@ -236,7 +236,6 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 		Inbounds: allInbounds,
 		Outbounds: []outboundConfig{
 			{Tag: "direct", Protocol: "freedom"},
-			{Tag: "api", Protocol: ""},
 		},
 		Routing: &routingConfig{
 			Rules: []routingRule{
