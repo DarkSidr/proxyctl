@@ -99,6 +99,8 @@ var schemaMigrations = []string{
 		END`,
 	`ALTER TABLE nodes ADD COLUMN ssh_user TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE nodes ADD COLUMN ssh_port INTEGER NOT NULL DEFAULT 22`,
+	`ALTER TABLE nodes ADD COLUMN last_sync_ok INTEGER`,
+	`ALTER TABLE nodes ADD COLUMN last_sync_msg TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE users ADD COLUMN expires_at TEXT`,
 	`ALTER TABLE users ADD COLUMN traffic_limit_bytes INTEGER NOT NULL DEFAULT 0`,
 	`CREATE TABLE IF NOT EXISTS user_traffic_stats (

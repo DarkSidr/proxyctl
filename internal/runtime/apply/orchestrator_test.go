@@ -274,6 +274,9 @@ func (fakeNodesRepo) Update(context.Context, domain.Node) (domain.Node, error) {
 func (fakeNodesRepo) Delete(context.Context, string) (bool, error) {
 	return false, nil
 }
+func (fakeNodesRepo) UpdateSyncStatus(context.Context, string, bool, string) error {
+	return nil
+}
 
 type fakeInboundsRepo struct{ items []domain.Inbound }
 

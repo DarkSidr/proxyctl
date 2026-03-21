@@ -72,14 +72,16 @@ type UserTrafficRecord struct {
 
 // Node describes a managed node in proxyctl.
 type Node struct {
-	ID        string
-	Name      string
-	Host      string
-	Role      NodeRole
-	SSHUser   string
-	SSHPort   int
-	Enabled   bool
-	CreatedAt time.Time
+	ID          string
+	Name        string
+	Host        string
+	Role        NodeRole
+	SSHUser     string
+	SSHPort     int
+	Enabled     bool
+	CreatedAt   time.Time
+	LastSyncOK  *bool // nil = never synced; persisted across panel restarts
+	LastSyncMsg string
 }
 
 // Inbound configures one inbound listener.

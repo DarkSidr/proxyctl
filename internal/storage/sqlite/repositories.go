@@ -182,7 +182,7 @@ func (r *nodeRepository) Create(ctx context.Context, node domain.Node) (domain.N
 }
 
 func (r *nodeRepository) List(ctx context.Context) ([]domain.Node, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, name, host, role, ssh_user, ssh_port, enabled, created_at FROM nodes ORDER BY created_at ASC, id ASC`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, name, host, role, ssh_user, ssh_port, enabled, created_at, last_sync_ok, last_sync_msg FROM nodes ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -191,11 +191,13 @@ func (r *nodeRepository) List(ctx context.Context) ([]domain.Node, error) {
 	nodes := make([]domain.Node, 0)
 	for rows.Next() {
 		var (
-			node      domain.Node
-			enabled   int
-			createdAt string
+			node        domain.Node
+			enabled     int
+			createdAt   string
+			lastSyncOK  *int
+			lastSyncMsg string
 		)
-		if err := rows.Scan(&node.ID, &node.Name, &node.Host, &node.Role, &node.SSHUser, &node.SSHPort, &enabled, &createdAt); err != nil {
+		if err := rows.Scan(&node.ID, &node.Name, &node.Host, &node.Role, &node.SSHUser, &node.SSHPort, &enabled, &createdAt, &lastSyncOK, &lastSyncMsg); err != nil {
 			return nil, fmt.Errorf("scan node: %w", err)
 		}
 		node.Enabled = intToBool(enabled)
@@ -203,6 +205,11 @@ func (r *nodeRepository) List(ctx context.Context) ([]domain.Node, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse node created_at: %w", err)
 		}
+		if lastSyncOK != nil {
+			v := *lastSyncOK != 0
+			node.LastSyncOK = &v
+		}
+		node.LastSyncMsg = lastSyncMsg
 		nodes = append(nodes, node)
 	}
 
@@ -210,6 +217,21 @@ func (r *nodeRepository) List(ctx context.Context) ([]domain.Node, error) {
 		return nil, fmt.Errorf("iterate nodes: %w", err)
 	}
 	return nodes, nil
+}
+
+func (r *nodeRepository) UpdateSyncStatus(ctx context.Context, nodeID string, ok bool, msg string) error {
+	okInt := 0
+	if ok {
+		okInt = 1
+	}
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE nodes SET last_sync_ok = ?, last_sync_msg = ? WHERE id = ?`,
+		okInt, strings.TrimSpace(msg), strings.TrimSpace(nodeID),
+	)
+	if err != nil {
+		return fmt.Errorf("update node sync status: %w", err)
+	}
+	return nil
 }
 
 func (r *nodeRepository) Update(ctx context.Context, node domain.Node) (domain.Node, error) {

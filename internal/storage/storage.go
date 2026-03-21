@@ -39,6 +39,7 @@ type NodeRepository interface {
 	List(ctx context.Context) ([]domain.Node, error)
 	Update(ctx context.Context, node domain.Node) (domain.Node, error)
 	Delete(ctx context.Context, nodeID string) (bool, error)
+	UpdateSyncStatus(ctx context.Context, nodeID string, ok bool, msg string) error
 }
 
 // InboundRepository defines persistence operations for inbounds.

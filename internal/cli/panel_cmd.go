@@ -252,6 +252,10 @@ var panelNodeSyncCache sync.Map // key: nodeID string → value: nodeSyncRecord
 
 var panelNodeVersionCache sync.Map // key: nodeID string → value: string (remote proxyctl version)
 
+// panelGlobalDBPath is set once at panel startup and used by setNodeSyncStatus
+// to persist sync results across panel restarts.
+var panelGlobalDBPath string
+
 // panelTrafficCollection controls whether traffic stats goroutines are active.
 // Default true; toggled via settings.
 var panelTrafficCollection atomic.Bool
@@ -340,7 +344,19 @@ func getActiveJobForNode(nodeID string) *nodeJob {
 }
 
 func setNodeSyncStatus(nodeID string, ok bool, msg string) {
-	panelNodeSyncCache.Store(strings.TrimSpace(nodeID), nodeSyncRecord{ok: ok, msg: strings.TrimSpace(msg), at: time.Now()})
+	nodeID = strings.TrimSpace(nodeID)
+	panelNodeSyncCache.Store(nodeID, nodeSyncRecord{ok: ok, msg: strings.TrimSpace(msg), at: time.Now()})
+	// Persist to DB so status survives panel restarts.
+	if dbPath := panelGlobalDBPath; dbPath != "" {
+		go func() {
+			store, err := openStoreWithInit(context.Background(), dbPath)
+			if err != nil {
+				return
+			}
+			defer store.Close()
+			_ = store.Nodes().UpdateSyncStatus(context.Background(), nodeID, ok, msg)
+		}()
+	}
 }
 
 func getNodeSyncStatus(nodeID string) (ok bool, msg string, found bool) {
@@ -3868,6 +3884,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 			resolvedDB := resolveDBPath(cmd, cfg, *dbPath)
 			configPathValue := strings.TrimSpace(*configPath)
 			dbPathValue := strings.TrimSpace(*dbPath)
+			panelGlobalDBPath = resolvedDB
 
 			panelInfo, err := readPanelAccessInfo(panelCredentialsPathFromConfig(*configPath))
 			if err != nil && !os.IsNotExist(err) {
@@ -4920,6 +4937,10 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			okVal := ok
 			nv.SyncOK = &okVal
 			nv.SyncMsg = msg
+		} else if node.LastSyncOK != nil {
+			// Fall back to DB-persisted status (survives panel restarts).
+			nv.SyncOK = node.LastSyncOK
+			nv.SyncMsg = node.LastSyncMsg
 		}
 		if j := getActiveJobForNode(node.ID); j != nil {
 			nv.JobID = j.id
