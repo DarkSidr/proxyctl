@@ -5074,7 +5074,7 @@ func buildPanelDashboard(cfg config.AppConfig, users []panelUserView) panelDashb
 	rawRX, rawTX, _ := panelNetTotals()
 	rxSpeed, txSpeed := panelNetSpeed()
 	tcpConns, udpConns := panelNetConnections()
-	userTraffic, source := panelUserTraffic(cfg.Paths.RuntimeDir, users)
+	userTraffic, source := panelUserTrafficFromDB(users)
 	totalUserBytes := uint64(0)
 	for _, item := range userTraffic {
 		totalUserBytes += item.TotalBytes
@@ -5383,6 +5383,35 @@ func panelNetConnections() (tcp, udp int) {
 		}
 	}
 	return tcp, udp
+}
+
+func panelUserTrafficFromDB(users []panelUserView) ([]panelUserTrafficView, string) {
+	rows := make([]panelUserTrafficView, 0, len(users))
+	hasData := false
+	for _, u := range users {
+		var rx, tx uint64
+		if u.UsedRXBytes > 0 {
+			rx = uint64(u.UsedRXBytes)
+		}
+		if u.UsedTXBytes > 0 {
+			tx = uint64(u.UsedTXBytes)
+		}
+		total := rx + tx
+		if total > 0 {
+			hasData = true
+		}
+		rows = append(rows, panelUserTrafficView{
+			UserID:     u.ID,
+			UserName:   u.Name,
+			RXBytes:    rx,
+			TXBytes:    tx,
+			TotalBytes: total,
+		})
+	}
+	if !hasData {
+		return rows, "none"
+	}
+	return rows, "db"
 }
 
 func panelUserTraffic(runtimeDir string, users []panelUserView) ([]panelUserTrafficView, string) {
