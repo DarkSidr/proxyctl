@@ -1610,15 +1610,19 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
             <span id="ndRemoteVersion" class="mono" style="font-size:0.82rem">—</span>
             <button type="button" class="btn secondary" id="ndFetchVersionBtn" style="padding:3px 10px;font-size:0.78rem">check</button>
           </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+          <div id="ndSshOpsGroup" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
             <button type="button" class="btn secondary" id="ndSetupSshKeyBtn">setup ssh key</button>
             <button type="button" class="btn secondary" id="ndBootstrapBtn">bootstrap</button>
             <button type="button" class="btn warn" id="ndUpdateProxyctlBtn">update proxyctl</button>
           </div>
+          <div id="ndSyncGroup" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <button type="button" class="btn secondary" id="ndSyncPrimaryBtn">sync now</button>
+          </div>
           <div class="muted" style="font-size:0.75rem;margin-top:8px;line-height:1.5">
             <b>setup ssh key</b> — installs panel public key on node for passwordless sync<br>
             <b>bootstrap</b> — (re)installs xray / sing-box / caddy on node<br>
-            <b>update proxyctl</b> — runs <code>proxyctl update --force</code> on the remote node
+            <b>update proxyctl</b> — runs <code>proxyctl update --force</code> on the remote node<br>
+            <b>sync now</b> — regenerates configs and restarts proxy services on this node
           </div>
         </div>
         <div class="modal-ftr">
@@ -2023,7 +2027,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const remVerEl = document.getElementById("ndRemoteVersion");
       if (remVerEl) remVerEl.textContent = (node && node.RemoteVersion) ? node.RemoteVersion : "—";
       const maintenanceSection = document.getElementById("ndMaintenanceSection");
-      if (maintenanceSection) maintenanceSection.classList.toggle("hidden", !isEdit || role === "primary");
+      if (maintenanceSection) maintenanceSection.classList.toggle("hidden", !isEdit);
+      const ndSshOps = document.getElementById("ndSshOpsGroup");
+      if (ndSshOps) ndSshOps.classList.toggle("hidden", role === "primary");
+      const ndSyncGroup = document.getElementById("ndSyncGroup");
+      if (ndSyncGroup) ndSyncGroup.classList.toggle("hidden", role !== "primary");
       const modal = document.getElementById("nodeModal");
       modal.setAttribute("data-node-id", node ? (node.ID || "") : "");
       modal.setAttribute("data-node-version", node ? (node.Version || "") : "");
@@ -3273,6 +3281,12 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         if (String(e).includes("cancelled")) return;
         showOp("error", String(e));
       }
+    });
+    document.getElementById("ndSyncPrimaryBtn").addEventListener("click", async () => {
+      const n = getModalNode();
+      if (!n.id) return;
+      closeNodeModal();
+      await postForm(cfg.nodesActionPath, { op: "sync", node_id: n.id, version: n.version });
     });
     document.getElementById("openAddNodeBtn").addEventListener("click", () => openNodeModal(null));
     document.getElementById("closeNodeModalBtn").addEventListener("click", closeNodeModal);
@@ -5940,14 +5954,8 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 	if err != nil {
 		return 0, 0, err
 	}
-	if !settings.enabled {
-		return 0, 0, nil
-	}
 	if strings.TrimSpace(sshPassword) != "" {
 		settings.opts.sshPassword = strings.TrimSpace(sshPassword)
-	}
-	if _, err := lookPath("ssh"); err != nil {
-		return 0, 0, fmt.Errorf("ssh client is required for panel node sync: %w", err)
 	}
 
 	appCfg, err := config.Load(configPath)
@@ -6008,7 +6016,7 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 		}
 		if !node.Enabled || node.Role != domain.NodeRoleNode {
 			// Primary nodes manage their own config locally — SSH sync is not applicable.
-			if node.Role == domain.NodeRolePrimary {
+			if node.Role == domain.NodeRolePrimary && node.Enabled {
 				n := node
 				primaryNodeForCaddy = &n
 				skippedPrimary++
@@ -6016,6 +6024,15 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 			continue
 		}
 		targeted++
+
+		// Remote node sync requires SSH to be enabled and available.
+		if !settings.enabled {
+			continue
+		}
+		if _, err := lookPath("ssh"); err != nil {
+			setNodeSyncStatus(node.ID, false, "ssh client not available")
+			continue
+		}
 
 		// Per-node SSH overrides take priority over env-based defaults.
 		nodeOpts := settings.opts
@@ -6043,6 +6060,7 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 		}
 		sort.Slice(nodeCredentials, func(i, j int) bool { return nodeCredentials[i].ID < nodeCredentials[j].ID })
 		if _, err := lookPath("scp"); err != nil {
+			setNodeSyncStatus(node.ID, false, "scp client not available")
 			return synced, cleaned, fmt.Errorf("scp client is required for panel node sync: %w", err)
 		}
 
@@ -6061,6 +6079,7 @@ func panelSyncWorkerNodesByIDsWithPassword(ctx context.Context, dbPath, configPa
 		return synced, cleaned, fmt.Errorf("no enabled worker nodes found for requested IDs")
 	}
 	if skippedPrimary > 0 {
+		// Primary node apply runs unconditionally — no SSH required.
 		// Reload caddy first so ACME cert acquisition starts before
 		// sing-box/xray are restarted by the apply pipeline.
 		if primaryNodeForCaddy != nil {
@@ -6927,7 +6946,7 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		ops.set("ok", fmt.Sprintf("node created: %s (%s)", created.Name, created.Host))
 		return "", created.ID, nil
 
-	case "install_ssh_key", "bootstrap", "test", "set_enabled", "update", "delete":
+	case "install_ssh_key", "bootstrap", "test", "sync", "set_enabled", "update", "delete":
 		nodeID := strings.TrimSpace(r.FormValue("node_id"))
 		version := strings.TrimSpace(r.FormValue("version"))
 		if nodeID == "" {
@@ -7043,6 +7062,17 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			}
 			setNodeSyncStatus(current.ID, true, "connectivity ok")
 			ops.set("ok", fmt.Sprintf("node test ok: %s (%s)", current.Name, current.Host))
+			return "", "", nil
+		}
+
+		if action == "sync" {
+			cp := strings.TrimSpace(*configPath)
+			synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, cp, []string{current.ID})
+			if syncErr != nil {
+				ops.set("error", fmt.Sprintf("sync failed: %s (%s) | %v", current.Name, current.Host, syncErr))
+				return "", "", nil
+			}
+			ops.set("ok", fmt.Sprintf("sync ok: %s (%s) | synced=%d cleaned=%d", current.Name, current.Host, synced, cleaned))
 			return "", "", nil
 		}
 
