@@ -7148,10 +7148,10 @@ type nodeDiagCertStatus struct {
 }
 
 type nodeDiagResult struct {
-	NodeName string                 `json:"node_name"`
+	NodeName string                  `json:"node_name"`
 	Services []nodeDiagServiceStatus `json:"services"`
-	Certs    []nodeDiagCertStatus   `json:"certs"`
-	Version  string                 `json:"version"`
+	Certs    []nodeDiagCertStatus    `json:"certs"`
+	Version  string                  `json:"version"`
 }
 
 // panelFetchNodeDiag collects service status, TLS certificate status and proxyctl version
