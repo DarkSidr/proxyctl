@@ -24,6 +24,18 @@
 
 ## Backend
 
+- **Self Steal (Reality self-SNI)** — маскировка под собственный домен вместо внешнего сайта.
+  Xray Reality `dest` → `127.0.0.1:8443` (локальный Caddy), `serverNames` = свой домен.
+  Caddy добавляет internal HTTPS listener на 8443 (`bind 127.0.0.1`).
+  Нужно: поле `SelfSteal bool` в Inbound + чекбокс в форме + логика в xray renderer + caddy builder.
+  Рассмотреть возможность включения/выключения через настройки (глобально или per-inbound).
+
+- **HY2 traffic stats** — вернуть мониторинг трафика от Hysteria2 (sing-box).
+  Секция `experimental.v2ray_api` была удалена из sing-box renderer (коммит 60831a1) т.к. официальные
+  бинарники некоторых нод не собраны с `-tags with_v2ray_api`.
+  Решение: добавить настройку "Enable sing-box stats API" (toggle в Settings), при включении —
+  добавлять секцию `experimental.v2ray_api` в sing-box.json. Требует rebuild ноды после включения.
+
 - **sing-box sniffing** — mirror SniffingEnabled fields to sing-box renderer
   (currently only wired to xray renderer)
 - **Automated Reality key rotation** — background job to regenerate Reality keys
