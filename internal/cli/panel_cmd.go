@@ -6390,7 +6390,8 @@ func panelEnsureProxyctlOnNode(ctx context.Context, configPath string, node doma
 		installEnv += " PROXYCTL_CONTACT_EMAIL=" + shellQuote(contactEmail)
 	}
 	installCmd := prefix + "bash -lc " + shellQuote(
-		"curl -fsSL "+defaultUpdateInstallURL+
+		"command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl); "+
+			"curl -fsSL "+defaultUpdateInstallURL+
 			" | "+installEnv+" bash",
 	)
 	updateCmd := prefix + "proxyctl update --force --restart-services --ensure-caddy"
