@@ -4987,11 +4987,20 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	dashboard := buildPanelDashboard(cfg, userRows)
 
 	sshKeyWarning := ""
-	if syncSettings, settingsErr := panelNodeSyncSettingsFromEnv(); settingsErr == nil && syncSettings.enabled {
-		if syncSettings.opts.sshKeyPath == "" {
-			sshKeyWarning = "SSH key not configured — node sync may require a password. Use 'setup ssh key' on each node."
-		} else if _, statErr := os.Stat(syncSettings.opts.sshKeyPath); statErr != nil {
-			sshKeyWarning = fmt.Sprintf("SSH key not found at %s — node sync may require a password. Use 'setup ssh key' on each node.", syncSettings.opts.sshKeyPath)
+	hasRemoteNodes := false
+	for _, n := range nodeRows {
+		if n.Enabled && n.Role != string(domain.NodeRolePrimary) {
+			hasRemoteNodes = true
+			break
+		}
+	}
+	if hasRemoteNodes {
+		if syncSettings, settingsErr := panelNodeSyncSettingsFromEnv(); settingsErr == nil && syncSettings.enabled {
+			if syncSettings.opts.sshKeyPath == "" {
+				sshKeyWarning = "SSH key not configured — node sync may require a password. Use 'setup ssh key' on each node."
+			} else if _, statErr := os.Stat(syncSettings.opts.sshKeyPath); statErr != nil {
+				sshKeyWarning = fmt.Sprintf("SSH key not found at %s — node sync may require a password. Use 'setup ssh key' on each node.", syncSettings.opts.sshKeyPath)
+			}
 		}
 	}
 
