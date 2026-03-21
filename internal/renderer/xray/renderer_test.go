@@ -119,11 +119,11 @@ func TestRenderBuildsXrayConfigAndClientArtifacts(t *testing.T) {
 	}
 }
 
-func TestRenderFailsWithoutRequiredCredentials(t *testing.T) {
+func TestRenderSkipsInboundWithoutCredentials(t *testing.T) {
 	t.Parallel()
 
 	r := New(nil)
-	_, err := r.Render(context.Background(), renderer.BuildRequest{
+	result, err := r.Render(context.Background(), renderer.BuildRequest{
 		Node: domain.Node{Host: "vpn.example.com"},
 		Inbounds: []domain.Inbound{
 			{
@@ -137,11 +137,11 @@ func TestRenderFailsWithoutRequiredCredentials(t *testing.T) {
 			},
 		},
 	})
-	if err == nil {
-		t.Fatalf("Render() expected error, got nil")
+	if err != nil {
+		t.Fatalf("Render() expected nil error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "uuid credential") {
-		t.Fatalf("Render() error = %q, want uuid credential error", err)
+	if len(result.ClientArtifacts) != 0 {
+		t.Fatalf("Render() expected no client artifacts, got %d", len(result.ClientArtifacts))
 	}
 }
 
