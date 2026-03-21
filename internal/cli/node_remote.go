@@ -260,10 +260,25 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 
 	// Build Caddyfile for ACME cert management. Errors here are non-fatal:
 	// if the node has no inbounds that need caddy, we simply skip caddy sync.
-	caddyResult, caddyBuildErr := caddy.New(appCfg).Build(caddy.BuildRequest{
+	caddyBuildReq := caddy.BuildRequest{
 		Node:     req.Node,
 		Inbounds: req.Inbounds,
-	})
+	}
+	// For primary nodes, inject the panel reverse-proxy route so that sync
+	// does not wipe the route that install.sh originally added.
+	if req.Node.Role == "primary" {
+		if panelInfo, panelErr := readPanelAccessInfo(panelCredentialsPathFromConfig(appCfg.Paths.ConfigFile)); panelErr == nil {
+			if p := strings.TrimSpace(panelInfo.Path); p != "" {
+				caddyBuildReq.PanelPath = p
+			}
+			if port := strings.TrimSpace(panelInfo.Port); port != "" {
+				caddyBuildReq.PanelPort = port
+			} else {
+				caddyBuildReq.PanelPort = "20443"
+			}
+		}
+	}
+	caddyResult, caddyBuildErr := caddy.New(appCfg).Build(caddyBuildReq)
 	hasCaddyConfig := caddyBuildErr == nil && len(caddyResult.Caddyfile) > 0
 
 	tmpDir, err := os.MkdirTemp("", "proxyctl-node-sync-")
