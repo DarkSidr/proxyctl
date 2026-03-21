@@ -190,21 +190,21 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 
 		switch inbound.Type {
 		case domain.ProtocolVLESS:
+			if len(byInbound[inbound.ID]) == 0 {
+				continue
+			}
 			cfg, items, err := buildVLESSInbound(req.Node, inbound, byInbound[inbound.ID])
 			if err != nil {
-				if len(byInbound[inbound.ID]) == 0 {
-					continue
-				}
 				return configDoc{}, nil, err
 			}
 			cfgInbounds = append(cfgInbounds, cfg)
 			clients = append(clients, items...)
 		case domain.ProtocolXHTTP:
+			if len(byInbound[inbound.ID]) == 0 {
+				continue
+			}
 			cfg, items, err := buildXHTTPInbound(req.Node, inbound, byInbound[inbound.ID])
 			if err != nil {
-				if len(byInbound[inbound.ID]) == 0 {
-					continue
-				}
 				return configDoc{}, nil, err
 			}
 			cfgInbounds = append(cfgInbounds, cfg)
