@@ -1603,6 +1603,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           <span class="flabel">Password</span>
           <input id="ndPassword" type="password" placeholder="for first-time bootstrap (optional, not stored)">
         </div>
+        <div id="ndPasswordHint" class="muted" style="font-size:0.78rem;margin:-8px 0 6px 0;padding-left:100px;line-height:1.4">
+          Provide SSH root password to automatically install SSH key + bootstrap the node.<br>
+          Leave empty to do it manually from the edit modal after saving.
+        </div>
         <div id="ndMaintenanceSection" class="modal-block hidden">
           <div class="modal-block-hdr">maintenance</div>
           <div style="display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap">
@@ -3124,9 +3128,11 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           syncBadge = '<span style="display:inline-flex;align-items:center;gap:5px;color:var(--ok)">' +
             '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);animation:pulse 1.2s ease-in-out infinite"></span>running…</span>';
         } else if (n.SyncOK === true) {
-          syncBadge = '<span style="color:var(--ok)" title="last sync OK">✓ ok</span>';
+          syncBadge = '<span style="color:var(--ok)" title="last sync OK">✓ ready</span>';
         } else if (n.SyncOK === false) {
           syncBadge = '<span style="color:var(--err)" title="'+esc(n.SyncMsg || "")+'">✗ error</span>';
+        } else if (n.SyncOK === null && n.Role === "node") {
+          syncBadge = '<span style="color:#f0a500" title="Install SSH key then run Bootstrap to activate this node">⚙ setup needed</span>';
         }
         const dis = running ? ' disabled' : '';
         return '<tr id="nrow-'+esc(n.ID)+'">' +
@@ -7315,6 +7321,13 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			job := newNodeJob(created.ID, "bootstrap")
 			cp := strings.TrimSpace(*configPath)
 			go func() {
+				// Install SSH key first (enables passwordless sync after bootstrap).
+				if sshPassword != "" {
+					if _, _, keyErr := panelInstallSSHKeyOnNode(context.Background(), created, sshPassword); keyErr != nil {
+						job.finish(false, fmt.Sprintf("node created (%s), ssh key setup failed: %v", created.Name, keyErr))
+						return
+					}
+				}
 				if bootErr := panelEnsureProxyctlOnNode(context.Background(), cp, created, sshPassword); bootErr != nil {
 					job.finish(false, fmt.Sprintf("node created (%s), bootstrap failed: %v", created.Name, bootErr))
 					return
@@ -7323,10 +7336,10 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 					job.finish(false, fmt.Sprintf("node created (%s), bootstrap ok, sync failed: %v", created.Name, syncErr))
 					return
 				} else if synced > 0 || cleaned > 0 {
-					job.finish(true, fmt.Sprintf("node created: %s (%s) | bootstrap ok | synced=%d cleaned=%d", created.Name, created.Host, synced, cleaned))
+					job.finish(true, fmt.Sprintf("node created: %s (%s) | ssh key ok | bootstrap ok | synced=%d cleaned=%d", created.Name, created.Host, synced, cleaned))
 					return
 				}
-				job.finish(true, fmt.Sprintf("node created: %s (%s) | bootstrap ok", created.Name, created.Host))
+				job.finish(true, fmt.Sprintf("node created: %s (%s) | ssh key ok | bootstrap ok", created.Name, created.Host))
 			}()
 			ops.set("ok", fmt.Sprintf("node created: %s — bootstrap running in background", created.Name))
 			return job.id, created.ID, nil
