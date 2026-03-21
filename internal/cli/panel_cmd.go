@@ -4092,8 +4092,25 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-				if err := panelHandleInboundAction(r.Context(), resolvedDB, r, &configPathValue, &dbPathValue, ops); err != nil {
-					ops.set("error", err.Error())
+				jobID, inboundNodeID, inboundErr := panelHandleInboundAction(r.Context(), resolvedDB, r, &configPathValue, &dbPathValue, ops)
+				if inboundErr != nil {
+					ops.set("error", inboundErr.Error())
+				}
+				if panelWantsJSON(r) {
+					status, message, at := ops.snapshot()
+					resp := map[string]interface{}{
+						"status":  status,
+						"message": message,
+						"at":      at,
+					}
+					if jobID != "" {
+						resp["job_id"] = jobID
+					}
+					if inboundNodeID != "" {
+						resp["node_id"] = inboundNodeID
+					}
+					panelWriteJSON(w, http.StatusOK, resp)
+					return
 				}
 				panelRespondAction(w, r, inboundsPath, ops)
 			})
@@ -6777,56 +6794,92 @@ func panelCheckPortConflict(ctx context.Context, repo storage.InboundRepository,
 	return nil
 }
 
-func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Request, configPath, dbPathFlag *string, ops *panelOperationFeed) error {
+// panelHandleInboundAction handles inbound CRUD actions.
+// Returns (jobID, nodeID, error): jobID is non-empty when a background sync job was started
+// (remote node). The caller should include job_id/node_id in the JSON response so the
+// frontend can poll for completion.
+func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Request, configPath, dbPathFlag *string, ops *panelOperationFeed) (jobID, nodeID string, err error) {
 	if err := r.ParseForm(); err != nil {
-		return fmt.Errorf("invalid inbound action request")
+		return "", "", fmt.Errorf("invalid inbound action request")
 	}
 	action := strings.TrimSpace(r.FormValue("op"))
 	if action == "" {
-		return fmt.Errorf("inbound action is required")
+		return "", "", fmt.Errorf("inbound action is required")
 	}
 
 	store, err := openStoreWithInit(ctx, dbPath)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	defer store.Close()
+
+	// panelInboundSyncJob starts a background sync goroutine for remote nodes and
+	// returns a non-empty jobID. For primary nodes it syncs synchronously and
+	// returns "".
+	panelInboundSyncJob := func(nid, opDesc string) string {
+		isPrimary := false
+		if nodes, listErr := store.Nodes().List(ctx); listErr == nil {
+			for _, n := range nodes {
+				if n.ID == nid {
+					isPrimary = n.Role == "primary"
+					break
+				}
+			}
+		}
+		if isPrimary {
+			synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{nid})
+			if syncErr != nil {
+				if panelSyncErrMissingCredentials(syncErr) {
+					ops.set("ok", opDesc+" | warning: node sync skipped until at least one credential is attached")
+				} else {
+					ops.set("error", opDesc+" | node sync failed: "+syncErr.Error())
+				}
+			} else if synced > 0 || cleaned > 0 {
+				ops.set("ok", fmt.Sprintf("%s | node sync: synced=%d cleaned=%d", opDesc, synced, cleaned))
+			} else {
+				ops.set("ok", opDesc)
+			}
+			return ""
+		}
+		// Remote node — run sync in background.
+		job := newNodeJob(nid, opDesc)
+		go func() {
+			_, _, syncErr := panelSyncWorkerNodesByIDs(context.Background(), dbPath, strings.TrimSpace(*configPath), []string{nid})
+			if syncErr != nil {
+				job.finish(false, opDesc+" | sync failed: "+syncErr.Error())
+			} else {
+				job.finish(true, opDesc+" | sync ok")
+			}
+		}()
+		ops.set("ok", opDesc+" — syncing node in background")
+		return job.id
+	}
 
 	switch action {
 	case "create":
 		inbound, err := panelInboundFromForm(r, domain.Inbound{})
 		if err != nil {
-			return err
+			return "", "", err
 		}
 		if err := panelCheckPortConflict(ctx, store.Inbounds(), inbound.NodeID, inbound.Port, ""); err != nil {
-			return err
+			return "", "", err
 		}
 		created, err := store.Inbounds().Create(ctx, inbound)
 		if err != nil {
-			return fmt.Errorf("create inbound: %w", err)
+			return "", "", fmt.Errorf("create inbound: %w", err)
 		}
-		if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{created.NodeID}); syncErr != nil {
-			if panelSyncErrMissingCredentials(syncErr) {
-				ops.set("ok", fmt.Sprintf("inbound created: %s (%s:%d) | warning: node sync skipped until at least one credential is attached", created.ID, created.Domain, created.Port))
-				return nil
-			}
-			ops.set("error", fmt.Sprintf("inbound created (%s), but node sync failed: %v", created.ID, syncErr))
-			return nil
-		} else if synced > 0 || cleaned > 0 {
-			ops.set("ok", fmt.Sprintf("inbound created: %s (%s:%d) | node sync: synced=%d cleaned=%d", created.ID, created.Domain, created.Port, synced, cleaned))
-			return nil
-		}
-		ops.set("ok", fmt.Sprintf("inbound created: %s (%s:%d)", created.ID, created.Domain, created.Port))
-		return nil
+		desc := fmt.Sprintf("inbound created: %s (%s:%d)", created.ID, created.Domain, created.Port)
+		jid := panelInboundSyncJob(created.NodeID, desc)
+		return jid, created.NodeID, nil
 	case "set_enabled":
 		inboundID := strings.TrimSpace(r.FormValue("inbound_id"))
 		version := strings.TrimSpace(r.FormValue("version"))
 		if inboundID == "" {
-			return fmt.Errorf("inbound id is required")
+			return "", "", fmt.Errorf("inbound id is required")
 		}
 		inbounds, err := store.Inbounds().List(ctx)
 		if err != nil {
-			return fmt.Errorf("list inbounds: %w", err)
+			return "", "", fmt.Errorf("list inbounds: %w", err)
 		}
 		var current domain.Inbound
 		found := false
@@ -6838,42 +6891,33 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 			}
 		}
 		if !found {
-			return fmt.Errorf("inbound %q not found", inboundID)
+			return "", "", fmt.Errorf("inbound %q not found", inboundID)
 		}
 		if version != panelInboundVersion(current) {
-			return fmt.Errorf("inbound %q changed since page load; refresh and retry", inboundID)
+			return "", "", fmt.Errorf("inbound %q changed since page load; refresh and retry", inboundID)
 		}
 		current.Enabled = panelFormBool(r.FormValue("enabled"))
 		stored, err := store.Inbounds().Update(ctx, current)
 		if err != nil {
-			return fmt.Errorf("set inbound enabled: %w", err)
-		}
-		if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{stored.NodeID}); syncErr != nil {
-			ops.set("error", fmt.Sprintf("inbound state updated (%s), but node sync failed: %v", stored.ID, syncErr))
-			return nil
-		} else if synced > 0 || cleaned > 0 {
-			state := "disabled"
-			if stored.Enabled {
-				state = "enabled"
-			}
-			ops.set("ok", fmt.Sprintf("inbound %s: %s | node sync: synced=%d cleaned=%d", state, stored.ID, synced, cleaned))
-			return nil
+			return "", "", fmt.Errorf("set inbound enabled: %w", err)
 		}
 		state := "disabled"
 		if stored.Enabled {
 			state = "enabled"
 		}
-		ops.set("ok", fmt.Sprintf("inbound %s: %s", state, stored.ID))
-		return nil
+		desc := fmt.Sprintf("inbound %s: %s", state, stored.ID)
+		jid := panelInboundSyncJob(stored.NodeID, desc)
+		return jid, stored.NodeID, nil
+
 	case "update", "delete":
 		inboundID := strings.TrimSpace(r.FormValue("inbound_id"))
 		version := strings.TrimSpace(r.FormValue("version"))
 		if inboundID == "" {
-			return fmt.Errorf("inbound id is required")
+			return "", "", fmt.Errorf("inbound id is required")
 		}
 		inbounds, err := store.Inbounds().List(ctx)
 		if err != nil {
-			return fmt.Errorf("list inbounds: %w", err)
+			return "", "", fmt.Errorf("list inbounds: %w", err)
 		}
 		var current domain.Inbound
 		found := false
@@ -6885,45 +6929,36 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 			}
 		}
 		if !found {
-			return fmt.Errorf("inbound %q not found", inboundID)
+			return "", "", fmt.Errorf("inbound %q not found", inboundID)
 		}
 		if version != panelInboundVersion(current) {
-			return fmt.Errorf("inbound %q changed since page load; refresh and retry", inboundID)
+			return "", "", fmt.Errorf("inbound %q changed since page load; refresh and retry", inboundID)
 		}
 
 		if action == "delete" {
 			deleted, err := store.Inbounds().Delete(ctx, inboundID)
 			if err != nil {
-				return fmt.Errorf("delete inbound: %w", err)
+				return "", "", fmt.Errorf("delete inbound: %w", err)
 			}
 			if !deleted {
-				return fmt.Errorf("inbound %q not found", inboundID)
+				return "", "", fmt.Errorf("inbound %q not found", inboundID)
 			}
-			synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{current.NodeID})
+			// Refresh subscriptions synchronously (fast, local).
 			out, refreshErr := panelRefreshAllSubscriptions(ctx, configPath, dbPathFlag)
-			if syncErr != nil && refreshErr != nil {
-				ops.set("error", fmt.Sprintf("inbound deleted (%s), but node sync failed: %v; subscription refresh failed: %s", inboundID, syncErr, panelErrWithOutput(refreshErr, out)))
-				return nil
-			}
-			if syncErr != nil {
-				ops.set("error", fmt.Sprintf("inbound deleted (%s), subscriptions refreshed: %s, but node sync failed: %v", inboundID, panelSummarizeOutput(out), syncErr))
-				return nil
-			}
+			subMsg := ""
 			if refreshErr != nil {
-				ops.set("error", fmt.Sprintf("inbound deleted (%s), but subscription refresh failed: %s", inboundID, panelErrWithOutput(refreshErr, out)))
-				return nil
+				subMsg = " | subscription refresh failed: " + panelErrWithOutput(refreshErr, out)
+			} else {
+				subMsg = " | " + panelSummarizeOutput(out)
 			}
-			if synced > 0 || cleaned > 0 {
-				ops.set("ok", fmt.Sprintf("inbound deleted: %s | subscriptions refreshed: %s | node sync: synced=%d cleaned=%d", inboundID, panelSummarizeOutput(out), synced, cleaned))
-				return nil
-			}
-			ops.set("ok", fmt.Sprintf("inbound deleted: %s | subscriptions refreshed: %s", inboundID, panelSummarizeOutput(out)))
-			return nil
+			desc := fmt.Sprintf("inbound deleted: %s%s", inboundID, subMsg)
+			jid := panelInboundSyncJob(current.NodeID, desc)
+			return jid, current.NodeID, nil
 		}
 
 		updated, err := panelInboundFromForm(r, current)
 		if err != nil {
-			return err
+			return "", "", err
 		}
 		updated.ID = current.ID
 		updated.CreatedAt = current.CreatedAt
@@ -6935,27 +6970,22 @@ func panelHandleInboundAction(ctx context.Context, dbPath string, r *http.Reques
 		}
 		if updated.RealityEnabled {
 			if strings.ToLower(string(updated.Type)) != string(domain.ProtocolVLESS) || strings.ToLower(strings.TrimSpace(updated.Transport)) != "tcp" || strings.ToLower(string(updated.Engine)) != string(domain.EngineXray) {
-				return fmt.Errorf("inbound has reality enabled; keep type=vless transport=tcp engine=xray")
+				return "", "", fmt.Errorf("inbound has reality enabled; keep type=vless transport=tcp engine=xray")
 			}
 		}
 		if err := panelCheckPortConflict(ctx, store.Inbounds(), updated.NodeID, updated.Port, updated.ID); err != nil {
-			return err
+			return "", "", err
 		}
 		stored, err := store.Inbounds().Update(ctx, updated)
 		if err != nil {
-			return fmt.Errorf("update inbound: %w", err)
+			return "", "", fmt.Errorf("update inbound: %w", err)
 		}
-		if synced, cleaned, syncErr := panelSyncWorkerNodesByIDs(ctx, dbPath, strings.TrimSpace(*configPath), []string{stored.NodeID}); syncErr != nil {
-			ops.set("error", fmt.Sprintf("inbound updated (%s), but node sync failed: %v", stored.ID, syncErr))
-			return nil
-		} else if synced > 0 || cleaned > 0 {
-			ops.set("ok", fmt.Sprintf("inbound updated: %s (%s:%d) | node sync: synced=%d cleaned=%d", stored.ID, stored.Domain, stored.Port, synced, cleaned))
-			return nil
-		}
-		ops.set("ok", fmt.Sprintf("inbound updated: %s (%s:%d)", stored.ID, stored.Domain, stored.Port))
-		return nil
+		desc := fmt.Sprintf("inbound updated: %s (%s:%d)", stored.ID, stored.Domain, stored.Port)
+		jid := panelInboundSyncJob(stored.NodeID, desc)
+		return jid, stored.NodeID, nil
+
 	default:
-		return fmt.Errorf("unknown inbound action")
+		return "", "", fmt.Errorf("unknown inbound action")
 	}
 }
 
