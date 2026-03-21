@@ -1684,6 +1684,27 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </div>
   </div>
 
+  <div id="credEditModal" class="modal-overlay hidden">
+    <div class="modal" style="max-width:420px">
+      <div class="modal-hdr">
+        <h3>Edit Credential</h3>
+        <button class="modal-close" id="closeCredEditModalBtn">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="credEditID">
+        <input type="hidden" id="credEditVersion">
+        <div class="form-group">
+          <label>Label</label>
+          <input type="text" id="credEditLabel" placeholder="e.g. Kamil iPhone" style="width:100%">
+        </div>
+        <div class="modal-ftr">
+          <button type="button" class="btn secondary" id="cancelCredEditBtn">Cancel</button>
+          <button type="button" class="btn primary" id="saveCredEditBtn">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     const cfgRaw = {
       basePath: {{printf "%q" .BasePath}},
@@ -2012,6 +2033,34 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         modal.addEventListener("keydown", onKey);
       });
     }
+
+    // Credential edit modal
+    document.getElementById("closeCredEditModalBtn").addEventListener("click", () => {
+      document.getElementById("credEditModal").classList.add("hidden");
+    });
+    document.getElementById("cancelCredEditBtn").addEventListener("click", () => {
+      document.getElementById("credEditModal").classList.add("hidden");
+    });
+    document.getElementById("credEditModal").addEventListener("keydown", (e) => {
+      if (e.key === "Escape") document.getElementById("credEditModal").classList.add("hidden");
+    });
+    document.getElementById("saveCredEditBtn").addEventListener("click", async () => {
+      const credID = document.getElementById("credEditID").value;
+      const version = document.getElementById("credEditVersion").value;
+      const label = document.getElementById("credEditLabel").value.trim();
+      try {
+        await postForm(cfg.subsActionPath, {
+          op: "update_credential",
+          credential_id: credID,
+          label: label,
+          version: version,
+        });
+        document.getElementById("credEditModal").classList.add("hidden");
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
+
     function openNodeModal(node) {
       const isEdit = !!node;
       const role = node ? (node.Role || "node") : "node";
@@ -3135,7 +3184,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           '<td>'+ (c.ClientURI
             ? '<div class="row"><input class="mono" style="min-width:320px;width:100%" readonly value="'+esc(c.ClientURI)+'"><button class="btn secondary" data-copy="'+esc(c.ClientURI)+'">copy</button></div>'
             : '<span class="muted">unavailable</span>') +'</td>' +
-          '<td><button class="btn err" data-cred-id="'+esc(c.ID)+'" data-cred-user="'+esc(c.UserID)+'" data-cred-version="'+esc(c.Version)+'">detach</button></td>' +
+          '<td style="white-space:nowrap">' +
+            '<button class="btn secondary" style="margin-right:4px" data-cred-edit-id="'+esc(c.ID)+'" data-cred-edit-label="'+esc(c.ClientLabel||'')+'" data-cred-edit-version="'+esc(c.Version)+'">edit</button>' +
+            '<button class="btn err" data-cred-id="'+esc(c.ID)+'" data-cred-user="'+esc(c.UserID)+'" data-cred-version="'+esc(c.Version)+'">detach</button>' +
+          '</td>' +
         '</tr>'
       )).join("");
       document.querySelectorAll("[data-cred-id]").forEach((btn) => {
@@ -3150,6 +3202,15 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           } catch (e) {
             showOp("error", String(e));
           }
+        });
+      });
+      document.querySelectorAll("[data-cred-edit-id]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          document.getElementById("credEditID").value = btn.getAttribute("data-cred-edit-id");
+          document.getElementById("credEditVersion").value = btn.getAttribute("data-cred-edit-version");
+          document.getElementById("credEditLabel").value = btn.getAttribute("data-cred-edit-label") || "";
+          document.getElementById("credEditModal").classList.remove("hidden");
+          document.getElementById("credEditLabel").focus();
         });
       });
 
@@ -4558,7 +4619,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					} else {
 						ops.set("ok", fmt.Sprintf("credentials detached: %d | %s", deletedCount, panelSummarizeOutput(out)))
 					}
-				case "attach_credential", "delete_credential":
+				case "attach_credential", "delete_credential", "update_credential":
 					if err := panelHandleCredentialAction(r.Context(), resolvedDB, r, &configPathValue, &dbPathValue, ops); err != nil {
 						ops.set("error", err.Error())
 					}
@@ -7512,6 +7573,66 @@ func panelHandleCredentialAction(ctx context.Context, dbPath string, r *http.Req
 		}
 		ops.set("ok", fmt.Sprintf("credential detached: %s | %s", credentialID, panelSummarizeOutput(out)))
 		return nil
+	case "update_credential":
+		credentialID := strings.TrimSpace(r.FormValue("credential_id"))
+		label := strings.TrimSpace(r.FormValue("label"))
+		version := strings.TrimSpace(r.FormValue("version"))
+		if credentialID == "" {
+			return fmt.Errorf("credential id is required")
+		}
+
+		credentials, err := store.Credentials().List(ctx)
+		if err != nil {
+			return fmt.Errorf("list credentials: %w", err)
+		}
+		var current domain.Credential
+		found := false
+		for _, cred := range credentials {
+			if cred.ID == credentialID {
+				current = cred
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("credential %q not found", credentialID)
+		}
+		if version != panelCredentialVersion(current) {
+			return fmt.Errorf("credential %q changed since page load; refresh and retry", credentialID)
+		}
+
+		// Build updated metadata with new label.
+		var meta struct {
+			Label string `json:"label"`
+		}
+		if strings.TrimSpace(current.Metadata) != "" {
+			_ = json.Unmarshal([]byte(current.Metadata), &meta)
+		}
+		meta.Label = label
+		metaBytes, err := json.Marshal(meta)
+		if err != nil {
+			return fmt.Errorf("marshal metadata: %w", err)
+		}
+		current.Metadata = string(metaBytes)
+
+		if _, err := store.Credentials().Update(ctx, current); err != nil {
+			return fmt.Errorf("update credential: %w", err)
+		}
+
+		// Refresh subscription for the credential owner.
+		userID := strings.TrimSpace(current.UserID)
+		if userID != "" {
+			out, runErr := panelExecuteCommand(ctx, newSubscriptionGenerateCmd(configPath, dbPathFlag), []string{userID})
+			if runErr != nil {
+				ops.set("error", fmt.Sprintf("label updated, but subscription generate failed: %s", panelErrWithOutput(runErr, out)))
+				return nil
+			}
+			ops.set("ok", fmt.Sprintf("label updated | %s", panelSummarizeOutput(out)))
+		} else {
+			ops.set("ok", "label updated")
+		}
+		return nil
+
 	default:
 		return fmt.Errorf("unknown credential action")
 	}
