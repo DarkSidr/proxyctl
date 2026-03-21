@@ -15,12 +15,12 @@ func TestBuildGeneratesCaddyfileAndRoutes(t *testing.T) {
 	cfg := config.DefaultAppConfig()
 	cfg.Paths.TemplatesDir = filepath.Join("..", "..", "..", "templates")
 	cfg.Paths.DecoySiteDir = "/etc/proxy-orchestrator/runtime/decoy-site"
-	cfg.Public.Domain = "public.example.com"
 	cfg.Public.HTTPS = true
 
 	builder := New(cfg)
 	result, err := builder.Build(BuildRequest{
-		Node: domain.Node{Host: "node.internal"},
+		// Node.Host is the per-node domain; inbound domains take priority when set.
+		Node: domain.Node{Host: "public.example.com"},
 		Inbounds: []domain.Inbound{
 			{ID: "in-1", Enabled: true, Transport: "ws", Port: 11080, Path: "/ws"},
 			{ID: "in-2", Enabled: true, Transport: "grpc", Port: 12080, Path: "grpc-api"},
@@ -50,6 +50,29 @@ func TestBuildGeneratesCaddyfileAndRoutes(t *testing.T) {
 	assertContains(t, body, "reverse_proxy @route_3 127.0.0.1:13080")
 }
 
+func TestBuildInboundDomainTakesPriorityOverNodeHost(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultAppConfig()
+	cfg.Paths.TemplatesDir = filepath.Join("..", "..", "..", "templates")
+	cfg.Public.HTTPS = true
+
+	builder := New(cfg)
+	result, err := builder.Build(BuildRequest{
+		Node: domain.Node{Host: "node.internal"},
+		Inbounds: []domain.Inbound{
+			{ID: "in-1", Enabled: true, Transport: "ws", Port: 11080, Path: "/ws", Domain: "inbound.example.com"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+	if len(result.Domains) != 1 || result.Domains[0] != "inbound.example.com" {
+		t.Fatalf("domains = %v, want [inbound.example.com]", result.Domains)
+	}
+	assertContains(t, string(result.Caddyfile), "inbound.example.com {")
+}
+
 func TestBuildSupportsHTTPAddress(t *testing.T) {
 	t.Parallel()
 
@@ -57,11 +80,10 @@ func TestBuildSupportsHTTPAddress(t *testing.T) {
 	cfg.Paths.TemplatesDir = filepath.Join("..", "..", "..", "templates")
 	cfg.Paths.DecoySiteDir = "/tmp/decoy"
 	cfg.Public.HTTPS = false
-	cfg.Public.Domain = "plain.example.com"
 
 	builder := New(cfg)
 	result, err := builder.Build(BuildRequest{
-		Node:     domain.Node{Host: "node.internal"},
+		Node:     domain.Node{Host: "plain.example.com"},
 		Inbounds: []domain.Inbound{{ID: "in-1", Enabled: true, Transport: "ws", Port: 11080, Path: "/ws"}},
 	})
 	if err != nil {
@@ -76,12 +98,11 @@ func TestBuildUsesFallbackTemplateWhenTemplateFilesMissing(t *testing.T) {
 	cfg := config.DefaultAppConfig()
 	cfg.Paths.TemplatesDir = filepath.Join(t.TempDir(), "missing-templates")
 	cfg.Paths.DecoySiteDir = "/etc/proxy-orchestrator/runtime/decoy-site"
-	cfg.Public.Domain = "fallback.example.com"
 	cfg.Public.HTTPS = true
 
 	builder := New(cfg)
 	result, err := builder.Build(BuildRequest{
-		Node:     domain.Node{Host: "node.internal"},
+		Node:     domain.Node{Host: "fallback.example.com"},
 		Inbounds: []domain.Inbound{{ID: "in-1", Enabled: true, Transport: "ws", Port: 11080, Path: "/ws"}},
 	})
 	if err != nil {

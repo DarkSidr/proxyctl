@@ -324,13 +324,13 @@ func buildRoute(cfg config.AppConfig, node domain.Node, inbound domain.Inbound) 
 }
 
 func publicDomain(cfg config.AppConfig, node domain.Node, inbound domain.Inbound) string {
-	if strings.TrimSpace(cfg.Public.Domain) != "" {
-		return strings.TrimSpace(cfg.Public.Domain)
-	}
 	if strings.TrimSpace(inbound.Domain) != "" {
 		return strings.TrimSpace(inbound.Domain)
 	}
-	return strings.TrimSpace(node.Host)
+	if strings.TrimSpace(node.Host) != "" {
+		return strings.TrimSpace(node.Host)
+	}
+	return strings.TrimSpace(cfg.Public.Domain)
 }
 
 func siteAddress(domainName string, https bool) string {
