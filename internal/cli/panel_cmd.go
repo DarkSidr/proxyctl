@@ -1705,6 +1705,23 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </div>
   </div>
 
+  <div id="nodeInfoModal" class="modal-overlay hidden">
+    <div class="modal" style="max-width:540px">
+      <div class="modal-hdr">
+        <h3 id="nodeInfoModalTitle">Node Diagnostics</h3>
+        <button class="modal-close" id="closeNodeInfoModalBtn">&#215;</button>
+      </div>
+      <div class="modal-body" id="nodeInfoModalBody">
+        <div id="nodeInfoLoading" style="text-align:center;padding:20px;color:var(--muted,#888)">Loading…</div>
+        <div id="nodeInfoContent" class="hidden"></div>
+      </div>
+      <div class="modal-ftr">
+        <button type="button" class="btn secondary" id="nodeInfoRefreshBtn">Refresh</button>
+        <button type="button" class="btn secondary" id="closeNodeInfoBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const cfgRaw = {
       basePath: {{printf "%q" .BasePath}},
@@ -1979,6 +1996,117 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       };
       setTimeout(poll, 2000);
     }
+    // Node Info Modal
+    let nodeInfoCurrentID = null;
+    let nodeInfoPollTimer = null;
+    function openNodeInfoModal(nodeID) {
+      nodeInfoCurrentID = nodeID;
+      const modal = document.getElementById("nodeInfoModal");
+      const node = (snapshot && snapshot.nodes) ? snapshot.nodes.find((n) => n.ID === nodeID) : null;
+      document.getElementById("nodeInfoModalTitle").textContent = "Diagnostics" + (node ? ": " + node.Name : "");
+      document.getElementById("nodeInfoLoading").classList.remove("hidden");
+      document.getElementById("nodeInfoContent").classList.add("hidden");
+      document.getElementById("nodeInfoContent").innerHTML = "";
+      modal.classList.remove("hidden");
+      fetchNodeInfo(nodeID);
+    }
+    async function fetchNodeInfo(nodeID) {
+      document.getElementById("nodeInfoLoading").classList.remove("hidden");
+      document.getElementById("nodeInfoContent").classList.add("hidden");
+      try {
+        const res = await fetch(cfg.nodesActionPath, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
+          body: new URLSearchParams({ op: "fetch_node_info", node_id: nodeID }),
+        });
+        if (!res.ok) throw new Error("request failed: " + res.status);
+        const out = await res.json();
+        if (out.job_id) {
+          pollNodeInfoJob(out.job_id, nodeID);
+        } else {
+          renderNodeInfoError(out.message || "unknown error");
+        }
+      } catch (e) {
+        renderNodeInfoError(String(e));
+      }
+    }
+    function pollNodeInfoJob(jobID, nodeID) {
+      if (nodeInfoPollTimer) { clearTimeout(nodeInfoPollTimer); nodeInfoPollTimer = null; }
+      const poll = async () => {
+        if (nodeInfoCurrentID !== nodeID) return;
+        try {
+          const res = await fetch(cfg.nodeJobsPath + "?id=" + encodeURIComponent(jobID), { headers: { "Accept": "application/json" } });
+          if (!res.ok) throw new Error("poll failed: " + res.status);
+          const job = await res.json();
+          if (job.done) {
+            if (job.ok) {
+              try {
+                const data = JSON.parse(job.msg);
+                renderNodeInfoData(data);
+              } catch (_) {
+                renderNodeInfoError(job.msg || "parse error");
+              }
+            } else {
+              renderNodeInfoError(job.msg || "diagnostics failed");
+            }
+          } else {
+            nodeInfoPollTimer = setTimeout(poll, 2000);
+          }
+        } catch (e) {
+          renderNodeInfoError(String(e));
+        }
+      };
+      nodeInfoPollTimer = setTimeout(poll, 2000);
+    }
+    function renderNodeInfoError(msg) {
+      document.getElementById("nodeInfoLoading").classList.add("hidden");
+      const el = document.getElementById("nodeInfoContent");
+      el.innerHTML = '<div style="color:var(--err,#e05555);padding:8px 0">' + esc(msg) + '</div>';
+      el.classList.remove("hidden");
+    }
+    function renderNodeInfoData(data) {
+      document.getElementById("nodeInfoLoading").classList.add("hidden");
+      const el = document.getElementById("nodeInfoContent");
+      const statusColor = (s) => {
+        if (s === "active") return "var(--ok,#4caf50)";
+        if (s === "inactive") return "var(--muted,#888)";
+        return "var(--err,#e05555)";
+      };
+      let html = '<table style="width:100%;border-collapse:collapse;font-size:0.9rem">';
+      html += '<thead><tr><th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border,#333)">Service</th><th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border,#333)">Status</th></tr></thead><tbody>';
+      (data.services || []).forEach((svc) => {
+        html += '<tr><td style="padding:4px 8px;font-family:monospace">' + esc(svc.name) + '</td><td style="padding:4px 8px;color:' + statusColor(svc.status) + '">' + esc(svc.status) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      if ((data.certs || []).length > 0) {
+        html += '<div style="margin-top:14px"><table style="width:100%;border-collapse:collapse;font-size:0.9rem">';
+        html += '<thead><tr><th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border,#333)">Domain</th><th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border,#333)">Certificate</th></tr></thead><tbody>';
+        (data.certs || []).forEach((c) => {
+          const certText = c.missing ? "MISSING" : esc(c.expiry);
+          const certColor = c.missing ? "var(--err,#e05555)" : "var(--ok,#4caf50)";
+          html += '<tr><td style="padding:4px 8px;font-family:monospace">' + esc(c.domain) + '</td><td style="padding:4px 8px;color:' + certColor + '">' + certText + '</td></tr>';
+        });
+        html += '</tbody></table></div>';
+      }
+      if (data.version) {
+        html += '<div style="margin-top:12px;font-size:0.85rem;color:var(--muted,#888)">proxyctl: <span style="font-family:monospace;color:var(--fg,#eee)">' + esc(data.version) + '</span></div>';
+      }
+      el.innerHTML = html;
+      el.classList.remove("hidden");
+    }
+    document.getElementById("closeNodeInfoModalBtn").addEventListener("click", () => {
+      nodeInfoCurrentID = null;
+      if (nodeInfoPollTimer) { clearTimeout(nodeInfoPollTimer); nodeInfoPollTimer = null; }
+      document.getElementById("nodeInfoModal").classList.add("hidden");
+    });
+    document.getElementById("closeNodeInfoBtn").addEventListener("click", () => {
+      nodeInfoCurrentID = null;
+      if (nodeInfoPollTimer) { clearTimeout(nodeInfoPollTimer); nodeInfoPollTimer = null; }
+      document.getElementById("nodeInfoModal").classList.add("hidden");
+    });
+    document.getElementById("nodeInfoRefreshBtn").addEventListener("click", () => {
+      if (nodeInfoCurrentID) fetchNodeInfo(nodeInfoCurrentID);
+    });
     // Prompts for SSH password via a modal. Returns a Promise<string>.
     function promptNodePass(title, desc) {
       return new Promise((resolve, reject) => {
@@ -3009,6 +3137,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           '<td class="row">' +
             '<button class="btn secondary" data-node-edit-id="'+esc(n.ID)+'">edit</button>' +
             '<button class="btn secondary"'+dis+' data-node-test-id="'+esc(n.ID)+'" data-node-test-version="'+esc(n.Version)+'">test</button>' +
+            '<button class="btn secondary"'+dis+' data-node-info-id="'+esc(n.ID)+'">info</button>' +
             '<button class="btn '+(n.Enabled ? 'warn' : '')+'"'+dis+' data-node-toggle-id="'+esc(n.ID)+'" data-node-toggle-version="'+esc(n.Version)+'" data-node-enabled="'+(n.Enabled ? '1' : '0')+'">'+(n.Enabled ? 'disable' : 'enable')+'</button>' +
             '<button class="btn err"'+dis+' data-node-delete-id="'+esc(n.ID)+'" data-node-delete-version="'+esc(n.Version)+'" data-node-delete-name="'+esc(n.Name)+'" data-node-delete-host="'+esc(n.Host)+'">delete</button>' +
           '</td>' +
@@ -3054,6 +3183,12 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           } catch (e) {
             showOp("error", String(e));
           }
+        });
+      });
+      document.querySelectorAll("[data-node-info-id]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const nodeID = btn.getAttribute("data-node-info-id");
+          openNodeInfoModal(nodeID);
         });
       });
       document.querySelectorAll("[data-node-toggle-id]").forEach((btn) => {
@@ -6995,6 +7130,138 @@ func panelSyncErrMissingCredentials(err error) bool {
 		strings.Contains(msg, "requires at least one password credential")
 }
 
+type nodeDiagServiceStatus struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+type nodeDiagCertStatus struct {
+	Domain  string `json:"domain"`
+	Expiry  string `json:"expiry"`
+	Missing bool   `json:"missing"`
+}
+
+type nodeDiagResult struct {
+	NodeName string                 `json:"node_name"`
+	Services []nodeDiagServiceStatus `json:"services"`
+	Certs    []nodeDiagCertStatus   `json:"certs"`
+	Version  string                 `json:"version"`
+}
+
+// panelFetchNodeDiag collects service status, TLS certificate status and proxyctl version
+// from the node (via SSH for remote nodes, locally for primary).
+func panelFetchNodeDiag(ctx context.Context, dbPath string, node domain.Node) (*nodeDiagResult, error) {
+	// Get inbounds to derive cert domains.
+	store, err := openStoreWithInit(ctx, dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+	defer store.Close()
+
+	allInbounds, err := store.Inbounds().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list inbounds: %w", err)
+	}
+
+	// Collect cert domains using the same logic as caddy builder needsCaddyCert.
+	certDomains := []string{}
+	seenDomains := map[string]bool{}
+	for _, ib := range allInbounds {
+		if ib.NodeID != node.ID {
+			continue
+		}
+		if !ib.TLSEnabled || ib.RealityEnabled || strings.TrimSpace(ib.TLSCertPath) != "" {
+			continue
+		}
+		dom := strings.TrimSpace(ib.Domain)
+		if dom == "" {
+			dom = strings.TrimSpace(node.Host)
+		}
+		if dom != "" && !seenDomains[dom] {
+			seenDomains[dom] = true
+			certDomains = append(certDomains, dom)
+		}
+	}
+
+	// Build a bash command that outputs tab-delimited lines.
+	var sb strings.Builder
+	sb.WriteString(`printf 'svc\tproxyctl-xray\t%s\n' "$(systemctl is-active proxyctl-xray 2>/dev/null || echo unknown)"; `)
+	sb.WriteString(`printf 'svc\tproxyctl-sing-box\t%s\n' "$(systemctl is-active proxyctl-sing-box 2>/dev/null || echo unknown)"; `)
+	sb.WriteString(`printf 'svc\tproxyctl-caddy\t%s\n' "$(systemctl is-active proxyctl-caddy 2>/dev/null || echo unknown)"; `)
+	sb.WriteString(`printf 'ver\t%s\n' "$(proxyctl version 2>/dev/null || proxyctl --version 2>/dev/null || echo unknown)"; `)
+	for _, dom := range certDomains {
+		certPath := fmt.Sprintf("/caddy/certificates/acme-v02.api.letsencrypt.org-directory/%s/%s.crt", dom, dom)
+		sb.WriteString(fmt.Sprintf(
+			`printf 'cert\t%s\t%%s\n' "$(openssl x509 -noout -enddate -in %s 2>/dev/null | sed 's/notAfter=//' || echo MISSING)"; `,
+			dom, certPath,
+		))
+	}
+	bashCmd := sb.String()
+
+	var out []byte
+	if node.Role == domain.NodeRolePrimary {
+		cmd := exec.CommandContext(ctx, "bash", "-c", bashCmd)
+		out, _ = cmd.CombinedOutput()
+	} else {
+		settings, settErr := panelNodeSyncSettingsFromEnv()
+		if settErr != nil {
+			return nil, settErr
+		}
+		if node.SSHUser != "" {
+			settings.opts.sshUser = node.SSHUser
+		}
+		if node.SSHPort > 0 {
+			settings.opts.sshPort = node.SSHPort
+		}
+		host := strings.TrimSpace(node.Host)
+		if host == "" {
+			return nil, fmt.Errorf("node %q has empty host", node.ID)
+		}
+		target := fmt.Sprintf("%s@%s", settings.opts.sshUser, host)
+		sshArgs := buildSSHArgs(settings.opts.sshPort, settings.opts.sshKeyPath, settings.opts.strictHostKey)
+		sshArgs = append(sshArgs, target, bashCmd)
+		var sshErr error
+		out, sshErr = runRemoteExecCombined(ctx, "ssh", sshArgs, settings.opts.sshPassword)
+		if sshErr != nil && len(out) == 0 {
+			return nil, fmt.Errorf("ssh to %s: %w", host, sshErr)
+		}
+	}
+
+	result := &nodeDiagResult{
+		NodeName: node.Name,
+		Services: []nodeDiagServiceStatus{},
+		Certs:    []nodeDiagCertStatus{},
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), "\t", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		switch parts[0] {
+		case "svc":
+			if len(parts) == 3 {
+				result.Services = append(result.Services, nodeDiagServiceStatus{
+					Name:   parts[1],
+					Status: strings.TrimSpace(parts[2]),
+				})
+			}
+		case "ver":
+			result.Version = strings.TrimSpace(parts[1])
+		case "cert":
+			if len(parts) == 3 {
+				expiry := strings.TrimSpace(parts[2])
+				missing := expiry == "MISSING" || expiry == ""
+				result.Certs = append(result.Certs, nodeDiagCertStatus{
+					Domain:  parts[1],
+					Expiry:  expiry,
+					Missing: missing,
+				})
+			}
+		}
+	}
+	return result, nil
+}
+
 // panelHandleNodeAction handles node CRUD and SSH operations.
 // Returns (jobID, nodeID, error): jobID is non-empty when a background job was started.
 func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, configPath, dbPathFlag *string, ops *panelOperationFeed) (string, string, error) {
@@ -7400,6 +7667,45 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			job.finish(true, fmt.Sprintf("proxyctl updated on %s", snapNode.Name))
 		}()
 		ops.set("ok", fmt.Sprintf("updating proxyctl on %s — running in background", current.Name))
+		return job.id, "", nil
+
+	case "fetch_node_info":
+		nodeID := strings.TrimSpace(r.FormValue("node_id"))
+		if nodeID == "" {
+			return "", "", fmt.Errorf("node id is required")
+		}
+		nodes, err := store.Nodes().List(ctx)
+		if err != nil {
+			return "", "", fmt.Errorf("list nodes: %w", err)
+		}
+		var current domain.Node
+		found := false
+		for _, node := range nodes {
+			if node.ID == nodeID {
+				current = node
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", "", fmt.Errorf("node %q not found", nodeID)
+		}
+		job := newNodeJob(current.ID, "fetch_node_info")
+		snapNode := current
+		go func() {
+			diagResult, diagErr := panelFetchNodeDiag(context.Background(), dbPath, snapNode)
+			if diagErr != nil {
+				job.finish(false, fmt.Sprintf("diagnostics failed: %s (%s) | %v", snapNode.Name, snapNode.Host, diagErr))
+				return
+			}
+			jsonBytes, jsonErr := json.Marshal(diagResult)
+			if jsonErr != nil {
+				job.finish(false, fmt.Sprintf("marshal diagnostics: %v", jsonErr))
+				return
+			}
+			job.finish(true, string(jsonBytes))
+		}()
+		ops.set("ok", fmt.Sprintf("fetching diagnostics for %s…", current.Name))
 		return job.id, "", nil
 
 	default:
