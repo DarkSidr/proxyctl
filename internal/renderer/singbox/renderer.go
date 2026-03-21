@@ -154,6 +154,10 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 		case domain.ProtocolHysteria2:
 			cfg, items, err := buildHysteria2Inbound(req.Node, inbound, byInbound[inbound.ID])
 			if err != nil {
+				if len(byInbound[inbound.ID]) == 0 {
+					// No credentials yet — skip silently.
+					continue
+				}
 				return configDoc{}, nil, err
 			}
 			cfgInbounds = append(cfgInbounds, cfg)

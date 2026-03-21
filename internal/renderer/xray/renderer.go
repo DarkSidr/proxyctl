@@ -192,6 +192,9 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 		case domain.ProtocolVLESS:
 			cfg, items, err := buildVLESSInbound(req.Node, inbound, byInbound[inbound.ID])
 			if err != nil {
+				if len(byInbound[inbound.ID]) == 0 {
+					continue
+				}
 				return configDoc{}, nil, err
 			}
 			cfgInbounds = append(cfgInbounds, cfg)
@@ -199,6 +202,9 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 		case domain.ProtocolXHTTP:
 			cfg, items, err := buildXHTTPInbound(req.Node, inbound, byInbound[inbound.ID])
 			if err != nil {
+				if len(byInbound[inbound.ID]) == 0 {
+					continue
+				}
 				return configDoc{}, nil, err
 			}
 			cfgInbounds = append(cfgInbounds, cfg)
