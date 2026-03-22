@@ -114,6 +114,8 @@ type panelNodeView struct {
 	SSHUser       string
 	SSHPort       int
 	Enabled       bool
+	DisableIPv6   bool
+	BlockPing     bool
 	Version       string
 	SyncOK        *bool // nil = never synced, true = last OK, false = last failed
 	SyncMsg       string
@@ -1615,7 +1617,20 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           <span class="flabel">SSH Port</span>
           <input id="ndSSHPort" type="number" value="22" min="1" max="65535" style="width:100px">
         </div>
-        <div class="frow" id="ndPasswordRow">
+        <div class="frow">
+          <span class="flabel">Hardening</span>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input id="ndDisableIPv6" type="checkbox">
+              <span>Disable IPv6</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input id="ndBlockPing" type="checkbox">
+              <span>Block ICMP ping</span>
+            </label>
+          </div>
+        </div>
+        <div id="ndPasswordRow" class="frow">
           <span class="flabel">Password</span>
           <input id="ndPassword" type="password" placeholder="for first-time bootstrap (optional, not stored)">
         </div>
@@ -1633,6 +1648,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           <div id="ndSshOpsGroup" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
             <button type="button" class="btn secondary" id="ndSetupSshKeyBtn">setup ssh key</button>
             <button type="button" class="btn secondary" id="ndBootstrapBtn">bootstrap</button>
+            <button type="button" class="btn secondary" id="ndApplyHardeningBtn">apply hardening</button>
             <button type="button" class="btn warn" id="ndUpdateProxyctlBtn">update proxyctl</button>
           </div>
           <div id="ndSyncGroup" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -1641,6 +1657,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           <div class="muted" style="font-size:0.75rem;margin-top:8px;line-height:1.5">
             <b>setup ssh key</b> — installs panel public key on node for passwordless sync<br>
             <b>bootstrap</b> — (re)installs xray / sing-box / caddy on node<br>
+            <b>apply hardening</b> — writes sysctl rules for selected hardening options (IPv6 / ping) without full reinstall<br>
             <b>update proxyctl</b> — runs <code>proxyctl update --force</code> on the remote node<br>
             <b>sync now</b> — regenerates configs and restarts proxy services on this node
           </div>
@@ -2218,6 +2235,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       document.getElementById("ndRole").value = role;
       document.getElementById("ndSSHUser").value = node ? (node.SSHUser || "") : "";
       document.getElementById("ndSSHPort").value = node ? (node.SSHPort || 22) : 22;
+      document.getElementById("ndDisableIPv6").checked = node ? !!node.DisableIPv6 : false;
+      document.getElementById("ndBlockPing").checked = node ? !!node.BlockPing : false;
       document.getElementById("ndPassword").value = "";
       const pwRow = document.getElementById("ndPasswordRow");
       if (pwRow) pwRow.classList.toggle("hidden", isEdit);
@@ -3470,6 +3489,23 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         showOp("error", String(e));
       }
     });
+    document.getElementById("ndApplyHardeningBtn").addEventListener("click", async () => {
+      const n = getModalNode();
+      if (!n.id) return;
+      const label = n.host ? (n.name + " (" + n.host + ")") : n.name;
+      if (!n.DisableIPv6 && !n.BlockPing) {
+        showOp("error", "No hardening options enabled — enable Disable IPv6 or Block Ping in node settings first");
+        return;
+      }
+      try {
+        const sshPassword = await promptNodePass("Apply Hardening", "SSH password for " + label + " (leave empty if key auth works):");
+        closeNodeModal();
+        await postForm(cfg.nodesActionPath, { op: "apply_hardening", node_id: n.id, version: n.version, ssh_password: sshPassword });
+      } catch (e) {
+        if (String(e).includes("cancelled")) return;
+        showOp("error", String(e));
+      }
+    });
     document.getElementById("ndFetchVersionBtn").addEventListener("click", async () => {
       const n = getModalNode();
       if (!n.id) return;
@@ -3521,14 +3557,16 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const role = (document.getElementById("ndRole").value || "node").trim();
       const sshUser = (document.getElementById("ndSSHUser").value || "").trim();
       const sshPort = (document.getElementById("ndSSHPort").value || "22").trim();
+      const disableIPv6 = document.getElementById("ndDisableIPv6").checked ? "1" : "0";
+      const blockPing = document.getElementById("ndBlockPing").checked ? "1" : "0";
       const password = (document.getElementById("ndPassword").value || "").trim();
       if (!name || !host) { showOp("error", "name and host are required"); return; }
       closeNodeModal();
       try {
         if (nodeID) {
-          await postForm(cfg.nodesActionPath, { op: "update", node_id: nodeID, version, name, host, role, ssh_user: sshUser, ssh_port: sshPort });
+          await postForm(cfg.nodesActionPath, { op: "update", node_id: nodeID, version, name, host, role, ssh_user: sshUser, ssh_port: sshPort, disable_ipv6: disableIPv6, block_ping: blockPing });
         } else {
-          await postForm(cfg.nodesActionPath, { op: "create", name, host, role, ssh_user: sshUser, ssh_port: sshPort, ssh_password: password });
+          await postForm(cfg.nodesActionPath, { op: "create", name, host, role, ssh_user: sshUser, ssh_port: sshPort, disable_ipv6: disableIPv6, block_ping: blockPing, ssh_password: password });
         }
       } catch (e) {
         showOp("error", String(e));
@@ -4924,14 +4962,16 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		nodeNameByID[node.ID] = strings.TrimSpace(node.Name)
 		nodeByID[node.ID] = node
 		nv := panelNodeView{
-			ID:      node.ID,
-			Name:    node.Name,
-			Host:    node.Host,
-			Role:    string(node.Role),
-			SSHUser: node.SSHUser,
-			SSHPort: node.SSHPort,
-			Enabled: node.Enabled,
-			Version: panelNodeVersion(node),
+			ID:          node.ID,
+			Name:        node.Name,
+			Host:        node.Host,
+			Role:        string(node.Role),
+			SSHUser:     node.SSHUser,
+			SSHPort:     node.SSHPort,
+			Enabled:     node.Enabled,
+			DisableIPv6: node.DisableIPv6,
+			BlockPing:   node.BlockPing,
+			Version:     panelNodeVersion(node),
 		}
 		if ok, msg, found := getNodeSyncStatus(node.ID); found {
 			okVal := ok
@@ -6568,6 +6608,12 @@ func panelEnsureProxyctlOnNode(ctx context.Context, configPath string, node doma
 	if contactEmail != "" {
 		installEnv += " PROXYCTL_CONTACT_EMAIL=" + shellQuote(contactEmail)
 	}
+	if node.DisableIPv6 {
+		installEnv += " PROXYCTL_DISABLE_IPV6=1"
+	}
+	if node.BlockPing {
+		installEnv += " PROXYCTL_BLOCK_PING=1"
+	}
 	installCmd := prefix + "bash -lc " + shellQuote(
 		"command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl); "+
 			"curl -fsSL "+defaultUpdateInstallURL+
@@ -6585,6 +6631,59 @@ func panelEnsureProxyctlOnNode(ctx context.Context, configPath string, node doma
 	sshArgs = append(sshArgs, target, remoteCmd)
 	if out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, settings.opts.sshPassword); err != nil {
 		return fmt.Errorf("bootstrap proxyctl on node %q (%s): %w | %s", node.ID, host, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// panelApplyNodeHardening applies network hardening (disable IPv6, block ping)
+// on an already-installed node without re-running the full bootstrap.
+func panelApplyNodeHardening(ctx context.Context, node domain.Node, sshPassword string) error {
+	settings, err := panelNodeSyncSettingsFromEnv()
+	if err != nil {
+		return err
+	}
+	if !settings.enabled {
+		return fmt.Errorf("%s=0, auto-node-sync is disabled", panelEnvAutoNodeSyncEnabled)
+	}
+	if sshPassword != "" {
+		settings.opts.sshPassword = strings.TrimSpace(sshPassword)
+	}
+	if node.SSHUser != "" {
+		settings.opts.sshUser = node.SSHUser
+	}
+	if node.SSHPort > 0 {
+		settings.opts.sshPort = node.SSHPort
+	}
+	host := strings.TrimSpace(node.Host)
+	if host == "" {
+		return fmt.Errorf("node %q has empty host", node.ID)
+	}
+
+	conf := "/etc/sysctl.d/99-proxyctl-hardening.conf"
+	prefix := ""
+	if settings.opts.remoteUseSudo {
+		prefix = "sudo "
+	}
+
+	var cmds []string
+	cmds = append(cmds, "set -e")
+	if node.DisableIPv6 {
+		cmds = append(cmds,
+			prefix+"grep -qxF 'net.ipv6.conf.all.disable_ipv6 = 1' "+conf+" 2>/dev/null || "+prefix+"printf 'net.ipv6.conf.all.disable_ipv6 = 1\\nnet.ipv6.conf.default.disable_ipv6 = 1\\nnet.ipv6.conf.lo.disable_ipv6 = 1\\n' >> "+conf,
+		)
+	}
+	if node.BlockPing {
+		cmds = append(cmds,
+			prefix+"grep -qxF 'net.ipv4.icmp_echo_ignore_all = 1' "+conf+" 2>/dev/null || "+prefix+"printf 'net.ipv4.icmp_echo_ignore_all = 1\\n' >> "+conf,
+		)
+	}
+	cmds = append(cmds, prefix+"sysctl -p "+conf)
+
+	target := fmt.Sprintf("%s@%s", settings.opts.sshUser, host)
+	sshArgs := buildSSHArgs(settings.opts.sshPort, settings.opts.sshKeyPath, settings.opts.strictHostKey)
+	sshArgs = append(sshArgs, target, strings.Join(cmds, "; "))
+	if out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, settings.opts.sshPassword); err != nil {
+		return fmt.Errorf("apply hardening on node %q (%s): %w | %s", node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -7317,6 +7416,8 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			sshPort = p
 		}
 		sshPassword := strings.TrimSpace(r.FormValue("ssh_password"))
+		disableIPv6 := panelFormBool(r.FormValue("disable_ipv6"))
+		blockPing := panelFormBool(r.FormValue("block_ping"))
 		if name == "" {
 			return "", "", fmt.Errorf("node name is required")
 		}
@@ -7328,12 +7429,14 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			role = domain.NodeRolePrimary
 		}
 		created, err := store.Nodes().Create(ctx, domain.Node{
-			Name:    name,
-			Host:    host,
-			Role:    role,
-			SSHUser: sshUser,
-			SSHPort: sshPort,
-			Enabled: true,
+			Name:        name,
+			Host:        host,
+			Role:        role,
+			SSHUser:     sshUser,
+			SSHPort:     sshPort,
+			Enabled:     true,
+			DisableIPv6: disableIPv6,
+			BlockPing:   blockPing,
 		})
 		if err != nil {
 			return "", "", fmt.Errorf("create node: %w", err)
@@ -7368,7 +7471,7 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 		ops.set("ok", fmt.Sprintf("node created: %s (%s)", created.Name, created.Host))
 		return "", created.ID, nil
 
-	case "install_ssh_key", "bootstrap", "test", "sync", "set_enabled", "update", "delete":
+	case "install_ssh_key", "bootstrap", "apply_hardening", "test", "sync", "set_enabled", "update", "delete":
 		nodeID := strings.TrimSpace(r.FormValue("node_id"))
 		version := strings.TrimSpace(r.FormValue("version"))
 		if nodeID == "" {
@@ -7414,6 +7517,28 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 				job.finish(true, fmt.Sprintf("ssh key setup ok: %s (%s)%s", snapNode.Name, snapNode.Host, extra))
 			}()
 			ops.set("ok", fmt.Sprintf("ssh key setup started for %s — running in background", current.Name))
+			return job.id, "", nil
+		}
+		if action == "apply_hardening" {
+			if current.Role == domain.NodeRolePrimary {
+				ops.set("ok", fmt.Sprintf("hardening skipped: %s (%s) is primary", current.Name, current.Host))
+				return "", "", nil
+			}
+			if !current.DisableIPv6 && !current.BlockPing {
+				ops.set("ok", fmt.Sprintf("hardening skipped: no options enabled for %s — enable Disable IPv6 or Block Ping in node settings first", current.Name))
+				return "", "", nil
+			}
+			sshPassword := strings.TrimSpace(r.FormValue("ssh_password"))
+			job := newNodeJob(current.ID, "apply_hardening")
+			snapNode := current
+			go func() {
+				if applyErr := panelApplyNodeHardening(context.Background(), snapNode, sshPassword); applyErr != nil {
+					job.finish(false, fmt.Sprintf("hardening failed: %s (%s) | %v", snapNode.Name, snapNode.Host, applyErr))
+					return
+				}
+				job.finish(true, fmt.Sprintf("hardening applied: %s (%s)", snapNode.Name, snapNode.Host))
+			}()
+			ops.set("ok", fmt.Sprintf("hardening started for %s — running in background", current.Name))
 			return job.id, "", nil
 		}
 		if action == "bootstrap" {
@@ -7557,6 +7682,8 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			current.Role = role
 			current.SSHUser = sshUser
 			current.SSHPort = sshPort
+			current.DisableIPv6 = panelFormBool(r.FormValue("disable_ipv6"))
+			current.BlockPing = panelFormBool(r.FormValue("block_ping"))
 			updated, err := store.Nodes().Update(ctx, current)
 			if err != nil {
 				return "", "", fmt.Errorf("update node: %w", err)
@@ -8194,6 +8321,8 @@ func panelNodeVersion(node domain.Node) string {
 		strings.TrimSpace(node.SSHUser),
 		strconv.Itoa(node.SSHPort),
 		strconv.FormatBool(node.Enabled),
+		strconv.FormatBool(node.DisableIPv6),
+		strconv.FormatBool(node.BlockPing),
 		node.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}, "|")
 	sum := sha256.Sum256([]byte(s))

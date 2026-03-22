@@ -79,6 +79,8 @@ type Node struct {
 	SSHUser     string
 	SSHPort     int
 	Enabled     bool
+	DisableIPv6 bool
+	BlockPing   bool
 	CreatedAt   time.Time
 	LastSyncOK  *bool // nil = never synced; persisted across panel restarts
 	LastSyncMsg string

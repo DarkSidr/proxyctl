@@ -162,7 +162,7 @@ func (r *nodeRepository) Create(ctx context.Context, node domain.Node) (domain.N
 
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO nodes (id, name, host, role, ssh_user, ssh_port, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO nodes (id, name, host, role, ssh_user, ssh_port, enabled, disable_ipv6, block_ping, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		node.ID,
 		node.Name,
 		node.Host,
@@ -170,6 +170,8 @@ func (r *nodeRepository) Create(ctx context.Context, node domain.Node) (domain.N
 		node.SSHUser,
 		node.SSHPort,
 		boolToInt(node.Enabled),
+		boolToInt(node.DisableIPv6),
+		boolToInt(node.BlockPing),
 		node.CreatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -182,7 +184,7 @@ func (r *nodeRepository) Create(ctx context.Context, node domain.Node) (domain.N
 }
 
 func (r *nodeRepository) List(ctx context.Context) ([]domain.Node, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, name, host, role, ssh_user, ssh_port, enabled, created_at, last_sync_ok, last_sync_msg FROM nodes ORDER BY created_at ASC, id ASC`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, name, host, role, ssh_user, ssh_port, enabled, disable_ipv6, block_ping, created_at, last_sync_ok, last_sync_msg FROM nodes ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -193,14 +195,18 @@ func (r *nodeRepository) List(ctx context.Context) ([]domain.Node, error) {
 		var (
 			node        domain.Node
 			enabled     int
+			disableIPv6 int
+			blockPing   int
 			createdAt   string
 			lastSyncOK  *int
 			lastSyncMsg string
 		)
-		if err := rows.Scan(&node.ID, &node.Name, &node.Host, &node.Role, &node.SSHUser, &node.SSHPort, &enabled, &createdAt, &lastSyncOK, &lastSyncMsg); err != nil {
+		if err := rows.Scan(&node.ID, &node.Name, &node.Host, &node.Role, &node.SSHUser, &node.SSHPort, &enabled, &disableIPv6, &blockPing, &createdAt, &lastSyncOK, &lastSyncMsg); err != nil {
 			return nil, fmt.Errorf("scan node: %w", err)
 		}
 		node.Enabled = intToBool(enabled)
+		node.DisableIPv6 = intToBool(disableIPv6)
+		node.BlockPing = intToBool(blockPing)
 		node.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse node created_at: %w", err)
@@ -253,13 +259,15 @@ func (r *nodeRepository) Update(ctx context.Context, node domain.Node) (domain.N
 
 	result, err := r.db.ExecContext(
 		ctx,
-		`UPDATE nodes SET name = ?, host = ?, role = ?, ssh_user = ?, ssh_port = ?, enabled = ? WHERE id = ?`,
+		`UPDATE nodes SET name = ?, host = ?, role = ?, ssh_user = ?, ssh_port = ?, enabled = ?, disable_ipv6 = ?, block_ping = ? WHERE id = ?`,
 		node.Name,
 		node.Host,
 		node.Role,
 		node.SSHUser,
 		node.SSHPort,
 		boolToInt(node.Enabled),
+		boolToInt(node.DisableIPv6),
+		boolToInt(node.BlockPing),
 		node.ID,
 	)
 	if err != nil {
@@ -277,17 +285,21 @@ func (r *nodeRepository) Update(ctx context.Context, node domain.Node) (domain.N
 	}
 
 	var (
-		enabled   int
-		createdAt string
+		enabled     int
+		disableIPv6 int
+		blockPing   int
+		createdAt   string
 	)
 	if err := r.db.QueryRowContext(
 		ctx,
-		`SELECT id, name, host, role, ssh_user, ssh_port, enabled, created_at FROM nodes WHERE id = ?`,
+		`SELECT id, name, host, role, ssh_user, ssh_port, enabled, disable_ipv6, block_ping, created_at FROM nodes WHERE id = ?`,
 		node.ID,
-	).Scan(&node.ID, &node.Name, &node.Host, &node.Role, &node.SSHUser, &node.SSHPort, &enabled, &createdAt); err != nil {
+	).Scan(&node.ID, &node.Name, &node.Host, &node.Role, &node.SSHUser, &node.SSHPort, &enabled, &disableIPv6, &blockPing, &createdAt); err != nil {
 		return domain.Node{}, fmt.Errorf("read updated node: %w", err)
 	}
 	node.Enabled = intToBool(enabled)
+	node.DisableIPv6 = intToBool(disableIPv6)
+	node.BlockPing = intToBool(blockPing)
 	node.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
 		return domain.Node{}, fmt.Errorf("parse node created_at: %w", err)

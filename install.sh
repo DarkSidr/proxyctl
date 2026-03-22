@@ -47,6 +47,8 @@ PROXYCTL_PANEL_PATH="${PROXYCTL_PANEL_PATH:-}"
 PROXYCTL_PANEL_LOGIN="${PROXYCTL_PANEL_LOGIN:-}"
 PROXYCTL_PANEL_PASSWORD="${PROXYCTL_PANEL_PASSWORD:-}"
 PROXYCTL_PANEL_PORT="${PROXYCTL_PANEL_PORT:-}"
+PROXYCTL_DISABLE_IPV6="${PROXYCTL_DISABLE_IPV6:-}"
+PROXYCTL_BLOCK_PING="${PROXYCTL_BLOCK_PING:-}"
 
 # Optional runtime URLs for environments where apt packages are unavailable.
 SINGBOX_BINARY_URL="${SINGBOX_BINARY_URL:-}"
@@ -65,6 +67,8 @@ SELECTED_PANEL_LOGIN=""
 SELECTED_PANEL_PASSWORD=""
 SELECTED_PANEL_PORT=""
 PANEL_URL_HINT=""
+SELECTED_DISABLE_IPV6="0"
+SELECTED_BLOCK_PING="0"
 
 log() {
   printf '[%s] %s\n' "${INSTALL_TAG}" "$*"
@@ -122,6 +126,34 @@ prompt_with_default() {
   else
     printf '%s\n' "${answer}"
   fi
+}
+
+prompt_yes_no() {
+  local label="$1"
+  local current="$2"
+  local prompt_target="/dev/stderr"
+  if [[ -w /dev/tty ]]; then
+    prompt_target="/dev/tty"
+  fi
+  local default_choice="n"
+  if [[ "${current}" == "1" || "${current}" == "y" || "${current}" == "yes" ]]; then
+    default_choice="y"
+  fi
+  local answer=""
+  while true; do
+    printf '%s [y/N]: ' "${label}" >"${prompt_target}"
+    if [[ -r /dev/tty ]]; then
+      IFS= read -r answer < /dev/tty || true
+    else
+      IFS= read -r answer || true
+    fi
+    answer="${answer:-${default_choice}}"
+    case "$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')" in
+      y|yes) printf '1\n'; return 0 ;;
+      n|no)  printf '0\n'; return 0 ;;
+      *) warn "Please answer y or n." ;;
+    esac
+  done
 }
 
 prompt_reverse_proxy_choice() {
@@ -542,6 +574,15 @@ configure_install_preferences() {
   if [[ -n "${PROXYCTL_DECOY_TEMPLATE}" ]]; then
     SELECTED_DECOY_TEMPLATE="$(printf '%s' "${PROXYCTL_DECOY_TEMPLATE}" | tr '[:upper:]' '[:lower:]')"
   fi
+  local norm_ipv6 norm_ping
+  norm_ipv6="$(printf '%s' "${PROXYCTL_DISABLE_IPV6}" | tr '[:upper:]' '[:lower:]')"
+  norm_ping="$(printf '%s' "${PROXYCTL_BLOCK_PING}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${norm_ipv6}" == "1" || "${norm_ipv6}" == "yes" || "${norm_ipv6}" == "true" ]]; then
+    SELECTED_DISABLE_IPV6="1"
+  fi
+  if [[ "${norm_ping}" == "1" || "${norm_ping}" == "yes" || "${norm_ping}" == "true" ]]; then
+    SELECTED_BLOCK_PING="1"
+  fi
 
   if can_prompt; then
     prompt_enabled="1"
@@ -558,6 +599,9 @@ configure_install_preferences() {
       SELECTED_PUBLIC_DOMAIN="$(prompt_with_default "Public domain (optional for subscriptions)" "${SELECTED_PUBLIC_DOMAIN}")"
     fi
     SELECTED_DECOY_TEMPLATE="$(prompt_decoy_template_choice "${SELECTED_DECOY_TEMPLATE}")"
+    log "Network hardening options"
+    SELECTED_DISABLE_IPV6="$(prompt_yes_no "Disable IPv6" "${SELECTED_DISABLE_IPV6}")"
+    SELECTED_BLOCK_PING="$(prompt_yes_no "Block ICMP ping (server won't respond to ping)" "${SELECTED_BLOCK_PING}")"
   fi
 
   SELECTED_PUBLIC_DOMAIN="$(printf '%s' "${SELECTED_PUBLIC_DOMAIN}" | xargs || true)"
@@ -569,6 +613,38 @@ configure_install_preferences() {
     log "Selected public domain: ${SELECTED_PUBLIC_DOMAIN}"
   fi
   log "Selected decoy template: ${SELECTED_DECOY_TEMPLATE}"
+  log "Disable IPv6: ${SELECTED_DISABLE_IPV6}"
+  log "Block ping: ${SELECTED_BLOCK_PING}"
+}
+
+apply_network_hardening() {
+  local conf="/etc/sysctl.d/99-proxyctl-hardening.conf"
+  local changed=0
+
+  if [[ "${SELECTED_DISABLE_IPV6}" != "1" && "${SELECTED_BLOCK_PING}" != "1" ]]; then
+    return 0
+  fi
+
+  : > "${conf}"
+
+  if [[ "${SELECTED_DISABLE_IPV6}" == "1" ]]; then
+    printf 'net.ipv6.conf.all.disable_ipv6 = 1\n' >> "${conf}"
+    printf 'net.ipv6.conf.default.disable_ipv6 = 1\n' >> "${conf}"
+    printf 'net.ipv6.conf.lo.disable_ipv6 = 1\n' >> "${conf}"
+    changed=1
+    log "IPv6 disabled via sysctl"
+  fi
+
+  if [[ "${SELECTED_BLOCK_PING}" == "1" ]]; then
+    printf 'net.ipv4.icmp_echo_ignore_all = 1\n' >> "${conf}"
+    changed=1
+    log "ICMP echo (ping) blocked via sysctl"
+  fi
+
+  if [[ "${changed}" == "1" ]]; then
+    sysctl -p "${conf}" >/dev/null 2>&1 || warn "sysctl -p failed; settings will apply on next reboot"
+    log "Network hardening written to ${conf}"
+  fi
 }
 
 detect_os() {
@@ -1735,6 +1811,7 @@ main() {
   install_or_verify_runtime_binary "xray" "${XRAY_BINARY_URL}" "XRAY_BINARY_URL" xray xray-core
 
   configure_install_preferences
+  apply_network_hardening
   prepare_panel_credentials
   ensure_directories
   install_systemd_units

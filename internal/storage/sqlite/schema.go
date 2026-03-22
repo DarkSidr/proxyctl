@@ -120,4 +120,6 @@ var schemaMigrations = []string{
 				SELECT 1 FROM nodes WHERE lower(trim(role)) = 'primary' AND id <> OLD.id
 			);
 		END`,
+	`ALTER TABLE nodes ADD COLUMN disable_ipv6 INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE nodes ADD COLUMN block_ping INTEGER NOT NULL DEFAULT 0`,
 }
