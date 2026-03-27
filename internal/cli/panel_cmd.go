@@ -6714,8 +6714,10 @@ func panelApplyNodeHardening(ctx context.Context, node domain.Node, sshPassword 
 	if node.BlockPing {
 		cmds = append(cmds,
 			prefix+"grep -qxF 'net.ipv4.icmp_echo_ignore_all = 1' "+conf+" 2>/dev/null || "+prefix+"printf 'net.ipv4.icmp_echo_ignore_all = 1\\n' >> "+conf,
-			// iptables rule as fallback (covers self-ping and some VPS setups where sysctl alone is insufficient)
-			prefix+"iptables -C INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null || "+prefix+"iptables -I INPUT -p icmp --icmp-type echo-request -j DROP",
+			// Extra firewall rule — try iptables, fall back to nft, ignore if neither present.
+			"("+prefix+"iptables -C INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null || "+prefix+"iptables -I INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null) || "+
+				"("+prefix+"nft add table inet proxyctl 2>/dev/null; "+prefix+"nft add chain inet proxyctl input '{ type filter hook input priority 0; policy accept; }' 2>/dev/null; "+
+				prefix+"nft add rule inet proxyctl input icmp type echo-request drop 2>/dev/null) || true",
 		)
 	}
 	cmds = append(cmds, prefix+"sysctl -p "+conf)
@@ -6761,15 +6763,22 @@ func panelApplyLocalHardening(_ context.Context, node domain.Node) error {
 		return fmt.Errorf("sysctl -p: %w | %s", err, strings.TrimSpace(string(out)))
 	}
 
-	// iptables rule as fallback: covers self-ping and VPS setups where sysctl alone is insufficient.
+	// Firewall rule as extra layer: covers self-ping edge cases.
+	// Try iptables first, fall back to nft (nftables). Non-fatal if neither available.
 	if node.BlockPing {
-		ipt := resolveBinaryPath("iptables")
-		// -C checks existence; only insert if not already present.
-		if _, err := runExecCombined(context.Background(), ipt, "-C", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"); err != nil {
-			if out, err2 := runExecCombined(context.Background(), ipt, "-I", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"); err2 != nil {
-				return fmt.Errorf("iptables block ping: %w | %s", err2, strings.TrimSpace(string(out)))
+		if ipt := resolveBinaryPath("iptables"); ipt != "iptables" {
+			// iptables is available — add rule if not already present.
+			if _, err := runExecCombined(context.Background(), ipt, "-C", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"); err != nil {
+				runExecCombined(context.Background(), ipt, "-I", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP") //nolint:errcheck
 			}
+		} else if nft := resolveBinaryPath("nft"); nft != "nft" {
+			// nftables: ensure input chain rule exists.
+			// Best-effort: create table/chain if missing, then add rule.
+			runExecCombined(context.Background(), nft, "add", "table", "inet", "proxyctl")                                                                   //nolint:errcheck
+			runExecCombined(context.Background(), nft, "add", "chain", "inet", "proxyctl", "input", "{ type filter hook input priority 0; policy accept; }") //nolint:errcheck
+			runExecCombined(context.Background(), nft, "add", "rule", "inet", "proxyctl", "input", "icmp", "type", "echo-request", "drop")                   //nolint:errcheck
 		}
+		// If neither tool is available, sysctl icmp_echo_ignore_all=1 is the active block.
 	}
 	return nil
 }
