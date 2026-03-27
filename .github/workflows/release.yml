@@ -51,27 +51,29 @@ jobs:
             https://github.com/SagerNet/sing-box.git /tmp/sing-box
 
       - name: Build sing-box amd64
+        working-directory: /tmp/sing-box
         run: |
           set -euo pipefail
-          cd /tmp/sing-box
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
             go build -trimpath -tags "${{ env.SINGBOX_TAGS }}" \
-            -o /tmp/sing-box-linux-amd64 ./cmd/sing-box
-          cp /tmp/sing-box-linux-amd64 $GITHUB_WORKSPACE/dist/sing-box-linux-amd64
-          sha256sum dist/sing-box-linux-amd64 > dist/sing-box-linux-amd64.sha256
-        working-directory: ${{ github.workspace }}
+            -o "$GITHUB_WORKSPACE/dist/sing-box-linux-amd64" ./cmd/sing-box
+          sha256sum -b "$GITHUB_WORKSPACE/dist/sing-box-linux-amd64" \
+            | sed "s|$GITHUB_WORKSPACE/dist/||" \
+            > "$GITHUB_WORKSPACE/dist/sing-box-linux-amd64.sha256"
 
       - name: Build sing-box arm64
+        working-directory: /tmp/sing-box
         run: |
           set -euo pipefail
-          cd /tmp/sing-box
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
             go build -trimpath -tags "${{ env.SINGBOX_TAGS }}" \
-            -o $GITHUB_WORKSPACE/dist/sing-box-linux-arm64 ./cmd/sing-box
-          sha256sum dist/sing-box-linux-arm64 > dist/sing-box-linux-arm64.sha256
-        working-directory: ${{ github.workspace }}
+            -o "$GITHUB_WORKSPACE/dist/sing-box-linux-arm64" ./cmd/sing-box
+          sha256sum -b "$GITHUB_WORKSPACE/dist/sing-box-linux-arm64" \
+            | sed "s|$GITHUB_WORKSPACE/dist/||" \
+            > "$GITHUB_WORKSPACE/dist/sing-box-linux-arm64.sha256"
 
       - name: Verify sing-box has with_v2ray_api
+        working-directory: ${{ github.workspace }}
         run: |
           chmod +x dist/sing-box-linux-amd64
           dist/sing-box-linux-amd64 version
