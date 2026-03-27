@@ -55,6 +55,12 @@ PROXYCTL_DEFAULT_SELF_STEAL="${PROXYCTL_DEFAULT_SELF_STEAL:-}"
 SINGBOX_BINARY_URL="${SINGBOX_BINARY_URL:-}"
 XRAY_BINARY_URL="${XRAY_BINARY_URL:-}"
 
+# Detect host architecture once (used for sing-box asset selection)
+case "$(uname -m)" in
+  aarch64|arm64) HOST_ARCH="arm64" ;;
+  *)             HOST_ARCH="amd64" ;;
+esac
+
 APT_UPDATED=0
 SELECTED_DEPLOYMENT_MODE="panel+node"
 SELECTED_REVERSE_PROXY="caddy"
@@ -1086,7 +1092,9 @@ install_or_verify_runtime_binary() {
   if [[ -z "${env_url}" ]]; then
     case "${binary_name}" in
       sing-box)
-        env_url="$(resolve_github_latest_asset_url "SagerNet/sing-box" 'sing-box-.*-linux-(amd64|x86_64)\.tar\.gz$' || true)"
+        # Use our custom build (with_v2ray_api tag) published in proxyctl releases.
+        # Official SagerNet/sing-box releases do NOT include with_v2ray_api.
+        env_url="$(resolve_github_latest_asset_url "DarkSidr/proxyctl" "sing-box-linux-${HOST_ARCH}\$" || true)"
         ;;
       xray)
         env_url="$(resolve_github_latest_asset_url "XTLS/Xray-core" 'Xray-linux-64\.zip$' || true)"

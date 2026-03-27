@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+env:
+  SINGBOX_VERSION: v1.13.4
+  SINGBOX_TAGS: with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_v2ray_api,with_gvisor
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -24,12 +28,12 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential
+          sudo apt-get install -y --no-install-recommends build-essential gcc-aarch64-linux-gnu
 
       - name: Run tests
         run: go test ./...
 
-      - name: Build release assets
+      - name: Build proxyctl
         env:
           VERSION: ${{ github.ref_name }}
         run: |
@@ -41,10 +45,47 @@ jobs:
           dist/proxyctl-linux-amd64 init --db /tmp/proxyctl.db
           sha256sum dist/proxyctl-linux-amd64 > dist/proxyctl-linux-amd64.sha256
 
+      - name: Clone sing-box ${{ env.SINGBOX_VERSION }}
+        run: |
+          git clone --depth 1 --branch ${{ env.SINGBOX_VERSION }} \
+            https://github.com/SagerNet/sing-box.git /tmp/sing-box
+
+      - name: Build sing-box amd64
+        run: |
+          set -euo pipefail
+          cd /tmp/sing-box
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -tags "${{ env.SINGBOX_TAGS }}" \
+            -o /tmp/sing-box-linux-amd64 ./cmd/sing-box
+          cp /tmp/sing-box-linux-amd64 $GITHUB_WORKSPACE/dist/sing-box-linux-amd64
+          sha256sum dist/sing-box-linux-amd64 > dist/sing-box-linux-amd64.sha256
+        working-directory: ${{ github.workspace }}
+
+      - name: Build sing-box arm64
+        run: |
+          set -euo pipefail
+          cd /tmp/sing-box
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -trimpath -tags "${{ env.SINGBOX_TAGS }}" \
+            -o $GITHUB_WORKSPACE/dist/sing-box-linux-arm64 ./cmd/sing-box
+          sha256sum dist/sing-box-linux-arm64 > dist/sing-box-linux-arm64.sha256
+        working-directory: ${{ github.workspace }}
+
+      - name: Verify sing-box has with_v2ray_api
+        run: |
+          chmod +x dist/sing-box-linux-amd64
+          dist/sing-box-linux-amd64 version
+          dist/sing-box-linux-amd64 version | grep -q "with_v2ray_api" || \
+            { echo "ERROR: with_v2ray_api tag missing from sing-box build!"; exit 1; }
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/proxyctl-linux-amd64
             dist/proxyctl-linux-amd64.sha256
+            dist/sing-box-linux-amd64
+            dist/sing-box-linux-amd64.sha256
+            dist/sing-box-linux-arm64
+            dist/sing-box-linux-arm64.sha256
           generate_release_notes: true
