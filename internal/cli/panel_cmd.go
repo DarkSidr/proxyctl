@@ -3518,15 +3518,17 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     document.getElementById("ndApplyHardeningBtn").addEventListener("click", async () => {
       const n = getModalNode();
       if (!n.id) return;
-      const label = n.host ? (n.name + " (" + n.host + ")") : n.name;
-      if (!n.DisableIPv6 && !n.BlockPing) {
+      const disableIPv6 = document.getElementById("ndDisableIPv6").checked ? "1" : "0";
+      const blockPing   = document.getElementById("ndBlockPing").checked   ? "1" : "0";
+      if (disableIPv6 === "0" && blockPing === "0") {
         showOp("error", "No hardening options enabled — enable Disable IPv6 or Block Ping in node settings first");
         return;
       }
+      const label = n.host ? (n.name + " (" + n.host + ")") : n.name;
       try {
         const sshPassword = await promptNodePass("Apply Hardening", "SSH password for " + label + " (leave empty if key auth works):");
         closeNodeModal();
-        await postForm(cfg.nodesActionPath, { op: "apply_hardening", node_id: n.id, version: n.version, ssh_password: sshPassword });
+        await postForm(cfg.nodesActionPath, { op: "apply_hardening", node_id: n.id, version: n.version, ssh_password: sshPassword, disable_ipv6: disableIPv6, block_ping: blockPing });
       } catch (e) {
         if (String(e).includes("cancelled")) return;
         showOp("error", String(e));
@@ -7591,13 +7593,21 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			return job.id, "", nil
 		}
 		if action == "apply_hardening" {
-			if !current.DisableIPv6 && !current.BlockPing {
+			// Prefer form-supplied flags (from current checkbox state) so the
+			// user doesn't need to Save before applying hardening.
+			snapNode := current
+			if r.FormValue("disable_ipv6") != "" {
+				snapNode.DisableIPv6 = panelFormBool(r.FormValue("disable_ipv6"))
+			}
+			if r.FormValue("block_ping") != "" {
+				snapNode.BlockPing = panelFormBool(r.FormValue("block_ping"))
+			}
+			if !snapNode.DisableIPv6 && !snapNode.BlockPing {
 				ops.set("ok", fmt.Sprintf("hardening skipped: no options enabled for %s — enable Disable IPv6 or Block Ping in node settings first", current.Name))
 				return "", "", nil
 			}
 			sshPassword := strings.TrimSpace(r.FormValue("ssh_password"))
 			job := newNodeJob(current.ID, "apply_hardening")
-			snapNode := current
 			go func() {
 				var applyErr error
 				if snapNode.Role == domain.NodeRolePrimary {
