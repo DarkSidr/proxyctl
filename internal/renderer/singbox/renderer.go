@@ -167,12 +167,39 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 		}
 	}
 
+	// Collect unique user IDs across all sing-box credentials for v2ray_api stats.
+	userIDSet := map[string]struct{}{}
+	for _, cred := range req.Credentials {
+		if strings.TrimSpace(cred.UserID) != "" {
+			userIDSet[strings.TrimSpace(cred.UserID)] = struct{}{}
+		}
+	}
+	var userIDs []string
+	for id := range userIDSet {
+		userIDs = append(userIDs, id)
+	}
+	sort.Strings(userIDs)
+
+	var experimental *sbExperimental
+	if len(userIDs) > 0 {
+		experimental = &sbExperimental{
+			V2RayAPI: &sbV2RayAPI{
+				Listen: "127.0.0.1:10091",
+				Stats: sbV2RayStats{
+					Enabled: true,
+					Users:   userIDs,
+				},
+			},
+		}
+	}
+
 	return configDoc{
 		Inbounds: cfgInbounds,
 		Outbounds: []outboundConfig{
 			{Type: "direct", Tag: "direct"},
 		},
-		Route: routeConfig{Final: "direct"},
+		Route:        routeConfig{Final: "direct"},
+		Experimental: experimental,
 	}, clients, nil
 }
 
