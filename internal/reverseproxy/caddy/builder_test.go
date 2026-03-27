@@ -153,8 +153,13 @@ func TestBuildIncludesSelfStealListenerWithTemplateFile(t *testing.T) {
 	}
 
 	body := string(result.Caddyfile)
-	assertContains(t, body, "http://127.0.0.1:8443 {")
-	assertNotContains(t, body, "fi.example.com:8443")
+	// Self-steal block must use domain:port with bind 127.0.0.1 (TLS, not plain HTTP)
+	// so that xray Reality dest gets a valid TLS ServerHello.
+	assertContains(t, body, "fi.example.com:8443 {")
+	assertContains(t, body, "bind 127.0.0.1")
+	// Public HTTPS block must also be present for ACME cert acquisition.
+	assertContains(t, body, "fi.example.com {")
+	assertNotContains(t, body, "http://127.0.0.1:8443")
 }
 
 func TestLoadDecoyAssets(t *testing.T) {

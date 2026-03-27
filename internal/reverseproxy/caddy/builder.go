@@ -151,19 +151,32 @@ func (b *Builder) Build(req BuildRequest) (BuildResult, error) {
 		}
 	}
 
-	// Check for self-steal inbounds before the early-exit so that a worker
-	// node with only a reality+self-steal inbound still gets a Caddyfile.
+	// Collect self-steal inbounds. Each self-steal domain needs a public HTTPS
+	// caddy block so that caddy acquires an ACME certificate for it. The
+	// self-steal listener (domain:selfStealPort, bound to 127.0.0.1) then
+	// serves TLS using that certificate; xray Reality forwards unauthenticated
+	// probes there and they receive a valid TLS ServerHello.
 	selfStealPort := req.SelfStealPort
 	if selfStealPort <= 0 {
 		selfStealPort = 8443
 	}
-	hasSelfSteal := false
+	selfStealDomainSet := map[string]bool{}
 	for _, inbound := range req.Inbounds {
-		if inbound.Enabled && inbound.RealityEnabled && inbound.SelfSteal {
-			hasSelfSteal = true
-			break
+		if !inbound.Enabled || !inbound.RealityEnabled || !inbound.SelfSteal {
+			continue
+		}
+		d := publicDomain(b.cfg, req.Node, inbound)
+		if d == "" {
+			continue
+		}
+		selfStealDomainSet[d] = true
+		// Ensure the domain appears in the public site map so caddy acquires
+		// an ACME certificate for it even when no HTTP routes exist.
+		if _, exists := siteMap[d]; !exists {
+			siteMap[d] = []Route{}
 		}
 	}
+	hasSelfSteal := len(selfStealDomainSet) > 0
 
 	domains := make([]string, 0, len(siteMap))
 	for domainName := range siteMap {
@@ -208,16 +221,23 @@ func (b *Builder) Build(req BuildRequest) (BuildResult, error) {
 		tplData.Sites = append(tplData.Sites, site)
 	}
 
-	// Build self-steal internal listener block.
-	// xray reality terminates TLS itself and forwards plain HTTP to dest
-	// (127.0.0.1:selfStealPort). Caddy must serve plain HTTP there — no TLS.
-	// Using http://127.0.0.1:PORT avoids Caddy auto-HTTPS and any port conflict
-	// with xray that owns the external port.
+	// Build self-steal internal listener blocks — one per unique self-steal
+	// domain. Each block binds to 127.0.0.1 only and serves TLS using the
+	// ACME certificate caddy acquired via the public domain block above.
+	// xray Reality forwards unauthenticated probes to 127.0.0.1:selfStealPort;
+	// caddy responds with a valid TLS ServerHello (SNI = domain).
 	if hasSelfSteal {
-		tplData.SelfStealSites = append(tplData.SelfStealSites, caddySelfStealSiteData{
-			Address:   fmt.Sprintf("127.0.0.1:%d", selfStealPort),
-			DecoyRoot: b.cfg.Paths.DecoySiteDir,
-		})
+		selfStealDomains := make([]string, 0, len(selfStealDomainSet))
+		for d := range selfStealDomainSet {
+			selfStealDomains = append(selfStealDomains, d)
+		}
+		sort.Strings(selfStealDomains)
+		for _, d := range selfStealDomains {
+			tplData.SelfStealSites = append(tplData.SelfStealSites, caddySelfStealSiteData{
+				Address:   fmt.Sprintf("%s:%d", d, selfStealPort),
+				DecoyRoot: b.cfg.Paths.DecoySiteDir,
+			})
+		}
 	}
 
 	tpl, err := loadTemplate(b.cfg.Paths.TemplatesDir)
