@@ -1301,7 +1301,7 @@ if [[ -f /var/lib/proxy-orchestrator/proxyctl.db ]] && command -v sqlite3 >/dev/
     host="$(printf '%s' "${host}" | xargs || true)"
     [[ -n "${host}" ]] || continue
     log "Removing remote proxyctl SSH keys on host: ${host}"
-    if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "root@${host}" \
+    if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -- "root@${host}" \
       "if [ -f ~/.ssh/authorized_keys ]; then tmp=\$(mktemp); grep -v 'proxyctl-auto-' ~/.ssh/authorized_keys > \"\$tmp\"; cat \"\$tmp\" > ~/.ssh/authorized_keys; rm -f \"\$tmp\"; chmod 600 ~/.ssh/authorized_keys; fi" \
       >/dev/null 2>&1; then
       log "Remote key cleanup completed: ${host}"
@@ -1667,6 +1667,15 @@ ensure_panel_service() {
     log "${panel_unit} is enabled and active"
   else
     warn "Failed to enable/start ${panel_unit}. Check: systemctl status ${panel_unit}"
+    return 0
+  fi
+
+  if [[ "${PROXYCTL_REINSTALL_BINARY}" == "1" ]]; then
+    if systemctl try-restart "${panel_unit}" >/dev/null 2>&1; then
+      log "${panel_unit} restarted to apply updated binary"
+    else
+      warn "Failed to restart ${panel_unit} after binary update; service may still use old binary"
+    fi
   fi
 }
 

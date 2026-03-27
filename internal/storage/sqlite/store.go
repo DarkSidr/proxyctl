@@ -40,9 +40,11 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
 
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+	db.SetMaxOpenConns(1)
+
+	if _, err := db.Exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;"); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
+		return nil, fmt.Errorf("configure sqlite pragmas: %w", err)
 	}
 
 	store := &Store{db: db}

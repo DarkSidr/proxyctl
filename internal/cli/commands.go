@@ -2966,7 +2966,7 @@ func runWizardSSHCopyID(cmd *cobra.Command, out io.Writer, nodes []domain.Node, 
 		if !strictHostKey {
 			args = append(args, "-o", "StrictHostKeyChecking=accept-new")
 		}
-		args = append(args, fmt.Sprintf("%s@%s", sshUser, host))
+		args = append(args, "--", fmt.Sprintf("%s@%s", sshUser, host))
 		fmt.Fprintf(out, "installing ssh key: node=%s host=%s\n", node.ID, host)
 		fmt.Fprintln(out, "waiting for ssh password prompt (if key is not installed yet)...")
 		copyCmd := exec.CommandContext(cmd.Context(), "ssh-copy-id", args...)

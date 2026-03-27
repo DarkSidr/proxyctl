@@ -193,6 +193,15 @@ func loadTemplate(templatesDir string) (*template.Template, error) {
 	return template.New("nginx").Parse(string(content))
 }
 
+// rejectConfigInjection returns an error if s contains characters that could
+// break out of a config file block (newlines, carriage returns).
+func rejectConfigInjection(field, s string) error {
+	if strings.ContainsAny(s, "\n\r") {
+		return fmt.Errorf("invalid %s: must not contain newline characters", field)
+	}
+	return nil
+}
+
 func resolveExistingPath(candidates ...string) (string, error) {
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
@@ -222,8 +231,14 @@ func buildRoute(cfg config.AppConfig, node domain.Node, inbound domain.Inbound) 
 	if domainName == "" {
 		return Route{}, false
 	}
-
+	if err := rejectConfigInjection("domain", domainName); err != nil {
+		return Route{}, false
+	}
 	path := normalizePath(inbound.Path)
+	if err := rejectConfigInjection("path", path); err != nil {
+		return Route{}, false
+	}
+
 	return Route{
 		Domain:    domainName,
 		InboundID: inbound.ID,

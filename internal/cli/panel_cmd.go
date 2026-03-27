@@ -4863,6 +4863,9 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 				Addr:              listenAddr,
 				Handler:           handler,
 				ReadHeaderTimeout: 5 * time.Second,
+				ReadTimeout:       15 * time.Second,
+				WriteTimeout:      30 * time.Second,
+				IdleTimeout:       60 * time.Second,
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "panel listen: %s\n", listenAddr)
@@ -8621,7 +8624,7 @@ func newPanelCookieAuth(login, password, basePath, dashboardPath, logoutPath str
 func newPanelSessionToken() string {
 	buf := make([]byte, 24)
 	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+		panic(fmt.Sprintf("crypto/rand unavailable: %v", err))
 	}
 	return hex.EncodeToString(buf)
 }

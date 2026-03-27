@@ -121,7 +121,7 @@ func newNodeTestCmd(dbPath *string) *cobra.Command {
 			target := fmt.Sprintf("%s@%s", strings.TrimSpace(sshUser), host)
 
 			sshArgs := buildSSHArgs(sshPort, sshKeyPath, strictHostKey)
-			sshArgs = append(sshArgs, target, "echo proxyctl-node-test-ok")
+			sshArgs = append(sshArgs, "--", target, "echo proxyctl-node-test-ok")
 			if out, err := runExecCombined(cmd.Context(), "ssh", sshArgs...); err != nil {
 				return fmt.Errorf("ssh connectivity check failed for node %q (%s): %w\n%s", node.ID, host, err, strings.TrimSpace(string(out)))
 			}
@@ -319,20 +319,20 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 	caddyfileRemoteTmp := fmt.Sprintf("/tmp/proxyctl-%s-Caddyfile", req.Node.ID)
 
 	scpBase := buildSCPArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
-	singSCP := append(append([]string{}, scpBase...), singLocal, fmt.Sprintf("%s:%s", target, singRemoteTmp))
+	singSCP := append(append([]string{}, scpBase...), "--", singLocal, fmt.Sprintf("%s:%s", target, singRemoteTmp))
 	if out, err := runRemoteExecCombined(ctx, "scp", singSCP, opts.sshPassword); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("upload sing-box config to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 	}
-	xraySCP := append(append([]string{}, scpBase...), xrayLocal, fmt.Sprintf("%s:%s", target, xrayRemoteTmp))
+	xraySCP := append(append([]string{}, scpBase...), "--", xrayLocal, fmt.Sprintf("%s:%s", target, xrayRemoteTmp))
 	if out, err := runRemoteExecCombined(ctx, "scp", xraySCP, opts.sshPassword); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("upload xray config to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 	}
-	syncedSCP := append(append([]string{}, scpBase...), syncedInboundsLocal, fmt.Sprintf("%s:%s", target, syncedInboundsRemoteTmp))
+	syncedSCP := append(append([]string{}, scpBase...), "--", syncedInboundsLocal, fmt.Sprintf("%s:%s", target, syncedInboundsRemoteTmp))
 	if out, err := runRemoteExecCombined(ctx, "scp", syncedSCP, opts.sshPassword); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("upload synced inbounds snapshot to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 	}
 	if hasCaddyConfig {
-		caddyfileSCP := append(append([]string{}, scpBase...), caddyfileLocal, fmt.Sprintf("%s:%s", target, caddyfileRemoteTmp))
+		caddyfileSCP := append(append([]string{}, scpBase...), "--", caddyfileLocal, fmt.Sprintf("%s:%s", target, caddyfileRemoteTmp))
 		if out, err := runRemoteExecCombined(ctx, "scp", caddyfileSCP, opts.sshPassword); err != nil {
 			return nodeSyncResult{}, fmt.Errorf("upload Caddyfile to node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 		}
@@ -367,7 +367,7 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 	installCmd := strings.Join(installCmdParts, "; ")
 
 	sshArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
-	sshArgs = append(sshArgs, target, installCmd)
+	sshArgs = append(sshArgs, "--", target, installCmd)
 	if out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, opts.sshPassword); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("install configs on node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 	}
@@ -391,7 +391,7 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 			caddyUnit := strings.TrimSpace(appCfg.Runtime.CaddyUnit)
 			reloadCmd := strings.TrimSpace(prefix + "systemctl reload-or-restart " + shellQuote(caddyUnit))
 			sshReloadArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
-			sshReloadArgs = append(sshReloadArgs, target, reloadCmd)
+			sshReloadArgs = append(sshReloadArgs, "--", target, reloadCmd)
 			if out, err := runRemoteExecCombined(ctx, "ssh", sshReloadArgs, opts.sshPassword); err != nil {
 				return nodeSyncResult{}, fmt.Errorf("reload caddy on node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 			}
@@ -401,7 +401,7 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 		for _, unit := range units {
 			restartCmd := strings.TrimSpace(prefix + "systemctl restart " + shellQuote(unit))
 			sshRestartArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
-			sshRestartArgs = append(sshRestartArgs, target, restartCmd)
+			sshRestartArgs = append(sshRestartArgs, "--", target, restartCmd)
 			if out, err := runRemoteExecCombined(ctx, "ssh", sshRestartArgs, opts.sshPassword); err != nil {
 				return nodeSyncResult{}, fmt.Errorf("restart unit %q on node %q (%s): %w\n%s", unit, req.Node.ID, host, err, strings.TrimSpace(string(out)))
 			}
@@ -525,7 +525,7 @@ func cleanupSingleNodeRuntime(ctx context.Context, node domain.Node, opts nodeSy
 	cleanupCmd := strings.Join(cleanupCmdParts, "; ")
 
 	sshArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
-	sshArgs = append(sshArgs, target, cleanupCmd)
+	sshArgs = append(sshArgs, "--", target, cleanupCmd)
 	if out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, opts.sshPassword); err != nil {
 		return nodeSyncResult{}, fmt.Errorf("cleanup runtime configs on node %q (%s): %w\n%s", node.ID, host, err, strings.TrimSpace(string(out)))
 	}
@@ -543,7 +543,7 @@ func cleanupSingleNodeRuntime(ctx context.Context, node domain.Node, opts nodeSy
 		for _, unit := range units {
 			stopCmd := strings.TrimSpace(prefix + "systemctl stop " + shellQuote(unit))
 			sshStopArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
-			sshStopArgs = append(sshStopArgs, target, stopCmd)
+			sshStopArgs = append(sshStopArgs, "--", target, stopCmd)
 			if out, err := runRemoteExecCombined(ctx, "ssh", sshStopArgs, opts.sshPassword); err != nil {
 				return nodeSyncResult{}, fmt.Errorf("stop unit %q on node %q (%s): %w\n%s", unit, node.ID, host, err, strings.TrimSpace(string(out)))
 			}
@@ -624,7 +624,7 @@ func uninstallSingleNode(ctx context.Context, node domain.Node, opts nodeSyncOpt
 
 	cmd := strings.Join(parts, "; ")
 	sshArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
-	sshArgs = append(sshArgs, target, cmd)
+	sshArgs = append(sshArgs, "--", target, cmd)
 	if out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, opts.sshPassword); err != nil {
 		return fmt.Errorf("uninstall node %q (%s): %w\n%s", node.ID, host, err, strings.TrimSpace(string(out)))
 	}

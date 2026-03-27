@@ -156,7 +156,7 @@ remove_remote_proxyctl_ssh_keys() {
       continue
     fi
     log "Removing remote proxyctl SSH keys on host: ${host}"
-    if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "root@${host}" \
+    if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -- "root@${host}" \
       "if [ -f ~/.ssh/authorized_keys ]; then tmp=\$(mktemp); grep -v 'proxyctl-auto-' ~/.ssh/authorized_keys > \"\$tmp\"; cat \"\$tmp\" > ~/.ssh/authorized_keys; rm -f \"\$tmp\"; chmod 600 ~/.ssh/authorized_keys; fi" \
       >/dev/null 2>&1; then
       log "Remote key cleanup completed: ${host}"
