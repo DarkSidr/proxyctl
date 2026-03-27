@@ -193,7 +193,11 @@ func buildConfig(req renderer.BuildRequest) (configDoc, []renderer.ClientArtifac
 			if len(byInbound[inbound.ID]) == 0 {
 				continue
 			}
-			cfg, items, err := buildVLESSInbound(req.Node, inbound, byInbound[inbound.ID])
+			selfStealPort := req.SelfStealPort
+			if selfStealPort <= 0 {
+				selfStealPort = 8443
+			}
+			cfg, items, err := buildVLESSInbound(req.Node, inbound, byInbound[inbound.ID], selfStealPort)
 			if err != nil {
 				return configDoc{}, nil, err
 			}
@@ -340,7 +344,7 @@ func buildSniffing(inbound domain.Inbound) *sniffingConfig {
 	return &sniffingConfig{Enabled: true, DestOverride: dest}
 }
 
-func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []domain.Credential) (inboundConfig, []renderer.ClientArtifact, error) {
+func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []domain.Credential, selfStealPort int) (inboundConfig, []renderer.ClientArtifact, error) {
 	if inbound.Transport != "tcp" {
 		return inboundConfig{}, nil, fmt.Errorf("inbound %q has unsupported vless transport %q for xray (supported: tcp)", inbound.ID, inbound.Transport)
 	}
@@ -351,7 +355,6 @@ func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []d
 	realityServerName := serverName(inbound, node.Host)
 	realityPublicKey := strings.TrimSpace(inbound.RealityPublicKey)
 	realityPrivateKey := strings.TrimSpace(inbound.RealityPrivateKey)
-	realityServer := strings.TrimSpace(inbound.RealityServer)
 	realityFlow := strings.TrimSpace(inbound.VLESSFlow)
 	realityFingerprint := strings.TrimSpace(inbound.RealityFingerprint)
 	if realityFlow == "" {
@@ -366,11 +369,20 @@ func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []d
 	if realityPrivateKey == "" {
 		return inboundConfig{}, nil, fmt.Errorf("xray vless inbound %q requires reality private key", inbound.ID)
 	}
-	if realityServer == "" {
-		return inboundConfig{}, nil, fmt.Errorf("xray vless inbound %q requires reality server", inbound.ID)
-	}
-	if inbound.RealityServerPort < 1 || inbound.RealityServerPort > 65535 {
-		return inboundConfig{}, nil, fmt.Errorf("xray vless inbound %q has invalid reality server port %d", inbound.ID, inbound.RealityServerPort)
+
+	// Determine reality dest: self-steal uses local Caddy, otherwise external server.
+	var realityDest string
+	if inbound.SelfSteal {
+		realityDest = fmt.Sprintf("127.0.0.1:%d", selfStealPort)
+	} else {
+		realityServer := strings.TrimSpace(inbound.RealityServer)
+		if realityServer == "" {
+			return inboundConfig{}, nil, fmt.Errorf("xray vless inbound %q requires reality server", inbound.ID)
+		}
+		if inbound.RealityServerPort < 1 || inbound.RealityServerPort > 65535 {
+			return inboundConfig{}, nil, fmt.Errorf("xray vless inbound %q has invalid reality server port %d", inbound.ID, inbound.RealityServerPort)
+		}
+		realityDest = fmt.Sprintf("%s:%d", realityServer, inbound.RealityServerPort)
 	}
 
 	var (
@@ -400,7 +412,7 @@ func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []d
 
 	realityCfg := &realitySettings{
 		Show:        false,
-		Dest:        fmt.Sprintf("%s:%d", realityServer, inbound.RealityServerPort),
+		Dest:        realityDest,
 		Xver:        0,
 		ServerNames: []string{realityServerName},
 		PrivateKey:  realityPrivateKey,

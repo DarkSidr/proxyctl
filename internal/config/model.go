@@ -51,9 +51,11 @@ type RuntimeConfig struct {
 
 // PublicEndpointConfig describes default public endpoint settings.
 type PublicEndpointConfig struct {
-	Domain       string
-	HTTPS        bool
-	ContactEmail string
+	Domain           string
+	HTTPS            bool
+	ContactEmail     string
+	DefaultSelfSteal bool
+	SelfStealPort    int
 }
 
 // StorageConfig stores persistence settings for the current environment.
@@ -110,7 +112,8 @@ func DefaultAppConfig() AppConfig {
 		},
 		ReverseProxy: ReverseProxyCaddy,
 		Public: PublicEndpointConfig{
-			HTTPS: true,
+			HTTPS:         true,
+			SelfStealPort: 8443,
 		},
 	}
 }

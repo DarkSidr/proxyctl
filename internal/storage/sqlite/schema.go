@@ -122,4 +122,5 @@ var schemaMigrations = []string{
 		END`,
 	`ALTER TABLE nodes ADD COLUMN disable_ipv6 INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE nodes ADD COLUMN block_ping INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE inbounds ADD COLUMN self_steal INTEGER NOT NULL DEFAULT 0`,
 }

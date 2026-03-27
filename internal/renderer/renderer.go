@@ -22,9 +22,10 @@ type ClientArtifact struct {
 
 // BuildRequest contains data required to render one candidate revision.
 type BuildRequest struct {
-	Node        domain.Node
-	Inbounds    []domain.Inbound
-	Credentials []domain.Credential
+	Node          domain.Node
+	Inbounds      []domain.Inbound
+	Credentials   []domain.Credential
+	SelfStealPort int // internal port for Reality self-steal (default 8443)
 }
 
 // RenderResult contains server and client-facing renderer outputs.

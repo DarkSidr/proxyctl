@@ -108,6 +108,7 @@ type Inbound struct {
 	RealitySpiderX     string
 	RealityServer      string
 	RealityServerPort  int
+	SelfSteal          bool
 	VLESSFlow          string
 	SniffingEnabled    bool
 	SniffingHTTP       bool

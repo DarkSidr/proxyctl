@@ -52,9 +52,11 @@ type runtimeYAML struct {
 }
 
 type publicEndpointYAML struct {
-	Domain       *string `yaml:"domain"`
-	HTTPS        *bool   `yaml:"https"`
-	ContactEmail *string `yaml:"contact_email"`
+	Domain           *string `yaml:"domain"`
+	HTTPS            *bool   `yaml:"https"`
+	ContactEmail     *string `yaml:"contact_email"`
+	DefaultSelfSteal *bool   `yaml:"default_self_steal"`
+	SelfStealPort    *int    `yaml:"self_steal_port"`
 }
 
 // Load reads app config from YAML and overlays it on default values.
@@ -189,6 +191,12 @@ func applyYAMLToConfig(cfg *AppConfig, raw appConfigYAML) {
 		}
 		if raw.Public.ContactEmail != nil {
 			cfg.Public.ContactEmail = *raw.Public.ContactEmail
+		}
+		if raw.Public.DefaultSelfSteal != nil {
+			cfg.Public.DefaultSelfSteal = *raw.Public.DefaultSelfSteal
+		}
+		if raw.Public.SelfStealPort != nil && *raw.Public.SelfStealPort > 0 {
+			cfg.Public.SelfStealPort = *raw.Public.SelfStealPort
 		}
 	}
 

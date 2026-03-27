@@ -55,6 +55,15 @@ const caddyTemplateFallback = `{
 }
 
 {{- end }}
+
+{{- range .SelfStealSites }}
+{{ .Address }} {
+  bind 127.0.0.1
+  root * {{ .DecoyRoot }}
+  file_server
+}
+
+{{- end }}
 `
 
 // Asset is one static decoy-site file loaded from templates.
@@ -75,10 +84,11 @@ type Route struct {
 
 // BuildRequest contains node and inbound data needed for Caddyfile generation.
 type BuildRequest struct {
-	Node      domain.Node
-	Inbounds  []domain.Inbound
-	PanelPath string // if non-empty, inject panel reverse-proxy route (e.g. "/mi0a34mkrs3akogd")
-	PanelPort string // panel listen port on 127.0.0.1 (e.g. "20443")
+	Node          domain.Node
+	Inbounds      []domain.Inbound
+	PanelPath     string // if non-empty, inject panel reverse-proxy route (e.g. "/mi0a34mkrs3akogd")
+	PanelPort     string // panel listen port on 127.0.0.1 (e.g. "20443")
+	SelfStealPort int    // internal port for Reality self-steal (default 8443)
 }
 
 // BuildResult contains generated Caddyfile and derived route metadata.
@@ -184,6 +194,37 @@ func (b *Builder) Build(req BuildRequest) (BuildResult, error) {
 		tplData.Sites = append(tplData.Sites, site)
 	}
 
+	// Build self-steal internal listener blocks (bind 127.0.0.1:selfStealPort).
+	selfStealPort := req.SelfStealPort
+	if selfStealPort <= 0 {
+		selfStealPort = 8443
+	}
+	selfStealDomains := map[string]struct{}{}
+	for _, inbound := range req.Inbounds {
+		if !inbound.Enabled || !inbound.RealityEnabled || !inbound.SelfSteal {
+			continue
+		}
+		d := publicDomain(b.cfg, req.Node, inbound)
+		if d == "" {
+			continue
+		}
+		if err := rejectConfigInjection("domain", d); err != nil {
+			continue
+		}
+		selfStealDomains[d] = struct{}{}
+	}
+	selfStealDomainsSorted := make([]string, 0, len(selfStealDomains))
+	for d := range selfStealDomains {
+		selfStealDomainsSorted = append(selfStealDomainsSorted, d)
+	}
+	sort.Strings(selfStealDomainsSorted)
+	for _, d := range selfStealDomainsSorted {
+		tplData.SelfStealSites = append(tplData.SelfStealSites, caddySelfStealSiteData{
+			Address:   fmt.Sprintf("%s:%d", d, selfStealPort),
+			DecoyRoot: b.cfg.Paths.DecoySiteDir,
+		})
+	}
+
 	tpl, err := loadTemplate(b.cfg.Paths.TemplatesDir)
 	if err != nil {
 		return BuildResult{}, err
@@ -240,9 +281,15 @@ func LoadDecoyAssets(cfg config.AppConfig) ([]Asset, error) {
 }
 
 type caddyTemplateData struct {
-	ContactEmail string
-	Sites        []caddySiteData
-	Routes       []Route
+	ContactEmail    string
+	Sites           []caddySiteData
+	SelfStealSites  []caddySelfStealSiteData
+	Routes          []Route
+}
+
+type caddySelfStealSiteData struct {
+	Address   string // e.g. "example.com:8443"
+	DecoyRoot string
 }
 
 type caddySiteData struct {

@@ -179,7 +179,7 @@ func newNodeSyncCmd(configPath, dbPath *string) *cobra.Command {
 			defer store.Close()
 
 			selectedNodeIDs := parseCSV(nodeIDsCSV)
-			requests, err := buildRenderRequestsByNode(cmd.Context(), store, selectedNodeIDs)
+			requests, err := buildRenderRequestsByNode(cmd.Context(), store, selectedNodeIDs, appCfg)
 			if err != nil {
 				return err
 			}
@@ -261,8 +261,9 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 	// Build Caddyfile for ACME cert management. Errors here are non-fatal:
 	// if the node has no inbounds that need caddy, we simply skip caddy sync.
 	caddyBuildReq := caddy.BuildRequest{
-		Node:     req.Node,
-		Inbounds: req.Inbounds,
+		Node:          req.Node,
+		Inbounds:      req.Inbounds,
+		SelfStealPort: appCfg.Public.SelfStealPort,
 	}
 	// For primary nodes, inject the panel reverse-proxy route so that sync
 	// does not wipe the route that install.sh originally added.
@@ -646,7 +647,7 @@ func requiredRuntimeUnits(req renderer.BuildRequest, appCfg config.AppConfig) []
 	return units
 }
 
-func buildRenderRequestsByNode(ctx context.Context, store *sqlite.Store, nodeIDs []string) ([]renderer.BuildRequest, error) {
+func buildRenderRequestsByNode(ctx context.Context, store *sqlite.Store, nodeIDs []string, appCfg config.AppConfig) ([]renderer.BuildRequest, error) {
 	nodes, err := store.Nodes().List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
@@ -728,9 +729,10 @@ func buildRenderRequestsByNode(ctx context.Context, store *sqlite.Store, nodeIDs
 		nodeCreds := credsByNode[nodeID]
 		sort.Slice(nodeCreds, func(i, j int) bool { return nodeCreds[i].ID < nodeCreds[j].ID })
 		requests = append(requests, renderer.BuildRequest{
-			Node:        node,
-			Inbounds:    nodeInbounds,
-			Credentials: nodeCreds,
+			Node:          node,
+			Inbounds:      nodeInbounds,
+			Credentials:   nodeCreds,
+			SelfStealPort: appCfg.Public.SelfStealPort,
 		})
 	}
 

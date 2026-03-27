@@ -49,6 +49,7 @@ PROXYCTL_PANEL_PASSWORD="${PROXYCTL_PANEL_PASSWORD:-}"
 PROXYCTL_PANEL_PORT="${PROXYCTL_PANEL_PORT:-}"
 PROXYCTL_DISABLE_IPV6="${PROXYCTL_DISABLE_IPV6:-}"
 PROXYCTL_BLOCK_PING="${PROXYCTL_BLOCK_PING:-}"
+PROXYCTL_DEFAULT_SELF_STEAL="${PROXYCTL_DEFAULT_SELF_STEAL:-}"
 
 # Optional runtime URLs for environments where apt packages are unavailable.
 SINGBOX_BINARY_URL="${SINGBOX_BINARY_URL:-}"
@@ -69,6 +70,7 @@ SELECTED_PANEL_PORT=""
 PANEL_URL_HINT=""
 SELECTED_DISABLE_IPV6="0"
 SELECTED_BLOCK_PING="0"
+SELECTED_DEFAULT_SELF_STEAL="1"
 
 log() {
   printf '[%s] %s\n' "${INSTALL_TAG}" "$*"
@@ -532,6 +534,7 @@ configure_install_preferences() {
   local existing_reverse_proxy="caddy"
   local existing_domain=""
   local existing_email=""
+  local existing_self_steal="1"
   local prompt_enabled="0"
 
   if [[ -f "${CONFIG_PATH}" ]]; then
@@ -539,6 +542,11 @@ configure_install_preferences() {
     existing_reverse_proxy="$(awk -F':' '/^[[:space:]]*reverse_proxy:[[:space:]]*/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}' "${CONFIG_PATH}" || true)"
     existing_domain="$(awk -F':' '/^[[:space:]]*domain:[[:space:]]*/ {sub(/^[[:space:]]*/, "", $2); gsub(/^"|"$/, "", $2); print $2; exit}' "${CONFIG_PATH}" || true)"
     existing_email="$(awk -F':' '/^[[:space:]]*contact_email:[[:space:]]*/ {sub(/^[[:space:]]*/, "", $2); gsub(/^"|"$/, "", $2); print $2; exit}' "${CONFIG_PATH}" || true)"
+    local raw_self_steal
+    raw_self_steal="$(awk -F':' '/^[[:space:]]*default_self_steal:[[:space:]]*/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}' "${CONFIG_PATH}" || true)"
+    if [[ "${raw_self_steal}" == "false" ]]; then
+      existing_self_steal="0"
+    fi
   fi
   if [[ "${existing_reverse_proxy}" != "nginx" ]]; then
     existing_reverse_proxy="caddy"
@@ -548,6 +556,7 @@ configure_install_preferences() {
   SELECTED_REVERSE_PROXY="${existing_reverse_proxy}"
   SELECTED_PUBLIC_DOMAIN="${existing_domain}"
   SELECTED_CONTACT_EMAIL="${existing_email}"
+  SELECTED_DEFAULT_SELF_STEAL="${existing_self_steal}"
 
   if [[ -n "${PROXYCTL_DEPLOYMENT_MODE}" ]]; then
     SELECTED_DEPLOYMENT_MODE="$(printf '%s' "${PROXYCTL_DEPLOYMENT_MODE}" | tr '[:upper:]' '[:lower:]')"
@@ -574,14 +583,20 @@ configure_install_preferences() {
   if [[ -n "${PROXYCTL_DECOY_TEMPLATE}" ]]; then
     SELECTED_DECOY_TEMPLATE="$(printf '%s' "${PROXYCTL_DECOY_TEMPLATE}" | tr '[:upper:]' '[:lower:]')"
   fi
-  local norm_ipv6 norm_ping
+  local norm_ipv6 norm_ping norm_self_steal
   norm_ipv6="$(printf '%s' "${PROXYCTL_DISABLE_IPV6}" | tr '[:upper:]' '[:lower:]')"
   norm_ping="$(printf '%s' "${PROXYCTL_BLOCK_PING}" | tr '[:upper:]' '[:lower:]')"
+  norm_self_steal="$(printf '%s' "${PROXYCTL_DEFAULT_SELF_STEAL}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${norm_ipv6}" == "1" || "${norm_ipv6}" == "yes" || "${norm_ipv6}" == "true" ]]; then
     SELECTED_DISABLE_IPV6="1"
   fi
   if [[ "${norm_ping}" == "1" || "${norm_ping}" == "yes" || "${norm_ping}" == "true" ]]; then
     SELECTED_BLOCK_PING="1"
+  fi
+  if [[ "${norm_self_steal}" == "0" || "${norm_self_steal}" == "no" || "${norm_self_steal}" == "false" ]]; then
+    SELECTED_DEFAULT_SELF_STEAL="0"
+  elif [[ "${norm_self_steal}" == "1" || "${norm_self_steal}" == "yes" || "${norm_self_steal}" == "true" ]]; then
+    SELECTED_DEFAULT_SELF_STEAL="1"
   fi
 
   if can_prompt; then
@@ -602,6 +617,8 @@ configure_install_preferences() {
     log "Network hardening options"
     SELECTED_DISABLE_IPV6="$(prompt_yes_no "Disable IPv6" "${SELECTED_DISABLE_IPV6}")"
     SELECTED_BLOCK_PING="$(prompt_yes_no "Block ICMP ping (server won't respond to ping)" "${SELECTED_BLOCK_PING}")"
+    log "Reality self-steal: xray connects to local Caddy instead of an external site"
+    SELECTED_DEFAULT_SELF_STEAL="$(prompt_yes_no "Enable Reality self-steal by default (recommended)" "${SELECTED_DEFAULT_SELF_STEAL}")"
   fi
 
   SELECTED_PUBLIC_DOMAIN="$(printf '%s' "${SELECTED_PUBLIC_DOMAIN}" | xargs || true)"
@@ -615,6 +632,7 @@ configure_install_preferences() {
   log "Selected decoy template: ${SELECTED_DECOY_TEMPLATE}"
   log "Disable IPv6: ${SELECTED_DISABLE_IPV6}"
   log "Block ping: ${SELECTED_BLOCK_PING}"
+  log "Reality self-steal default: ${SELECTED_DEFAULT_SELF_STEAL}"
 }
 
 apply_network_hardening() {
@@ -1436,6 +1454,8 @@ public:
   domain: "${SELECTED_PUBLIC_DOMAIN}"
   https: ${https_value}
   contact_email: "${SELECTED_CONTACT_EMAIL}"
+  default_self_steal: $([ "${SELECTED_DEFAULT_SELF_STEAL}" = "1" ] && echo "true" || echo "false")
+  self_steal_port: 8443
 EOT
   chmod 0640 "${CONFIG_PATH}"
   log "Created: ${CONFIG_PATH}"

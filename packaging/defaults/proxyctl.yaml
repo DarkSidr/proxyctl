@@ -14,3 +14,5 @@ public:
   domain: ""
   https: true
   contact_email: ""
+  default_self_steal: true
+  self_steal_port: 8443
