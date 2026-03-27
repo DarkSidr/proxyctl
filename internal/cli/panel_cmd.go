@@ -1531,9 +1531,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           </div>
           <div class="frow" id="grpSelfSteal">
             <span class="flabel">Self Steal</span>
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-              <input type="checkbox" id="inSelfSteal" name="self_steal" value="1">
-              <span>использовать собственный домен как цель Reality</span>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="inSelfSteal" name="self_steal" value="1" class="cb">
+              <span style="font-size:0.85rem">использовать собственный домен как цель Reality</span>
             </label>
           </div>
           <div class="frow" id="grpRealityServer">
@@ -1628,14 +1628,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         </div>
         <div class="frow">
           <span class="flabel">Hardening</span>
-          <div style="display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;flex-direction:column;gap:8px">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-              <input id="ndDisableIPv6" type="checkbox">
-              <span>Disable IPv6</span>
+              <input id="ndDisableIPv6" type="checkbox" class="cb">
+              <span style="font-size:0.85rem">Disable IPv6</span>
             </label>
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-              <input id="ndBlockPing" type="checkbox">
-              <span>Block ICMP ping</span>
+              <input id="ndBlockPing" type="checkbox" class="cb">
+              <span style="font-size:0.85rem">Block ICMP ping</span>
             </label>
           </div>
         </div>
