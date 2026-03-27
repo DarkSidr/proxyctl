@@ -35,6 +35,7 @@ import (
 	"proxyctl/internal/domain"
 	"proxyctl/internal/engine"
 	"proxyctl/internal/renderer"
+	"proxyctl/internal/singboxapi"
 	subscriptionservice "proxyctl/internal/subscription/service"
 
 	"proxyctl/internal/storage"
@@ -6258,11 +6259,22 @@ func panelCollectXrayTraffic(ctx context.Context, dbPath, addr string) error {
 
 // panelCollectSingboxTraffic queries sing-box v2ray-compatible stats API.
 func panelCollectSingboxTraffic(ctx context.Context, dbPath, addr string) error {
-	cmd := exec.CommandContext(ctx, "xray", "api", "statsquery",
-		"--server="+addr, "--pattern=user>>>", "--reset")
-	out, err := cmd.Output()
+	client, err := singboxapi.NewClient(addr)
+	if err != nil {
+		return fmt.Errorf("sing-box stats client: %w", err)
+	}
+	stats, err := client.QueryStats(ctx, []string{"user>>>"}, true)
 	if err != nil {
 		return fmt.Errorf("sing-box stats query: %w", err)
+	}
+
+	payload := struct {
+		Stat []*singboxapi.Stat `json:"stat"`
+	}{Stat: stats}
+
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal sing-box stats: %w", err)
 	}
 	return panelParseAndUpsertStats(ctx, dbPath, out)
 }
