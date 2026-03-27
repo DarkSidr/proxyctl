@@ -1380,12 +1380,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </section>
 
     <section class="sec" data-tab-section="credentials">
-      <div class="sec-hdr">
-        <h2>credentials</h2>
-        <div class="row" style="gap:8px;align-items:center">
-          <select id="credFilterUser"></select>
-        </div>
-      </div>
+      <h2>credentials</h2>
       <div class="pad row">
         <select id="credUser"></select>
         <select id="credInbound"></select>
@@ -3473,17 +3468,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       }
       if (credUserSel) {
         const prev = credUserSel.value || "";
-        credUserSel.innerHTML = users.map((u) => '<option value="'+esc(u.ID)+'">'+esc(u.Name)+' ('+esc(u.ID)+')</option>').join("");
+        credUserSel.innerHTML = '<option value="">all users</option>' + users.map((u) => '<option value="'+esc(u.ID)+'">'+esc(u.Name)+' ('+esc(u.ID)+')</option>').join("");
         if (prev && Array.from(credUserSel.options).some((o) => o.value === prev)) {
           credUserSel.value = prev;
-        }
-      }
-      const credFilterUserSel = document.getElementById("credFilterUser");
-      if (credFilterUserSel) {
-        const prev = credFilterUserSel.value || "";
-        credFilterUserSel.innerHTML = '<option value="">all users</option>' + users.map((u) => '<option value="'+esc(u.ID)+'">'+esc(u.Name)+'</option>').join("");
-        if (prev && Array.from(credFilterUserSel.options).some((o) => o.value === prev)) {
-          credFilterUserSel.value = prev;
         }
       }
       const credInboundSel = document.getElementById("credInbound");
@@ -3494,7 +3481,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           credInboundSel.value = prev;
         }
       }
-      const credFilterUID = (document.getElementById("credFilterUser")?.value || "").trim();
+      const credFilterUID = (credUserSel?.value || "").trim();
       const filteredCreds = credFilterUID ? creds.filter((c) => String(c.UserID || "").trim() === credFilterUID) : creds;
       document.getElementById("credsBody").innerHTML = filteredCreds.map((c) => (
         '<tr>' +
@@ -4109,7 +4096,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     document.getElementById("subUser").addEventListener("change", () => {
       render();
     });
-    document.getElementById("credFilterUser").addEventListener("change", () => {
+    document.getElementById("credUser").addEventListener("change", () => {
       render();
     });
     document.getElementById("subProfileSel").addEventListener("change", () => {
