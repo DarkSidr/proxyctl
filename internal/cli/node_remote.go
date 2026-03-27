@@ -282,6 +282,16 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 	caddyResult, caddyBuildErr := caddy.New(appCfg).Build(caddyBuildReq)
 	hasCaddyConfig := caddyBuildErr == nil && len(caddyResult.Caddyfile) > 0
 
+	// If the node has self-steal inbounds, caddy is required: xray connects to
+	// 127.0.0.1:selfStealPort and will rapid-retry if nothing is listening there.
+	if caddyBuildErr != nil {
+		for _, inbound := range req.Inbounds {
+			if inbound.Enabled && inbound.RealityEnabled && inbound.SelfSteal {
+				return nodeSyncResult{}, fmt.Errorf("caddy config required for self-steal on node %q but build failed: %w", req.Node.ID, caddyBuildErr)
+			}
+		}
+	}
+
 	tmpDir, err := os.MkdirTemp("", "proxyctl-node-sync-")
 	if err != nil {
 		return nodeSyncResult{}, fmt.Errorf("create temp dir for node %q: %w", req.Node.ID, err)
@@ -397,6 +407,9 @@ func syncSingleNode(ctx context.Context, req renderer.BuildRequest, opts nodeSyn
 				return nodeSyncResult{}, fmt.Errorf("reload caddy on node %q (%s): %w\n%s", req.Node.ID, host, err, strings.TrimSpace(string(out)))
 			}
 			restartedUnits = append(restartedUnits, caddyUnit)
+			// Wait for caddy to acquire TLS certs on the remote node before
+			// restarting xray/sing-box (same as syncPrimaryNodeCaddy does locally).
+			waitForRemoteCaddyCerts(ctx, caddyResult.Domains, target, opts)
 		}
 		units := requiredRuntimeUnits(req, appCfg)
 		for _, unit := range units {
@@ -473,6 +486,37 @@ func syncPrimaryNodeCaddy(ctx context.Context, primaryNode domain.Node, inbounds
 	// xray/sing-box (started immediately after) can load them successfully.
 	waitForCaddyCerts(ctx, caddyResult.Domains)
 	return nil
+}
+
+// waitForRemoteCaddyCerts polls cert paths on a remote node via SSH,
+// mirroring what waitForCaddyCerts does locally for primary nodes.
+func waitForRemoteCaddyCerts(ctx context.Context, domains []string, target string, opts nodeSyncOptions) {
+	if len(domains) == 0 {
+		return
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		allFound := true
+		for _, domain := range domains {
+			checkCmd := fmt.Sprintf("ls /caddy/certificates/*/%s/%s.crt 2>/dev/null | head -1", shellQuote(domain), shellQuote(domain))
+			sshArgs := buildSSHArgs(opts.sshPort, opts.sshKeyPath, opts.strictHostKey)
+			sshArgs = append(sshArgs, "--", target, checkCmd)
+			out, err := runRemoteExecCombined(ctx, "ssh", sshArgs, opts.sshPassword)
+			if err != nil || strings.TrimSpace(string(out)) == "" {
+				allFound = false
+				break
+			}
+		}
+		if allFound {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // waitForCaddyCerts polls /caddy/certificates/*/domain/domain.crt for each

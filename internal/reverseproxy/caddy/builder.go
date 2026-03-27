@@ -151,12 +151,26 @@ func (b *Builder) Build(req BuildRequest) (BuildResult, error) {
 		}
 	}
 
+	// Check for self-steal inbounds before the early-exit so that a worker
+	// node with only a reality+self-steal inbound still gets a Caddyfile.
+	selfStealPort := req.SelfStealPort
+	if selfStealPort <= 0 {
+		selfStealPort = 8443
+	}
+	hasSelfSteal := false
+	for _, inbound := range req.Inbounds {
+		if inbound.Enabled && inbound.RealityEnabled && inbound.SelfSteal {
+			hasSelfSteal = true
+			break
+		}
+	}
+
 	domains := make([]string, 0, len(siteMap))
 	for domainName := range siteMap {
 		domains = append(domains, domainName)
 	}
 	sort.Strings(domains)
-	if len(domains) == 0 {
+	if len(domains) == 0 && !hasSelfSteal {
 		return BuildResult{}, fmt.Errorf("no inbounds require caddy: no HTTP reverse-proxy routes and no TLS-only inbounds found")
 	}
 
@@ -199,17 +213,6 @@ func (b *Builder) Build(req BuildRequest) (BuildResult, error) {
 	// (127.0.0.1:selfStealPort). Caddy must serve plain HTTP there — no TLS.
 	// Using http://127.0.0.1:PORT avoids Caddy auto-HTTPS and any port conflict
 	// with xray that owns the external port.
-	selfStealPort := req.SelfStealPort
-	if selfStealPort <= 0 {
-		selfStealPort = 8443
-	}
-	hasSelfSteal := false
-	for _, inbound := range req.Inbounds {
-		if inbound.Enabled && inbound.RealityEnabled && inbound.SelfSteal {
-			hasSelfSteal = true
-			break
-		}
-	}
 	if hasSelfSteal {
 		tplData.SelfStealSites = append(tplData.SelfStealSites, caddySelfStealSiteData{
 			Address:   fmt.Sprintf("127.0.0.1:%d", selfStealPort),
