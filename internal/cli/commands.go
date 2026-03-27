@@ -78,6 +78,18 @@ var realityServerPresets = []string{
 }
 
 var lookPath = exec.LookPath
+
+// resolveBinaryPath returns the full path for a binary, checking /sbin and
+// /usr/sbin first (needed when the process runs without those in $PATH, e.g. systemd).
+func resolveBinaryPath(name string) string {
+	for _, dir := range []string{"/sbin", "/usr/sbin", "/bin", "/usr/bin"} {
+		p := dir + "/" + name
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return name // fallback: let exec resolve via $PATH
+}
 var runCommandOutput = func(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.CombinedOutput()

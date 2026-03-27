@@ -6763,9 +6763,10 @@ func panelApplyLocalHardening(_ context.Context, node domain.Node) error {
 
 	// iptables rule as fallback: covers self-ping and VPS setups where sysctl alone is insufficient.
 	if node.BlockPing {
+		ipt := resolveBinaryPath("iptables")
 		// -C checks existence; only insert if not already present.
-		if _, err := runExecCombined(context.Background(), "iptables", "-C", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"); err != nil {
-			if out, err2 := runExecCombined(context.Background(), "iptables", "-I", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"); err2 != nil {
+		if _, err := runExecCombined(context.Background(), ipt, "-C", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"); err != nil {
+			if out, err2 := runExecCombined(context.Background(), ipt, "-I", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"); err2 != nil {
 				return fmt.Errorf("iptables block ping: %w | %s", err2, strings.TrimSpace(string(out)))
 			}
 		}
