@@ -1657,8 +1657,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           <div id="ndSshOpsGroup" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
             <button type="button" class="btn secondary" id="ndSetupSshKeyBtn">setup ssh key</button>
             <button type="button" class="btn secondary" id="ndBootstrapBtn">bootstrap</button>
-            <button type="button" class="btn secondary" id="ndApplyHardeningBtn">apply hardening</button>
             <button type="button" class="btn warn" id="ndUpdateProxyctlBtn">update proxyctl</button>
+          </div>
+          <div id="ndHardeningOpsGroup" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <button type="button" class="btn secondary" id="ndApplyHardeningBtn">apply hardening</button>
           </div>
           <div id="ndSyncGroup" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
             <button type="button" class="btn secondary" id="ndSyncPrimaryBtn">sync now</button>
@@ -2255,6 +2257,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (maintenanceSection) maintenanceSection.classList.toggle("hidden", !isEdit);
       const ndSshOps = document.getElementById("ndSshOpsGroup");
       if (ndSshOps) ndSshOps.classList.toggle("hidden", role === "primary");
+      const ndHardeningOps = document.getElementById("ndHardeningOpsGroup");
+      if (ndHardeningOps) ndHardeningOps.classList.toggle("hidden", !isEdit);
       const ndSyncGroup = document.getElementById("ndSyncGroup");
       if (ndSyncGroup) ndSyncGroup.classList.toggle("hidden", role !== "primary");
       const modal = document.getElementById("nodeModal");
