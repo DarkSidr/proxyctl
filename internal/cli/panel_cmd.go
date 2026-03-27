@@ -1380,7 +1380,12 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </section>
 
     <section class="sec" data-tab-section="credentials">
-      <h2>credentials</h2>
+      <div class="sec-hdr">
+        <h2>credentials</h2>
+        <div class="row" style="gap:8px;align-items:center">
+          <select id="credFilterUser"></select>
+        </div>
+      </div>
       <div class="pad row">
         <select id="credUser"></select>
         <select id="credInbound"></select>
@@ -3473,6 +3478,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           credUserSel.value = prev;
         }
       }
+      const credFilterUserSel = document.getElementById("credFilterUser");
+      if (credFilterUserSel) {
+        const prev = credFilterUserSel.value || "";
+        credFilterUserSel.innerHTML = '<option value="">all users</option>' + users.map((u) => '<option value="'+esc(u.ID)+'">'+esc(u.Name)+'</option>').join("");
+        if (prev && Array.from(credFilterUserSel.options).some((o) => o.value === prev)) {
+          credFilterUserSel.value = prev;
+        }
+      }
       const credInboundSel = document.getElementById("credInbound");
       if (credInboundSel) {
         const prev = credInboundSel.value || "";
@@ -3481,7 +3494,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           credInboundSel.value = prev;
         }
       }
-      document.getElementById("credsBody").innerHTML = creds.map((c) => (
+      const credFilterUID = (document.getElementById("credFilterUser")?.value || "").trim();
+      const filteredCreds = credFilterUID ? creds.filter((c) => String(c.UserID || "").trim() === credFilterUID) : creds;
+      document.getElementById("credsBody").innerHTML = filteredCreds.map((c) => (
         '<tr>' +
           '<td>'+esc(c.UserName)+'</td>' +
           '<td>'+ (c.ClientLabel ? esc(c.ClientLabel) : '<span class="muted">-</span>') +'</td>' +
@@ -4092,6 +4107,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       updateInboundCreateFieldVisibility(false);
     });
     document.getElementById("subUser").addEventListener("change", () => {
+      render();
+    });
+    document.getElementById("credFilterUser").addEventListener("change", () => {
       render();
     });
     document.getElementById("subProfileSel").addEventListener("change", () => {
