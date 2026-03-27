@@ -352,7 +352,17 @@ func buildVLESSInbound(node domain.Node, inbound domain.Inbound, credentials []d
 		return inboundConfig{}, nil, fmt.Errorf("xray vless inbound %q requires reality mode to be enabled", inbound.ID)
 	}
 
-	realityServerName := serverName(inbound, node.Host)
+	// When self-steal is active, use own domain as serverName (not external SNI).
+	var realityServerName string
+	if inbound.SelfSteal {
+		if d := strings.TrimSpace(inbound.Domain); d != "" {
+			realityServerName = d
+		} else {
+			realityServerName = strings.TrimSpace(node.Host)
+		}
+	} else {
+		realityServerName = serverName(inbound, node.Host)
+	}
 	realityPublicKey := strings.TrimSpace(inbound.RealityPublicKey)
 	realityPrivateKey := strings.TrimSpace(inbound.RealityPrivateKey)
 	realityFlow := strings.TrimSpace(inbound.VLESSFlow)
