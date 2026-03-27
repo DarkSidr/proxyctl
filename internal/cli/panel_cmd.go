@@ -1395,19 +1395,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </section>
 
     <section class="sec" data-tab-section="subscriptions">
-      <h2>subscriptions</h2>
-      <div class="pad row">
-        <select id="subUser"></select>
-        <button id="genSubBtn" class="btn">generate for user</button>
-        <select id="subProfileSel"></select>
-        <input id="subProfile" type="text" placeholder="profile for selected (default: panel)">
-        <button id="genSelectedSubBtn" class="btn secondary">generate selected</button>
-        <button id="detachSelectedCredsBtn" class="btn secondary">detach selected creds</button>
-        <button id="refreshSubBtn" class="btn warn">refresh all</button>
-        <button id="subEnableBtn" class="btn">enable</button>
-        <button id="subDisableBtn" class="btn err">disable</button>
+      <div class="sec-hdr">
+        <h2>subscriptions</h2>
+        <div class="row" style="gap:8px;align-items:center">
+          <select id="subUser"></select>
+          <button id="refreshSubBtn" class="btn warn">refresh all</button>
+          <button id="openSubModalBtn" class="btn">+ subscription</button>
+        </div>
       </div>
-      <div class="pad" id="subInboundPick"></div>
       <div class="pad" id="subsList"></div>
     </section>
 
@@ -1769,6 +1764,32 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       <div class="modal-ftr">
         <button type="button" class="btn secondary" id="nodeInfoRefreshBtn">Refresh</button>
         <button type="button" class="btn secondary" id="closeNodeInfoBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Subscription modal -->
+  <div id="subModal" class="modal-overlay hidden">
+    <div class="modal" style="max-width:860px;width:95vw">
+      <div class="modal-hdr">
+        <h3>Manage Subscription</h3>
+        <button class="modal-close" id="closeSubModalBtn">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <div class="frow">
+          <span class="flabel">Profile</span>
+          <div class="frow-inline">
+            <select id="subProfileSel" style="width:160px"></select>
+            <input id="subProfile" type="text" placeholder="new profile name" style="flex:1">
+          </div>
+        </div>
+        <div id="subInboundPick"></div>
+      </div>
+      <div class="modal-ftr">
+        <button type="button" class="btn secondary" id="closeSubModalBtn2">Cancel</button>
+        <button type="button" class="btn secondary" id="detachSelectedCredsBtn">Detach selected creds</button>
+        <button type="button" class="btn secondary" id="genSelectedSubBtn">Generate selected</button>
+        <button type="button" class="btn" id="genSubBtn">Generate for user</button>
       </div>
     </div>
   </div>
@@ -3445,26 +3466,32 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         });
       });
 
-      document.getElementById("subsList").innerHTML = subDetails.length === 0
-        ? '<div class="muted">no subscriptions</div>'
+      const selectedSubUserID = (document.getElementById("subUser")?.value || "").trim();
+      const filteredSubs = subDetails.filter((s) => !selectedSubUserID || String(s.UserID || "").trim() === selectedSubUserID);
+      document.getElementById("subsList").innerHTML = filteredSubs.length === 0
+        ? '<div class="muted" style="padding:12px">no subscriptions for this user</div>'
         : [
             '<div class="table-wrap">',
             '<table>',
-            '<thead><tr><th>user</th><th>profile</th><th>status</th><th>configs</th><th>inside configs</th><th>link</th><th>actions</th></tr></thead>',
+            '<thead><tr><th>profile</th><th>status</th><th>configs</th><th>inside configs</th><th>link</th><th>actions</th></tr></thead>',
             '<tbody>',
-            subDetails.map((s) => {
+            filteredSubs.map((s) => {
               const link = String(s.URL || "").trim();
               const labels = Array.isArray(s.ConfigLabels) ? s.ConfigLabels : [];
+              const profileKey = esc(s.ProfileName || "default");
+              const uid = esc(s.UserID || "");
               return (
                 '<tr>' +
-                  '<td>'+esc((s.UserName || "") + (s.UserID ? " (" + s.UserID + ")" : ""))+'</td>' +
-                  '<td>'+esc(s.ProfileName || "default")+'</td>' +
-                  '<td>'+ (s.Enabled ? 'enabled' : 'disabled') +'</td>' +
+                  '<td>'+profileKey+'</td>' +
+                  '<td>'+ (s.Enabled ? '<span class="badge-ok">enabled</span>' : '<span class="badge-err">disabled</span>') +'</td>' +
                   '<td>'+esc(Number(s.ConfigCount || 0))+'</td>' +
                   '<td>'+ (labels.length > 0 ? esc(labels.join(", ")) : '<span class="muted">-</span>') +'</td>' +
-                  '<td>'+ (link ? '<a href="'+esc(link)+'" target="_blank" rel="noopener noreferrer">'+esc(link)+'</a>' : '<span class="muted">-</span>') +'</td>' +
-                  '<td class="row">' +
+                  '<td style="max-width:260px;overflow:hidden;text-overflow:ellipsis">'+ (link ? '<a href="'+esc(link)+'" target="_blank" rel="noopener noreferrer" style="word-break:break-all">'+esc(link)+'</a>' : '<span class="muted">-</span>') +'</td>' +
+                  '<td class="row" style="gap:4px;white-space:nowrap">' +
                     (link ? '<button class="btn secondary" data-copy="'+esc(link)+'">copy</button>' : '') +
+                    (s.Enabled
+                      ? '<button class="btn err" data-sub-toggle="0" data-sub-user="'+uid+'" data-sub-profile="'+profileKey+'">disable</button>'
+                      : '<button class="btn" data-sub-toggle="1" data-sub-user="'+uid+'" data-sub-profile="'+profileKey+'">enable</button>') +
                     '<button class="btn err" data-sub-delete="'+esc(link || s.AccessToken || "")+'">delete</button>' +
                   '</td>' +
                 '</tr>'
@@ -3474,10 +3501,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
             '</table>',
             '</div>',
           ].join("");
-      updateSubButtons();
-
-      renderSubInboundPick(inbounds);
-
       document.querySelectorAll("[data-copy]").forEach((btn) => {
         btn.addEventListener("click", () => {
           const txt = btn.getAttribute("data-copy") || "";
@@ -3490,6 +3513,19 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           if (!link) return;
           try {
             await postForm(cfg.subsActionPath, { op: "delete_link", subscription: link });
+          } catch (e) {
+            showOp("error", String(e));
+          }
+        });
+      });
+      document.querySelectorAll("[data-sub-toggle]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const enabled = btn.getAttribute("data-sub-toggle") || "0";
+          const uid = (btn.getAttribute("data-sub-user") || "").trim();
+          const profile = (btn.getAttribute("data-sub-profile") || "").trim();
+          if (!uid) return;
+          try {
+            await postForm(cfg.subsActionPath, { op: "set_enabled", user_id: uid, profile, enabled });
           } catch (e) {
             showOp("error", String(e));
           }
@@ -3727,6 +3763,23 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         showOp("error", String(e));
       }
     });
+    // Subscription modal open/close
+    function openSubModal() {
+      const modal = document.getElementById("subModal");
+      if (modal) modal.classList.remove("hidden");
+      const inbounds = (snapshot && Array.isArray(snapshot.Inbounds)) ? snapshot.Inbounds : [];
+      renderSubInboundPick(inbounds);
+    }
+    function closeSubModal() {
+      const modal = document.getElementById("subModal");
+      if (modal) modal.classList.add("hidden");
+    }
+    document.getElementById("openSubModalBtn").addEventListener("click", openSubModal);
+    document.getElementById("closeSubModalBtn").addEventListener("click", closeSubModal);
+    document.getElementById("closeSubModalBtn2").addEventListener("click", closeSubModal);
+    document.getElementById("subModal").addEventListener("click", (e) => {
+      if (e.target === document.getElementById("subModal")) closeSubModal();
+    });
     document.getElementById("genSubBtn").addEventListener("click", async () => {
       const userID = (document.getElementById("subUser").value || "").trim();
       if (!userID) return;
@@ -3777,26 +3830,6 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     document.getElementById("refreshSubBtn").addEventListener("click", async () => {
       try {
         await postForm(cfg.subsActionPath, { op: "refresh_all" });
-      } catch (e) {
-        showOp("error", String(e));
-      }
-    });
-    document.getElementById("subEnableBtn").addEventListener("click", async () => {
-      const userID = (document.getElementById("subUser").value || "").trim();
-      const profile = currentSubProfileName();
-      if (!userID) return;
-      try {
-        await postForm(cfg.subsActionPath, { op: "set_enabled", user_id: userID, profile, enabled: "1" });
-      } catch (e) {
-        showOp("error", String(e));
-      }
-    });
-    document.getElementById("subDisableBtn").addEventListener("click", async () => {
-      const userID = (document.getElementById("subUser").value || "").trim();
-      const profile = currentSubProfileName();
-      if (!userID) return;
-      try {
-        await postForm(cfg.subsActionPath, { op: "set_enabled", user_id: userID, profile, enabled: "0" });
       } catch (e) {
         showOp("error", String(e));
       }
@@ -3939,12 +3972,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const selected = (document.getElementById("subProfileSel").value || "").trim();
       const input = document.getElementById("subProfile");
       if (input) input.value = selected;
-      updateSubButtons();
       const inbounds = (snapshot && Array.isArray(snapshot.Inbounds)) ? snapshot.Inbounds : [];
       renderSubInboundPick(inbounds);
     });
     document.getElementById("subProfile").addEventListener("change", () => {
-      updateSubButtons();
       const inbounds = (snapshot && Array.isArray(snapshot.Inbounds)) ? snapshot.Inbounds : [];
       renderSubInboundPick(inbounds);
     });
