@@ -6714,10 +6714,13 @@ func panelApplyNodeHardening(ctx context.Context, node domain.Node, sshPassword 
 	if node.BlockPing {
 		cmds = append(cmds,
 			prefix+"grep -qxF 'net.ipv4.icmp_echo_ignore_all = 1' "+conf+" 2>/dev/null || "+prefix+"printf 'net.ipv4.icmp_echo_ignore_all = 1\\n' >> "+conf,
-			// Extra firewall rule — try iptables, fall back to nft, ignore if neither present.
-			"("+prefix+"iptables -C INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null || "+prefix+"iptables -I INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null) || "+
-				"("+prefix+"nft add table inet proxyctl 2>/dev/null; "+prefix+"nft add chain inet proxyctl input '{ type filter hook input priority 0; policy accept; }' 2>/dev/null; "+
-				prefix+"nft add rule inet proxyctl input icmp type echo-request drop 2>/dev/null) || true",
+			// Extra firewall rule: persist via nft in /etc/nftables.conf, or fall back to iptables.
+			"("+prefix+"which nft >/dev/null 2>&1 && "+
+				"(grep -q proxyctl-block /etc/nftables.conf 2>/dev/null || "+
+				"printf '\\ntable inet proxyctl-block {\\n\\tchain input {\\n\\t\\ttype filter hook input priority filter; policy accept;\\n\\t\\ticmp type echo-request drop\\n\\t}\\n}\\n' >> /etc/nftables.conf) && "+
+				prefix+"nft delete table inet proxyctl-block 2>/dev/null; "+prefix+"nft -f /etc/nftables.conf) || "+
+				"("+prefix+"iptables -C INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null || "+
+				prefix+"iptables -I INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null) || true",
 		)
 	}
 	cmds = append(cmds, prefix+"sysctl -p "+conf)
@@ -6763,24 +6766,45 @@ func panelApplyLocalHardening(_ context.Context, node domain.Node) error {
 		return fmt.Errorf("sysctl -p: %w | %s", err, strings.TrimSpace(string(out)))
 	}
 
-	// Firewall rule as extra layer: covers self-ping edge cases.
-	// Try iptables first, fall back to nft (nftables). Non-fatal if neither available.
+	// Firewall rule — persist in /etc/nftables.conf if nft is available,
+	// fall back to iptables, apply immediately. Non-fatal if neither available.
 	if node.BlockPing {
-		if ipt := resolveBinaryPath("iptables"); ipt != "iptables" {
-			// iptables is available — add rule if not already present.
-			if _, err := runExecCombined(context.Background(), ipt, "-C", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"); err != nil {
-				runExecCombined(context.Background(), ipt, "-I", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP") //nolint:errcheck
-			}
-		} else if nft := resolveBinaryPath("nft"); nft != "nft" {
-			// nftables: ensure input chain rule exists.
-			// Best-effort: create table/chain if missing, then add rule.
-			runExecCombined(context.Background(), nft, "add", "table", "inet", "proxyctl")                                                                   //nolint:errcheck
-			runExecCombined(context.Background(), nft, "add", "chain", "inet", "proxyctl", "input", "{ type filter hook input priority 0; policy accept; }") //nolint:errcheck
-			runExecCombined(context.Background(), nft, "add", "rule", "inet", "proxyctl", "input", "icmp", "type", "echo-request", "drop")                   //nolint:errcheck
-		}
-		// If neither tool is available, sysctl icmp_echo_ignore_all=1 is the active block.
+		applyBlockPingFirewall()
 	}
 	return nil
+}
+
+const nftablesConf = "/etc/nftables.conf"
+const nftProxyctlTable = `
+table inet proxyctl-block {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		icmp type echo-request drop
+	}
+}
+`
+const nftProxyctlMarker = "proxyctl-block"
+
+// applyBlockPingFirewall adds an ICMP echo-request drop rule via nft or iptables
+// and persists the nft rule in /etc/nftables.conf so it survives reboots.
+func applyBlockPingFirewall() {
+	if nft := resolveBinaryPath("nft"); nft != "nft" {
+		// Persist in /etc/nftables.conf if not already there.
+		existing, _ := os.ReadFile(nftablesConf)
+		if !strings.Contains(string(existing), nftProxyctlMarker) {
+			updated := strings.TrimRight(string(existing), "\n") + "\n" + nftProxyctlTable
+			os.WriteFile(nftablesConf, []byte(updated), 0o644) //nolint:errcheck
+		}
+		// Apply immediately (idempotent: flush+recreate table).
+		runExecCombined(context.Background(), nft, "delete", "table", "inet", "proxyctl-block") //nolint:errcheck
+		runExecCombined(context.Background(), nft, "-f", nftablesConf)                          //nolint:errcheck
+		return
+	}
+	if ipt := resolveBinaryPath("iptables"); ipt != "iptables" {
+		if _, err := runExecCombined(context.Background(), ipt, "-C", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"); err != nil {
+			runExecCombined(context.Background(), ipt, "-I", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP") //nolint:errcheck
+		}
+	}
 }
 
 func panelInstallSSHKeyOnNode(ctx context.Context, node domain.Node, sshPassword string) (bool, string, error) {
