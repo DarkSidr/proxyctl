@@ -115,6 +115,48 @@ func TestBuildUsesFallbackTemplateWhenTemplateFilesMissing(t *testing.T) {
 	assertContains(t, body, "root * /var/lib/proxy-orchestrator/subscriptions/public")
 }
 
+func TestBuildIncludesSelfStealListenerWithTemplateFile(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultAppConfig()
+	cfg.Paths.TemplatesDir = filepath.Join("..", "..", "..", "templates")
+	cfg.Paths.DecoySiteDir = "/etc/proxy-orchestrator/runtime/decoy-site"
+	cfg.Public.HTTPS = true
+
+	builder := New(cfg)
+	result, err := builder.Build(BuildRequest{
+		Node:          domain.Node{Host: "fi.example.com"},
+		SelfStealPort: 8443,
+		Inbounds: []domain.Inbound{
+			{
+				ID:             "in-1",
+				Enabled:        true,
+				Type:           domain.ProtocolVLESS,
+				Transport:      "tcp",
+				Domain:         "fi.example.com",
+				Port:           8443,
+				RealityEnabled: true,
+				SelfSteal:      true,
+			},
+			{
+				ID:         "in-2",
+				Enabled:    true,
+				Transport:  "xhttp",
+				Domain:     "fi.example.com",
+				Port:       9443,
+				TLSEnabled: true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	body := string(result.Caddyfile)
+	assertContains(t, body, "fi.example.com:8443 {")
+	assertContains(t, body, "bind 127.0.0.1")
+}
+
 func TestLoadDecoyAssets(t *testing.T) {
 	t.Parallel()
 
