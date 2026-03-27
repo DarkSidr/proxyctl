@@ -67,6 +67,7 @@ type panelInboundView struct {
 	RealitySpiderX     string
 	RealityServer      string
 	RealityServerPort  int
+	SelfSteal          bool
 	VLESSFlow          string
 	TLSCertPath        string
 	TLSKeyPath         string
@@ -199,6 +200,7 @@ type panelPageData struct {
 	SuggestedPorts      map[string]int
 	SNIPresets          []string
 	SSHKeyWarning       string
+	DefaultSelfSteal    bool
 	Dashboard           panelDashboardView
 	ContactEmail        string
 	OperationStatus     string
@@ -1527,7 +1529,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
               </label>
             </div>
           </div>
-          <div class="frow">
+          <div class="frow" id="grpSelfSteal">
+            <span class="flabel">Self Steal</span>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" id="inSelfSteal" name="self_steal" value="1">
+              <span>использовать собственный домен как цель Reality</span>
+            </label>
+          </div>
+          <div class="frow" id="grpRealityServer">
             <span class="flabel">Dest Server</span>
             <div class="frow-inline">
               <input id="inRealityServer" type="text" placeholder="www.example.com" style="flex:1">
@@ -2336,6 +2345,13 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         serverEl.value = target;
       }
     }
+    function updateSelfStealVisibility() {
+      const selfStealEl = document.getElementById("inSelfSteal");
+      const grpRealityServer = document.getElementById("grpRealityServer");
+      if (!selfStealEl || !grpRealityServer) return;
+      const checked = !!selfStealEl.checked;
+      grpRealityServer.style.display = checked ? "none" : "";
+    }
     function pickRandomRealityPreset() {
       return REALITY_PRESETS[Math.floor(Math.random() * REALITY_PRESETS.length)];
     }
@@ -2429,6 +2445,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       setModalSecTab("none");
       const preset = document.getElementById("inBrowserPreset");
       if (preset) preset.value = "";
+      const selfStealEl = document.getElementById("inSelfSteal");
+      if (selfStealEl) selfStealEl.checked = !!(snapshot && snapshot.DefaultSelfSteal);
+      updateSelfStealVisibility();
       const realityServer = document.getElementById("inRealityServer");
       if (realityServer) realityServer.value = "";
       const realityServerPort = document.getElementById("inRealityServerPort");
@@ -2518,6 +2537,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         const activeSec = inbound.RealityEnabled ? "reality" : (inbound.TLS ? "tls" : "none");
         setModalSecTab(activeSec);
       }
+      const selfStealEl = document.getElementById("inSelfSteal");
+      if (selfStealEl) selfStealEl.checked = !!inbound.SelfSteal;
+      updateSelfStealVisibility();
       const realityServer = document.getElementById("inRealityServer");
       if (realityServer) realityServer.value = String(inbound.RealityServer || "").trim();
       const realityServerPort = document.getElementById("inRealityServerPort");
@@ -3264,7 +3286,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         const rowStyle = i.PortConflict ? ' style="background:rgba(251,113,133,0.06)"' : '';
         return '<tr'+rowStyle+'>' +
           '<td class="mono muted">'+esc(i.ID)+'</td>' +
-          '<td>'+esc(i.Type)+'</td>' +
+          '<td>'+esc(i.Type)+(i.SelfSteal ? ' <span class="badge-ok" title="Self Steal">SS</span>' : '')+'</td>' +
           '<td>'+esc(i.NodeName)+'</td>' +
           '<td>'+esc(i.Domain)+'</td>' +
           portCell +
@@ -3589,6 +3611,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       if (!sni && linkTargetSni && target) {
         sni = target.includes(":") ? target.split(":")[0] : target;
       }
+      const selfSteal = !!document.getElementById("inSelfSteal")?.checked;
       const realityServer = (document.getElementById("inRealityServer").value || "").trim();
       const realityServerPort = (document.getElementById("inRealityServerPort").value || "").trim();
       const realityFingerprint = (document.getElementById("inRealityFingerprint").value || "").trim();
@@ -3624,6 +3647,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           path,
           sni,
           security_mode: securityMode,
+          self_steal: selfSteal ? "1" : "0",
           reality_server: realityServer,
           reality_server_port: realityServerPort,
           reality_fingerprint: realityFingerprint,
@@ -3822,6 +3846,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       document.getElementById("inRealityPublicKey").value = "";
       document.getElementById("inRealityPrivateKey").value = "";
     });
+    document.getElementById("inSelfSteal").addEventListener("change", () => {
+      updateSelfStealVisibility();
+    });
     document.getElementById("inSniffingEnabled").addEventListener("change", () => {
       const on = !!document.getElementById("inSniffingEnabled").checked;
       document.getElementById("mSniffingRow")?.classList.toggle("hidden", !on);
@@ -4000,6 +4027,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 						SubscriptionState:   snapshot.subscriptionState,
 						SuggestedPorts:      snapshot.suggestedPorts,
 						SNIPresets:          snapshot.sniPresets,
+						DefaultSelfSteal:    cfg.Public.DefaultSelfSteal,
 						Dashboard:           snapshot.dashboard,
 						ContactEmail:        strings.TrimSpace(cfg.Public.ContactEmail),
 						XrayUnit:            cfg.Runtime.XrayUnit,
@@ -4081,6 +4109,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					SuggestedPorts:      snapshot.suggestedPorts,
 					SNIPresets:          snapshot.sniPresets,
 					SSHKeyWarning:       snapshot.sshKeyWarning,
+					DefaultSelfSteal:    cfg.Public.DefaultSelfSteal,
 					Dashboard:           snapshot.dashboard,
 					ContactEmail:        strings.TrimSpace(cfg.Public.ContactEmail),
 					XrayUnit:            cfg.Runtime.XrayUnit,
@@ -5035,6 +5064,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			RealitySpiderX:     strings.TrimSpace(inbound.RealitySpiderX),
 			RealityServer:      strings.TrimSpace(inbound.RealityServer),
 			RealityServerPort:  inbound.RealityServerPort,
+			SelfSteal:          inbound.SelfSteal,
 			VLESSFlow:          strings.TrimSpace(inbound.VLESSFlow),
 			SniffingEnabled:    inbound.SniffingEnabled,
 			SniffingHTTP:       inbound.SniffingHTTP,
@@ -8249,10 +8279,7 @@ func panelInboundFromForm(r *http.Request, base domain.Inbound) (domain.Inbound,
 		if base.Type != domain.ProtocolVLESS || strings.ToLower(strings.TrimSpace(base.Transport)) != "tcp" || strings.ToLower(string(base.Engine)) != string(domain.EngineXray) {
 			return domain.Inbound{}, fmt.Errorf("reality requires type=vless transport=tcp engine=xray")
 		}
-		serverPort, portErr := strconv.Atoi(strings.TrimSpace(r.FormValue("reality_server_port")))
-		if portErr != nil || serverPort < 1 || serverPort > 65535 {
-			return domain.Inbound{}, fmt.Errorf("reality server port must be in range 1..65535")
-		}
+		base.SelfSteal = r.FormValue("self_steal") == "1"
 		base.TLSEnabled = false
 		base.RealityEnabled = true
 		base.RealityPublicKey = strings.TrimSpace(r.FormValue("reality_public_key"))
@@ -8260,11 +8287,23 @@ func panelInboundFromForm(r *http.Request, base domain.Inbound) (domain.Inbound,
 		base.RealityShortID = strings.TrimSpace(r.FormValue("reality_short_id"))
 		base.RealityFingerprint = strings.TrimSpace(r.FormValue("reality_fingerprint"))
 		base.RealitySpiderX = strings.TrimSpace(r.FormValue("reality_spider_x"))
-		base.RealityServer = strings.TrimSpace(r.FormValue("reality_server"))
-		base.RealityServerPort = serverPort
 		base.VLESSFlow = strings.TrimSpace(r.FormValue("vless_flow"))
-		if base.RealityPublicKey == "" || base.RealityPrivateKey == "" || base.RealityServer == "" {
-			return domain.Inbound{}, fmt.Errorf("reality requires public key, private key and target host")
+		if base.SelfSteal {
+			base.RealityServer = ""
+			base.RealityServerPort = 0
+		} else {
+			serverPort, portErr := strconv.Atoi(strings.TrimSpace(r.FormValue("reality_server_port")))
+			if portErr != nil || serverPort < 1 || serverPort > 65535 {
+				return domain.Inbound{}, fmt.Errorf("reality server port must be in range 1..65535")
+			}
+			base.RealityServer = strings.TrimSpace(r.FormValue("reality_server"))
+			base.RealityServerPort = serverPort
+			if base.RealityServer == "" {
+				return domain.Inbound{}, fmt.Errorf("reality requires target host when self steal is disabled")
+			}
+		}
+		if base.RealityPublicKey == "" || base.RealityPrivateKey == "" {
+			return domain.Inbound{}, fmt.Errorf("reality requires public key and private key")
 		}
 		if base.RealityFingerprint == "" {
 			base.RealityFingerprint = "chrome"
