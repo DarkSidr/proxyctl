@@ -1511,14 +1511,14 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
               <option value="random">Random</option>
             </select>
           </div>
-          <div class="frow">
+          <div class="frow" id="grpRealityTarget">
             <span class="flabel">Target (dest)</span>
             <div class="frow-inline">
               <input id="inTarget" type="text" list="inTargetList" placeholder="www.example.com:443" style="flex:1">
               <button type="button" id="inTargetRegen" title="Pick random preset" style="padding:0 10px;font-size:1rem;background:var(--bg2);border:1px solid var(--border);border-radius:4px;cursor:pointer;color:var(--text)">↻</button>
             </div>
           </div>
-          <div class="frow">
+          <div class="frow" id="grpRealitySNI">
             <span class="flabel">SNI</span>
             <div class="frow-inline">
               <input id="inSni" type="text" list="inSniList" placeholder="auto from target" style="flex:1">
@@ -2357,10 +2357,15 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     }
     function updateSelfStealVisibility() {
       const selfStealEl = document.getElementById("inSelfSteal");
-      const grpRealityServer = document.getElementById("grpRealityServer");
-      if (!selfStealEl || !grpRealityServer) return;
+      if (!selfStealEl) return;
       const checked = !!selfStealEl.checked;
-      grpRealityServer.style.display = checked ? "none" : "";
+      const hide = checked ? "none" : "";
+      const grpRealityServer = document.getElementById("grpRealityServer");
+      if (grpRealityServer) grpRealityServer.style.display = hide;
+      const grpRealityTarget = document.getElementById("grpRealityTarget");
+      if (grpRealityTarget) grpRealityTarget.style.display = hide;
+      const grpRealitySNI = document.getElementById("grpRealitySNI");
+      if (grpRealitySNI) grpRealitySNI.style.display = hide;
     }
     function pickRandomRealityPreset() {
       return REALITY_PRESETS[Math.floor(Math.random() * REALITY_PRESETS.length)];
@@ -2463,7 +2468,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const realityServerPort = document.getElementById("inRealityServerPort");
       if (realityServerPort) realityServerPort.value = "443";
       const realityFp = document.getElementById("inRealityFingerprint");
-      if (realityFp) realityFp.value = "chrome";
+      if (realityFp) {
+        const fps = ["chrome", "firefox", "safari", "edge", "ios", "random"];
+        realityFp.value = fps[Math.floor(Math.random() * fps.length)];
+      }
       const realityPb = document.getElementById("inRealityPublicKey");
       if (realityPb) realityPb.value = "";
       const realityPr = document.getElementById("inRealityPrivateKey");
