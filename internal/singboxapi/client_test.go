@@ -33,7 +33,7 @@ func TestClientQueryStats(t *testing.T) {
 						return nil, err
 					}
 					if len(req.Patterns) != 1 || req.Patterns[0] != "user>>>" || !req.Reset_ {
-						t.Fatalf("unexpected request: %+v", req)
+						t.Errorf("unexpected request: patterns=%v reset=%v", req.Patterns, req.Reset_)
 					}
 					return &QueryStatsResponse{
 						Stat: []*Stat{
