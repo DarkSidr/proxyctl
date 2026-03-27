@@ -773,6 +773,27 @@ func runExecCombined(ctx context.Context, name string, args ...string) ([]byte, 
 	return command.CombinedOutput()
 }
 
+// runRemoteExecStdout runs binary with args and returns only stdout (stderr discarded).
+// Use this when stderr from the local SSH process must not corrupt the output (e.g. JSON parsing).
+func runRemoteExecStdout(ctx context.Context, binary string, args []string, sshPassword string) ([]byte, error) {
+	password := strings.TrimSpace(sshPassword)
+	var cmd *exec.Cmd
+	if password == "" {
+		cmd = exec.CommandContext(ctx, binary, args...)
+	} else {
+		if _, err := lookPath("sshpass"); err != nil {
+			if installErr := ensureSSHPassInstalled(ctx); installErr != nil {
+				return nil, fmt.Errorf("ssh password auth requested, but sshpass is not installed: %w", installErr)
+			}
+		}
+		sshpassArgs := make([]string, 0, len(args)+3)
+		sshpassArgs = append(sshpassArgs, "-p", password, binary)
+		sshpassArgs = append(sshpassArgs, args...)
+		cmd = exec.CommandContext(ctx, "sshpass", sshpassArgs...)
+	}
+	return cmd.Output()
+}
+
 func runRemoteExecCombined(ctx context.Context, binary string, args []string, sshPassword string) ([]byte, error) {
 	password := strings.TrimSpace(sshPassword)
 	if password == "" {

@@ -3879,7 +3879,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const userID = (document.getElementById("credUser").value || "").trim();
       const inboundID = (document.getElementById("credInbound").value || "").trim();
       const label = (document.getElementById("credLabel").value || "").trim();
-      if (!userID || !inboundID) return;
+      if (!userID) { showOp("error", "select a specific user first"); return; }
+      if (!inboundID) { showOp("error", "select an inbound first"); return; }
       try {
         await postForm(cfg.subsActionPath, {
           op: "attach_credential",
@@ -6233,9 +6234,10 @@ func panelCollectNodeTrafficViaSSH(ctx context.Context, dbPath string, node doma
 
 	for _, port := range []string{"10090", "10091"} {
 		args := buildSSHArgs(sshPort, opts.sshKeyPath, opts.strictHostKey)
-		remoteCmd := "xray api statsquery --server=127.0.0.1:" + port + " --pattern=user>>> --reset 2>/dev/null || true"
+		// Redirect remote stderr to /dev/null so SSH warnings don't corrupt JSON output.
+		remoteCmd := "xray api statsquery --server=127.0.0.1:" + port + " --pattern=user>>> --reset 2>/dev/null"
 		args = append(args, "--", target, remoteCmd)
-		out, runErr := runRemoteExecCombined(ctx, "ssh", args, opts.sshPassword)
+		out, runErr := runRemoteExecStdout(ctx, "ssh", args, opts.sshPassword)
 		if runErr != nil || len(strings.TrimSpace(string(out))) == 0 {
 			continue
 		}
