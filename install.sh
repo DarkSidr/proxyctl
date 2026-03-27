@@ -1079,14 +1079,19 @@ install_or_verify_runtime_binary() {
   shift 3
   local package_candidates=("$@")
 
-  if command -v "${binary_name}" >/dev/null 2>&1; then
-    log "Runtime binary found: ${binary_name}"
-    return 0
-  fi
+  # sing-box must always be our custom build with with_v2ray_api.
+  # Skip existing-binary check and apt — both would install the official build
+  # that lacks the required tag and breaks traffic statistics.
+  if [[ "${binary_name}" != "sing-box" ]]; then
+    if command -v "${binary_name}" >/dev/null 2>&1; then
+      log "Runtime binary found: ${binary_name}"
+      return 0
+    fi
 
-  if install_first_available_pkg "${binary_name}" "${package_candidates[@]}"; then
-    log "Installed ${binary_name} from apt packages"
-    return 0
+    if install_first_available_pkg "${binary_name}" "${package_candidates[@]}"; then
+      log "Installed ${binary_name} from apt packages"
+      return 0
+    fi
   fi
 
   if [[ -z "${env_url}" ]]; then
