@@ -194,33 +194,25 @@ func (b *Builder) Build(req BuildRequest) (BuildResult, error) {
 		tplData.Sites = append(tplData.Sites, site)
 	}
 
-	// Build self-steal internal listener blocks (bind 127.0.0.1:selfStealPort).
+	// Build self-steal internal listener block.
+	// xray reality terminates TLS itself and forwards plain HTTP to dest
+	// (127.0.0.1:selfStealPort). Caddy must serve plain HTTP there — no TLS.
+	// Using http://127.0.0.1:PORT avoids Caddy auto-HTTPS and any port conflict
+	// with xray that owns the external port.
 	selfStealPort := req.SelfStealPort
 	if selfStealPort <= 0 {
 		selfStealPort = 8443
 	}
-	selfStealDomains := map[string]struct{}{}
+	hasSelfSteal := false
 	for _, inbound := range req.Inbounds {
-		if !inbound.Enabled || !inbound.RealityEnabled || !inbound.SelfSteal {
-			continue
+		if inbound.Enabled && inbound.RealityEnabled && inbound.SelfSteal {
+			hasSelfSteal = true
+			break
 		}
-		d := publicDomain(b.cfg, req.Node, inbound)
-		if d == "" {
-			continue
-		}
-		if err := rejectConfigInjection("domain", d); err != nil {
-			continue
-		}
-		selfStealDomains[d] = struct{}{}
 	}
-	selfStealDomainsSorted := make([]string, 0, len(selfStealDomains))
-	for d := range selfStealDomains {
-		selfStealDomainsSorted = append(selfStealDomainsSorted, d)
-	}
-	sort.Strings(selfStealDomainsSorted)
-	for _, d := range selfStealDomainsSorted {
+	if hasSelfSteal {
 		tplData.SelfStealSites = append(tplData.SelfStealSites, caddySelfStealSiteData{
-			Address:   fmt.Sprintf("%s:%d", d, selfStealPort),
+			Address:   fmt.Sprintf("127.0.0.1:%d", selfStealPort),
 			DecoyRoot: b.cfg.Paths.DecoySiteDir,
 		})
 	}

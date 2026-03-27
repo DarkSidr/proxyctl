@@ -37,8 +37,7 @@
 {{- end }}
 
 {{- range .SelfStealSites }}
-{{ .Address }} {
-  bind 127.0.0.1
+http://{{ .Address }} {
   root * {{ .DecoyRoot }}
   file_server
 }

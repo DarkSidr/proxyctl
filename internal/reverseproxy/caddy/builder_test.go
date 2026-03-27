@@ -153,8 +153,8 @@ func TestBuildIncludesSelfStealListenerWithTemplateFile(t *testing.T) {
 	}
 
 	body := string(result.Caddyfile)
-	assertContains(t, body, "fi.example.com:8443 {")
-	assertContains(t, body, "bind 127.0.0.1")
+	assertContains(t, body, "http://127.0.0.1:8443 {")
+	assertNotContains(t, body, "fi.example.com:8443")
 }
 
 func TestLoadDecoyAssets(t *testing.T) {
@@ -203,5 +203,12 @@ func assertContains(t *testing.T, text, needle string) {
 	t.Helper()
 	if !strings.Contains(text, needle) {
 		t.Fatalf("text %q does not contain %q", text, needle)
+	}
+}
+
+func assertNotContains(t *testing.T, text, needle string) {
+	t.Helper()
+	if strings.Contains(text, needle) {
+		t.Fatalf("text %q should not contain %q", text, needle)
 	}
 }
