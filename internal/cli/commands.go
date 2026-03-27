@@ -593,10 +593,12 @@ func newNodeCmd(configPath, dbPath *string) *cobra.Command {
 
 func newNodeAddCmd(dbPath *string) *cobra.Command {
 	var (
-		name    string
-		host    string
-		role    string
-		enabled bool
+		name        string
+		host        string
+		role        string
+		enabled     bool
+		disableIPv6 bool
+		blockPing   bool
 	)
 
 	cmd := &cobra.Command{
@@ -636,10 +638,12 @@ func newNodeAddCmd(dbPath *string) *cobra.Command {
 			}
 
 			created, err := store.Nodes().Create(cmd.Context(), domain.Node{
-				Name:    name,
-				Host:    host,
-				Role:    domain.NodeRole(role),
-				Enabled: enabled,
+				Name:        name,
+				Host:        host,
+				Role:        domain.NodeRole(role),
+				Enabled:     enabled,
+				DisableIPv6: disableIPv6,
+				BlockPing:   blockPing,
 			})
 			if err != nil {
 				return err
@@ -654,6 +658,8 @@ func newNodeAddCmd(dbPath *string) *cobra.Command {
 	cmd.Flags().StringVar(&host, "host", "", "Node host or IP")
 	cmd.Flags().StringVar(&role, "role", string(domain.NodeRolePrimary), "Node role (primary|node)")
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "Whether node is enabled")
+	cmd.Flags().BoolVar(&disableIPv6, "disable-ipv6", false, "Mark node as having IPv6 disabled")
+	cmd.Flags().BoolVar(&blockPing, "block-ping", false, "Mark node as having ICMP ping blocked")
 	return cmd
 }
 

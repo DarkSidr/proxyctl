@@ -1750,8 +1750,13 @@ bootstrap_default_node_if_needed() {
     node_role="node"
   fi
 
+  local disable_ipv6_flag=""
+  local block_ping_flag=""
+  [[ "${SELECTED_DISABLE_IPV6}" == "1" ]] && disable_ipv6_flag="--disable-ipv6=true"
+  [[ "${SELECTED_BLOCK_PING}" == "1" ]] && block_ping_flag="--block-ping=true"
+
   local out=""
-  if out="$("${BIN_DIR}/proxyctl" node add --db "${DB_PATH}" --name "${node_name}" --host "${node_host}" --role "${node_role}" --enabled=true 2>&1)"; then
+  if out="$("${BIN_DIR}/proxyctl" node add --db "${DB_PATH}" --name "${node_name}" --host "${node_host}" --role "${node_role}" --enabled=true ${disable_ipv6_flag} ${block_ping_flag} 2>&1)"; then
     log "Bootstrapped ${node_role} node: ${node_host}"
   else
     warn "Failed to bootstrap default node automatically: ${out}"
