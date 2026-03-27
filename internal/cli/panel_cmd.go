@@ -2813,39 +2813,37 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         const defaults = Array.isArray(selectedDetail?.InboundIDs) ? selectedDetail.InboundIDs : [];
         for (const id of defaults) selected.add(String(id || "").trim());
       }
-      // Build inboundID → credential label map for the currently selected user.
-      const subUserID = (document.getElementById("subUser")?.value || "").trim();
-      const credLabelByInbound = {};
-      const creds = Array.isArray(snapshot?.Credentials) ? snapshot.Credentials : [];
-      for (const c of creds) {
-        if (String(c.UserID || "").trim() !== subUserID) continue;
-        const iid = String(c.InboundID || "").trim();
-        if (!iid) continue;
-        const lbl = String(c.ClientLabel || "").trim();
-        if (lbl && !credLabelByInbound[iid]) credLabelByInbound[iid] = lbl;
+      const subUserID = currentSubUserID();
+      const allCreds = Array.isArray(snapshot?.Credentials) ? snapshot.Credentials : [];
+      // Only show credentials belonging to the selected user.
+      const userCreds = allCreds.filter((c) => String(c.UserID || "").trim() === subUserID);
+      // Build inboundID → inbound info map for display.
+      const inboundByID = {};
+      for (const i of inbounds) inboundByID[String(i.ID || "").trim()] = i;
+
+      if (userCreds.length === 0) {
+        pick.innerHTML = '<div class="muted" style="padding:8px 0">no credentials for this user — create credentials first or use "Generate for user"</div>';
+        return;
       }
       pick.innerHTML = [
-        '<div class="label" style="margin-bottom:8px">selected profile inbounds</div>',
         '<div class="table-wrap">',
         '<table>',
-        '<thead><tr><th><input type="checkbox" class="cb" id="subInboundAll"></th><th>label</th><th>node</th><th>domain</th><th>port</th><th>type</th><th>transport</th><th>path</th><th>sni</th><th>enabled</th></tr></thead>',
+        '<thead><tr><th><input type="checkbox" class="cb" id="subInboundAll"></th><th>label</th><th>type</th><th>node</th><th>address</th></tr></thead>',
         '<tbody>',
-        inbounds.map((i) => {
-          const checked = selected.has(String(i.ID)) ? ' checked' : '';
-          const label = credLabelByInbound[String(i.ID)] ||
-            [String(i.Type || "").trim(), String(i.Domain || "").trim() + ":" + String(i.Port || "")].join(" ").trim();
+        userCreds.map((c) => {
+          const iid = String(c.InboundID || "").trim();
+          const checked = selected.has(iid) ? ' checked' : '';
+          const lbl = String(c.ClientLabel || "").trim() ||
+            String(c.InboundType || "").trim() + " " + String(c.InboundAddr || "").trim();
+          const inbound = inboundByID[iid];
+          const node = inbound ? esc(inbound.NodeName || inbound.NodeID || "") : "";
           return (
             '<tr>' +
-              '<td><input type="checkbox" class="cb" data-sub-inbound-id="'+esc(i.ID)+'"'+checked+'></td>' +
-              '<td>'+esc(label)+'</td>' +
-              '<td>'+esc(i.NodeName || i.NodeID || "")+'</td>' +
-              '<td>'+esc(i.Domain || "")+'</td>' +
-              '<td>'+esc(i.Port)+'</td>' +
-              '<td>'+esc(i.Type || "")+'</td>' +
-              '<td>'+esc(i.Transport || "")+'</td>' +
-              '<td>'+esc(i.Path || "")+'</td>' +
-              '<td>'+esc(i.SNI || "")+'</td>' +
-              '<td>'+ (i.Enabled ? "yes" : "no") +'</td>' +
+              '<td><input type="checkbox" class="cb" data-sub-inbound-id="'+esc(iid)+'"'+checked+'></td>' +
+              '<td>'+esc(lbl)+'</td>' +
+              '<td>'+esc(c.InboundType || "")+'</td>' +
+              '<td>'+node+'</td>' +
+              '<td>'+esc(c.InboundAddr || "")+'</td>' +
             '</tr>'
           );
         }).join(""),
