@@ -133,6 +133,7 @@ type panelSubscriptionView struct {
 	UserID       string
 	UserName     string
 	ProfileName  string
+	Label        string
 	Enabled      bool
 	AccessToken  string
 	URL          string
@@ -1768,6 +1769,28 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </div>
   </div>
 
+  <!-- Subscription edit label modal -->
+  <div id="subEditModal" class="modal-overlay hidden">
+    <div class="modal" style="max-width:420px">
+      <div class="modal-hdr">
+        <h3>Edit Subscription</h3>
+        <button class="modal-close" id="closeSubEditModalBtn">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="subEditUser">
+        <input type="hidden" id="subEditProfile">
+        <div class="form-group">
+          <label>Label</label>
+          <input type="text" id="subEditLabel" placeholder="e.g. Kamil — all nodes" style="width:100%">
+        </div>
+      </div>
+      <div class="modal-ftr">
+        <button type="button" class="btn secondary" id="cancelSubEditBtn">Cancel</button>
+        <button type="button" class="btn" id="saveSubEditBtn">Save</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Subscription modal -->
   <div id="subModal" class="modal-overlay hidden">
     <div class="modal" style="max-width:860px;width:95vw">
@@ -2235,6 +2258,26 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     }
 
     // Credential edit modal
+    document.getElementById("closeSubEditModalBtn").addEventListener("click", () => {
+      document.getElementById("subEditModal").classList.add("hidden");
+    });
+    document.getElementById("cancelSubEditBtn").addEventListener("click", () => {
+      document.getElementById("subEditModal").classList.add("hidden");
+    });
+    document.getElementById("subEditModal").addEventListener("click", (e) => {
+      if (e.target === document.getElementById("subEditModal")) document.getElementById("subEditModal").classList.add("hidden");
+    });
+    document.getElementById("saveSubEditBtn").addEventListener("click", async () => {
+      const userID = document.getElementById("subEditUser").value.trim();
+      const profile = document.getElementById("subEditProfile").value.trim();
+      const label = document.getElementById("subEditLabel").value.trim();
+      try {
+        await postForm(cfg.subsActionPath, { op: "set_label", user_id: userID, profile, label });
+        document.getElementById("subEditModal").classList.add("hidden");
+      } catch (e) {
+        showOp("error", String(e));
+      }
+    });
     document.getElementById("closeCredEditModalBtn").addEventListener("click", () => {
       document.getElementById("credEditModal").classList.add("hidden");
     });
@@ -3473,22 +3516,24 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         : [
             '<div class="table-wrap">',
             '<table>',
-            '<thead><tr><th>profile</th><th>status</th><th>configs</th><th>inside configs</th><th>link</th><th>actions</th></tr></thead>',
+            '<thead><tr><th>user</th><th>label</th><th>profile</th><th>status</th><th>configs</th><th>link</th><th>actions</th></tr></thead>',
             '<tbody>',
             filteredSubs.map((s) => {
               const link = String(s.URL || "").trim();
-              const labels = Array.isArray(s.ConfigLabels) ? s.ConfigLabels : [];
               const profileKey = esc(s.ProfileName || "default");
               const uid = esc(s.UserID || "");
+              const lbl = String(s.Label || "").trim();
               return (
                 '<tr>' +
+                  '<td>'+esc(s.UserName || s.UserID || "")+'</td>' +
+                  '<td>'+ (lbl ? esc(lbl) : '<span class="muted">-</span>') +'</td>' +
                   '<td>'+profileKey+'</td>' +
                   '<td>'+ (s.Enabled ? '<span class="badge-ok">enabled</span>' : '<span class="badge-err">disabled</span>') +'</td>' +
                   '<td>'+esc(Number(s.ConfigCount || 0))+'</td>' +
-                  '<td>'+ (labels.length > 0 ? esc(labels.join(", ")) : '<span class="muted">-</span>') +'</td>' +
-                  '<td style="max-width:260px;overflow:hidden;text-overflow:ellipsis">'+ (link ? '<a href="'+esc(link)+'" target="_blank" rel="noopener noreferrer" style="word-break:break-all">'+esc(link)+'</a>' : '<span class="muted">-</span>') +'</td>' +
+                  '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis">'+ (link ? '<a href="'+esc(link)+'" target="_blank" rel="noopener noreferrer" style="word-break:break-all">'+esc(link)+'</a>' : '<span class="muted">-</span>') +'</td>' +
                   '<td class="row" style="gap:4px;white-space:nowrap">' +
                     (link ? '<button class="btn secondary" data-copy="'+esc(link)+'">copy</button>' : '') +
+                    '<button class="btn secondary" data-sub-edit-user="'+uid+'" data-sub-edit-profile="'+profileKey+'" data-sub-edit-label="'+esc(lbl)+'">edit</button>' +
                     (s.Enabled
                       ? '<button class="btn err" data-sub-toggle="0" data-sub-user="'+uid+'" data-sub-profile="'+profileKey+'">disable</button>'
                       : '<button class="btn" data-sub-toggle="1" data-sub-user="'+uid+'" data-sub-profile="'+profileKey+'">enable</button>') +
@@ -3529,6 +3574,20 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           } catch (e) {
             showOp("error", String(e));
           }
+        });
+      });
+      bindSubEditBtns();
+    }
+
+    // Subscription edit label — delegated via render()
+    function bindSubEditBtns() {
+      document.querySelectorAll("[data-sub-edit-user]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          document.getElementById("subEditUser").value = btn.getAttribute("data-sub-edit-user") || "";
+          document.getElementById("subEditProfile").value = btn.getAttribute("data-sub-edit-profile") || "";
+          document.getElementById("subEditLabel").value = btn.getAttribute("data-sub-edit-label") || "";
+          document.getElementById("subEditModal").classList.remove("hidden");
+          document.getElementById("subEditLabel").focus();
         });
       });
     }
@@ -4644,6 +4703,79 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 							ops.set("ok", fmt.Sprintf("subscription disabled for user %s (removed files: %d, credentials revoked=%d) | node sync: synced=%d cleaned=%d", userID, removed, revoked, synced, cleaned))
 						}
 					}
+				case "set_label":
+					userID := strings.TrimSpace(r.FormValue("user_id"))
+					if userID == "" {
+						ops.set("error", "user id is required")
+						break
+					}
+					profile := wizardNormalizeProfileName(r.FormValue("profile"))
+					if profile == "" {
+						profile = subscriptionservice.DefaultProfileName
+					}
+					label := strings.TrimSpace(r.FormValue("label"))
+					if profile != subscriptionservice.DefaultProfileName {
+						// Named profile — update JSON file.
+						subscriptionDir, dirErr := resolveSubscriptionDir(configPathValue)
+						if dirErr != nil {
+							ops.set("error", fmt.Sprintf("resolve subscription dir: %v", dirErr))
+							break
+						}
+						profilesPath := filepath.Join(subscriptionDir, "profiles", userID+".json")
+						content, readErr := os.ReadFile(profilesPath)
+						if readErr != nil {
+							ops.set("error", fmt.Sprintf("read profiles file: %v", readErr))
+							break
+						}
+						var file wizardSubscriptionProfilesFile
+						if err := json.Unmarshal(content, &file); err != nil {
+							ops.set("error", fmt.Sprintf("decode profiles file: %v", err))
+							break
+						}
+						found := false
+						for i := range file.Profiles {
+							if wizardNormalizeProfileName(file.Profiles[i].Name) == profile {
+								file.Profiles[i].Label = label
+								found = true
+								break
+							}
+						}
+						if !found {
+							ops.set("error", fmt.Sprintf("subscription profile %q not found", profile))
+							break
+						}
+						encoded, encErr := json.MarshalIndent(file, "", "  ")
+						if encErr != nil {
+							ops.set("error", fmt.Sprintf("encode profiles file: %v", encErr))
+							break
+						}
+						if writeErr := os.WriteFile(profilesPath, append(encoded, '\n'), 0o644); writeErr != nil {
+							ops.set("error", fmt.Sprintf("write profiles file: %v", writeErr))
+							break
+						}
+						ops.set("ok", fmt.Sprintf("subscription label updated: profile=%s", profile))
+						break
+					}
+					// Default subscription — update SQLite.
+					store, storeErr := openStoreWithInit(r.Context(), resolvedDB)
+					if storeErr != nil {
+						ops.set("error", storeErr.Error())
+						break
+					}
+					sub, subErr := store.Subscriptions().GetByUserID(r.Context(), userID)
+					if subErr != nil {
+						_ = store.Close()
+						ops.set("error", fmt.Sprintf("read subscription: %v", subErr))
+						break
+					}
+					sub.Label = label
+					if _, upsertErr := store.Subscriptions().Upsert(r.Context(), sub); upsertErr != nil {
+						_ = store.Close()
+						ops.set("error", fmt.Sprintf("update subscription label: %v", upsertErr))
+						break
+					}
+					_ = store.Close()
+					ops.set("ok", "subscription label updated")
 				case "refresh_all":
 					out, runErr := panelRefreshAllSubscriptions(r.Context(), &configPathValue, &dbPathValue)
 					if runErr != nil {
@@ -5317,6 +5449,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 				UserID:       user.ID,
 				UserName:     strings.TrimSpace(user.Name),
 				ProfileName:  subscriptionservice.DefaultProfileName,
+				Label:        strings.TrimSpace(sub.Label),
 				Enabled:      sub.Enabled,
 				AccessToken:  token,
 				URL:          makeURL(token),
@@ -5362,6 +5495,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 				UserID:       user.ID,
 				UserName:     strings.TrimSpace(user.Name),
 				ProfileName:  profileName,
+				Label:        strings.TrimSpace(entry.Label),
 				Enabled:      wizardProfileEntryEnabled(entry),
 				AccessToken:  token,
 				URL:          makeURL(token),

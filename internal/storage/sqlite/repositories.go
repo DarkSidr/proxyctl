@@ -692,12 +692,13 @@ func (r *subscriptionRepository) Upsert(ctx context.Context, subscription domain
 
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO subscriptions (id, user_id, format, output_path, access_token, enabled, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO subscriptions (id, user_id, format, output_path, access_token, label, enabled, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
 			format = excluded.format,
 			output_path = excluded.output_path,
 			access_token = excluded.access_token,
+			label = excluded.label,
 			enabled = excluded.enabled,
 			updated_at = excluded.updated_at`,
 		subscription.ID,
@@ -705,6 +706,7 @@ func (r *subscriptionRepository) Upsert(ctx context.Context, subscription domain
 		subscription.Format,
 		subscription.OutputPath,
 		subscription.AccessToken,
+		subscription.Label,
 		boolToInt(subscription.Enabled),
 		subscription.UpdatedAt.Format(time.RFC3339Nano),
 	)
@@ -723,7 +725,7 @@ func (r *subscriptionRepository) GetByUserID(ctx context.Context, userID string)
 
 	err := r.db.QueryRowContext(
 		ctx,
-		`SELECT id, user_id, format, output_path, COALESCE(access_token, ''), enabled, updated_at FROM subscriptions WHERE user_id = ?`,
+		`SELECT id, user_id, format, output_path, COALESCE(access_token, ''), COALESCE(label, ''), enabled, updated_at FROM subscriptions WHERE user_id = ?`,
 		userID,
 	).Scan(
 		&subscription.ID,
@@ -731,6 +733,7 @@ func (r *subscriptionRepository) GetByUserID(ctx context.Context, userID string)
 		&subscription.Format,
 		&subscription.OutputPath,
 		&subscription.AccessToken,
+		&subscription.Label,
 		&enabled,
 		&updatedAt,
 	)

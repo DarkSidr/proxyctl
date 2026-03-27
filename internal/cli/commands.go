@@ -3693,6 +3693,7 @@ func buildWizardUserMenuOptions() []string {
 
 type wizardSubscriptionProfileEntry struct {
 	Name        string    `json:"name"`
+	Label       string    `json:"label,omitempty"`
 	InboundIDs  []string  `json:"inbound_ids"`
 	AccessToken string    `json:"access_token"`
 	Enabled     *bool     `json:"enabled,omitempty"`

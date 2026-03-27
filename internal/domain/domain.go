@@ -137,6 +137,7 @@ type Subscription struct {
 	Format      SubscriptionFormat
 	OutputPath  string
 	AccessToken string
+	Label       string
 	Enabled     bool
 	UpdatedAt   time.Time
 }
