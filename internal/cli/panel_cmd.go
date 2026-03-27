@@ -1769,9 +1769,9 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     </div>
   </div>
 
-  <!-- Subscription edit label modal -->
+  <!-- Subscription edit modal -->
   <div id="subEditModal" class="modal-overlay hidden">
-    <div class="modal" style="max-width:420px">
+    <div class="modal" style="max-width:660px;width:95vw">
       <div class="modal-hdr">
         <h3>Edit Subscription</h3>
         <button class="modal-close" id="closeSubEditModalBtn">&#215;</button>
@@ -1779,9 +1779,13 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       <div class="modal-body">
         <input type="hidden" id="subEditUser">
         <input type="hidden" id="subEditProfile">
-        <div class="form-group">
-          <label>Label</label>
-          <input type="text" id="subEditLabel" placeholder="e.g. Kamil — all nodes" style="width:100%">
+        <div class="frow">
+          <span class="flabel">Label</span>
+          <input type="text" id="subEditLabel" placeholder="e.g. Kamil — all nodes" style="flex:1">
+        </div>
+        <div style="margin-top:4px">
+          <div class="label" style="margin-bottom:6px;color:var(--muted);font-size:0.78rem">Credentials in this subscription</div>
+          <div id="subEditCredPick"></div>
         </div>
       </div>
       <div class="modal-ftr">
@@ -2271,8 +2275,16 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const userID = document.getElementById("subEditUser").value.trim();
       const profile = document.getElementById("subEditProfile").value.trim();
       const label = document.getElementById("subEditLabel").value.trim();
+      const selectedIIDs = Array.from(document.querySelectorAll("#subEditCredPick [data-sub-edit-iid]:checked"))
+        .map((el) => (el.getAttribute("data-sub-edit-iid") || "").trim()).filter(Boolean);
       try {
-        await postForm(cfg.subsActionPath, { op: "set_label", user_id: userID, profile, label });
+        await postForm(cfg.subsActionPath, {
+          op: "update_subscription",
+          user_id: userID,
+          profile,
+          label,
+          inbounds: selectedIIDs.join(","),
+        });
         document.getElementById("subEditModal").classList.add("hidden");
       } catch (e) {
         showOp("error", String(e));
@@ -3578,12 +3590,69 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     }
 
     // Subscription edit label — delegated via render()
+    function renderSubEditCredPick(userID, currentInboundIDs) {
+      const pick = document.getElementById("subEditCredPick");
+      if (!pick) return;
+      const allCreds = Array.isArray(snapshot?.Credentials) ? snapshot.Credentials : [];
+      const userCreds = allCreds.filter((c) => String(c.UserID || "").trim() === userID);
+      const inbounds = Array.isArray(snapshot?.Inbounds) ? snapshot.Inbounds : [];
+      const inboundByID = {};
+      for (const i of inbounds) inboundByID[String(i.ID || "").trim()] = i;
+      const selectedIDs = new Set((currentInboundIDs || []).map((s) => String(s || "").trim()));
+
+      if (userCreds.length === 0) {
+        pick.innerHTML = '<div class="muted" style="padding:4px 0;font-size:0.82rem">no credentials for this user</div>';
+        return;
+      }
+      pick.innerHTML = [
+        '<div class="table-wrap">',
+        '<table>',
+        '<thead><tr><th><input type="checkbox" class="cb" id="subEditCredAll"></th><th>label</th><th>type</th><th>node</th><th>address</th></tr></thead>',
+        '<tbody>',
+        userCreds.map((c) => {
+          const iid = String(c.InboundID || "").trim();
+          const checked = selectedIDs.has(iid) ? ' checked' : '';
+          const lbl = String(c.ClientLabel || "").trim() || String(c.InboundType||"") + " " + String(c.InboundAddr||"");
+          const ib = inboundByID[iid];
+          return '<tr>' +
+            '<td><input type="checkbox" class="cb" data-sub-edit-iid="'+esc(iid)+'"'+checked+'></td>' +
+            '<td>'+esc(lbl)+'</td>' +
+            '<td>'+esc(c.InboundType||"")+'</td>' +
+            '<td>'+esc(ib ? (ib.NodeName||ib.NodeID||"") : "")+'</td>' +
+            '<td>'+esc(c.InboundAddr||"")+'</td>' +
+          '</tr>';
+        }).join(""),
+        '</tbody></table></div>',
+      ].join("");
+      // Select-all checkbox
+      const allBox = pick.querySelector("#subEditCredAll");
+      const boxes = () => Array.from(pick.querySelectorAll("[data-sub-edit-iid]"));
+      const syncAll = () => {
+        const total = boxes().length, checked = boxes().filter(b => b.checked).length;
+        if (allBox) { allBox.checked = total > 0 && checked === total; allBox.indeterminate = checked > 0 && checked < total; }
+      };
+      if (allBox) allBox.addEventListener("change", () => {
+        boxes().forEach(b => { b.checked = allBox.checked; });
+      });
+      boxes().forEach(b => b.addEventListener("change", syncAll));
+      syncAll();
+    }
     function bindSubEditBtns() {
       document.querySelectorAll("[data-sub-edit-user]").forEach((btn) => {
         btn.addEventListener("click", () => {
-          document.getElementById("subEditUser").value = btn.getAttribute("data-sub-edit-user") || "";
-          document.getElementById("subEditProfile").value = btn.getAttribute("data-sub-edit-profile") || "";
+          const userID = btn.getAttribute("data-sub-edit-user") || "";
+          const profile = btn.getAttribute("data-sub-edit-profile") || "";
+          document.getElementById("subEditUser").value = userID;
+          document.getElementById("subEditProfile").value = profile;
           document.getElementById("subEditLabel").value = btn.getAttribute("data-sub-edit-label") || "";
+          // Find current inbound IDs for this subscription.
+          const subDetails = Array.isArray(snapshot?.SubscriptionDetails) ? snapshot.SubscriptionDetails : [];
+          const sub = subDetails.find((s) =>
+            String(s.UserID||"").trim() === userID.trim() &&
+            String(s.ProfileName||"default").trim() === (profile.trim()||"default")
+          );
+          const currentIIDs = Array.isArray(sub?.InboundIDs) ? sub.InboundIDs : [];
+          renderSubEditCredPick(userID.trim(), currentIIDs);
           document.getElementById("subEditModal").classList.remove("hidden");
           document.getElementById("subEditLabel").focus();
         });
@@ -4774,6 +4843,74 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					}
 					_ = store.Close()
 					ops.set("ok", "subscription label updated")
+				case "update_subscription":
+					// Update label + regenerate with selected inbound IDs.
+					updUserID := strings.TrimSpace(r.FormValue("user_id"))
+					if updUserID == "" {
+						ops.set("error", "user id is required")
+						break
+					}
+					updProfile := wizardNormalizeProfileName(r.FormValue("profile"))
+					if updProfile == "" {
+						updProfile = subscriptionservice.DefaultProfileName
+					}
+					updLabel := strings.TrimSpace(r.FormValue("label"))
+					updInboundsCSV := strings.TrimSpace(r.FormValue("inbounds"))
+					// 1. Update label.
+					if updProfile != subscriptionservice.DefaultProfileName {
+						subDir, sdErr := resolveSubscriptionDir(configPathValue)
+						if sdErr == nil {
+							pfPath := filepath.Join(subDir, "profiles", updUserID+".json")
+							if pfContent, pfErr := os.ReadFile(pfPath); pfErr == nil {
+								var pfFile wizardSubscriptionProfilesFile
+								if json.Unmarshal(pfContent, &pfFile) == nil {
+									for idx := range pfFile.Profiles {
+										if wizardNormalizeProfileName(pfFile.Profiles[idx].Name) == updProfile {
+											pfFile.Profiles[idx].Label = updLabel
+											break
+										}
+									}
+									if enc, encErr := json.MarshalIndent(pfFile, "", "  "); encErr == nil {
+										_ = os.WriteFile(pfPath, append(enc, '\n'), 0o644)
+									}
+								}
+							}
+						}
+					} else {
+						updStore, updStoreErr := openStoreWithInit(r.Context(), resolvedDB)
+						if updStoreErr == nil {
+							if updSub, updSubErr := updStore.Subscriptions().GetByUserID(r.Context(), updUserID); updSubErr == nil {
+								updSub.Label = updLabel
+								_, _ = updStore.Subscriptions().Upsert(r.Context(), updSub)
+							}
+							_ = updStore.Close()
+						}
+					}
+					// 2. Regenerate with selected inbounds.
+					if updInboundsCSV == "" {
+						ops.set("ok", "subscription label updated")
+						break
+					}
+					if createdCnt, ensErr := panelEnsureCredentialsForUserInbounds(r.Context(), resolvedDB, updUserID, parseCSV(updInboundsCSV)); ensErr != nil {
+						ops.set("error", fmt.Sprintf("update subscription: ensure credentials: %v", ensErr))
+						break
+					} else if createdCnt > 0 {
+						if _, _, syncErr := panelSyncWorkerNodesByIDs(r.Context(), resolvedDB, strings.TrimSpace(configPathValue), nil); syncErr != nil {
+							ops.set("error", fmt.Sprintf("credentials auto-created=%d, but node sync failed: %v", createdCnt, syncErr))
+							break
+						}
+					}
+					updOut, updRunErr := panelExecuteCommandWithSetup(r.Context(), newSubscriptionGenerateCmd(&configPathValue, &dbPathValue), []string{updUserID}, func(cmd *cobra.Command) error {
+						if err := cmd.Flags().Set("profile", updProfile); err != nil {
+							return err
+						}
+						return cmd.Flags().Set("inbounds", updInboundsCSV)
+					})
+					if updRunErr != nil {
+						ops.set("error", "subscription update failed: "+panelErrWithOutput(updRunErr, updOut))
+					} else {
+						ops.set("ok", "subscription updated: "+panelSummarizeOutput(updOut))
+					}
 				case "refresh_all":
 					out, runErr := panelRefreshAllSubscriptions(r.Context(), &configPathValue, &dbPathValue)
 					if runErr != nil {
