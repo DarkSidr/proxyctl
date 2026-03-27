@@ -6721,6 +6721,40 @@ func panelApplyNodeHardening(ctx context.Context, node domain.Node, sshPassword 
 	return nil
 }
 
+func panelApplyLocalHardening(_ context.Context, node domain.Node) error {
+	conf := "/etc/sysctl.d/99-proxyctl-hardening.conf"
+
+	existing, _ := os.ReadFile(conf)
+	content := string(existing)
+
+	if node.DisableIPv6 {
+		lines := []string{
+			"net.ipv6.conf.all.disable_ipv6 = 1",
+			"net.ipv6.conf.default.disable_ipv6 = 1",
+			"net.ipv6.conf.lo.disable_ipv6 = 1",
+		}
+		for _, l := range lines {
+			if !strings.Contains(content, l) {
+				content += l + "\n"
+			}
+		}
+	}
+	if node.BlockPing {
+		line := "net.ipv4.icmp_echo_ignore_all = 1"
+		if !strings.Contains(content, line) {
+			content += line + "\n"
+		}
+	}
+
+	if err := os.WriteFile(conf, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", conf, err)
+	}
+	if out, err := runExecCombined(context.Background(), "sysctl", "-p", conf); err != nil {
+		return fmt.Errorf("sysctl -p: %w | %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func panelInstallSSHKeyOnNode(ctx context.Context, node domain.Node, sshPassword string) (bool, string, error) {
 	settings, err := panelNodeSyncSettingsFromEnv()
 	if err != nil {
@@ -7553,10 +7587,6 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			return job.id, "", nil
 		}
 		if action == "apply_hardening" {
-			if current.Role == domain.NodeRolePrimary {
-				ops.set("ok", fmt.Sprintf("hardening skipped: %s (%s) is primary", current.Name, current.Host))
-				return "", "", nil
-			}
 			if !current.DisableIPv6 && !current.BlockPing {
 				ops.set("ok", fmt.Sprintf("hardening skipped: no options enabled for %s — enable Disable IPv6 or Block Ping in node settings first", current.Name))
 				return "", "", nil
@@ -7565,7 +7595,13 @@ func panelHandleNodeAction(ctx context.Context, dbPath string, r *http.Request, 
 			job := newNodeJob(current.ID, "apply_hardening")
 			snapNode := current
 			go func() {
-				if applyErr := panelApplyNodeHardening(context.Background(), snapNode, sshPassword); applyErr != nil {
+				var applyErr error
+				if snapNode.Role == domain.NodeRolePrimary {
+					applyErr = panelApplyLocalHardening(context.Background(), snapNode)
+				} else {
+					applyErr = panelApplyNodeHardening(context.Background(), snapNode, sshPassword)
+				}
+				if applyErr != nil {
 					job.finish(false, fmt.Sprintf("hardening failed: %s (%s) | %v", snapNode.Name, snapNode.Host, applyErr))
 					return
 				}
