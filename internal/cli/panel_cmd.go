@@ -5259,8 +5259,7 @@ func newPanelServeCmd(configPath, dbPath *string) *cobra.Command {
 					select {
 					case <-t.C:
 						if panelTrafficCollection.Load() {
-							_ = panelCollectXrayTraffic(context.Background(), resolvedDB, "127.0.0.1:10090")
-							_ = panelCollectSingboxTraffic(context.Background(), resolvedDB, "127.0.0.1:10091")
+							panelCollectAllNodesTraffic(context.Background(), resolvedDB)
 						}
 					}
 				}
@@ -6184,6 +6183,64 @@ func panelResetUserTraffic(runtimeDir, userID string) error {
 		return err
 	}
 	return os.WriteFile(path, out, 0o644)
+}
+
+// panelCollectAllNodesTraffic collects traffic stats from all enabled nodes:
+// primary node is queried locally; worker nodes are queried via SSH.
+func panelCollectAllNodesTraffic(ctx context.Context, dbPath string) {
+	settings, err := panelNodeSyncSettingsFromEnv()
+	if err != nil {
+		return
+	}
+
+	store, err := openStoreWithInit(ctx, dbPath)
+	if err != nil {
+		return
+	}
+	nodes, listErr := store.Nodes().List(ctx)
+	store.Close()
+	if listErr != nil {
+		return
+	}
+
+	for _, node := range nodes {
+		if !node.Enabled {
+			continue
+		}
+		if node.Role == domain.NodeRolePrimary {
+			_ = panelCollectXrayTraffic(ctx, dbPath, "127.0.0.1:10090")
+			_ = panelCollectSingboxTraffic(ctx, dbPath, "127.0.0.1:10091")
+		} else {
+			panelCollectNodeTrafficViaSSH(ctx, dbPath, node, settings.opts)
+		}
+	}
+}
+
+// panelCollectNodeTrafficViaSSH runs xray statsquery on a remote node via SSH.
+func panelCollectNodeTrafficViaSSH(ctx context.Context, dbPath string, node domain.Node, opts nodeSyncOptions) {
+	sshPort := node.SSHPort
+	if sshPort <= 0 {
+		sshPort = 22
+	}
+	sshUser := strings.TrimSpace(node.SSHUser)
+	if sshUser == "" {
+		sshUser = strings.TrimSpace(opts.sshUser)
+	}
+	if sshUser == "" {
+		sshUser = "root"
+	}
+	target := fmt.Sprintf("%s@%s", sshUser, strings.TrimSpace(node.Host))
+
+	for _, port := range []string{"10090", "10091"} {
+		args := buildSSHArgs(sshPort, opts.sshKeyPath, opts.strictHostKey)
+		remoteCmd := "xray api statsquery --server=127.0.0.1:" + port + " --pattern=user>>> --reset 2>/dev/null || true"
+		args = append(args, "--", target, remoteCmd)
+		out, runErr := runRemoteExecCombined(ctx, "ssh", args, opts.sshPassword)
+		if runErr != nil || len(strings.TrimSpace(string(out))) == 0 {
+			continue
+		}
+		_ = panelParseAndUpsertStats(ctx, dbPath, out)
+	}
 }
 
 // panelCollectXrayTraffic queries xray stats API and upserts per-user traffic into DB.
