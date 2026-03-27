@@ -197,7 +197,7 @@ type panelPageData struct {
 	Subscriptions       []string
 	SubscriptionDetails []panelSubscriptionView
 	SubscriptionState   map[string]panelSubscriptionState
-	SuggestedPorts      map[string]int
+	SuggestedPorts      map[string]map[string]int // nodeID → "proto|transport" → port
 	SNIPresets          []string
 	SSHKeyWarning       string
 	DefaultSelfSteal    bool
@@ -2302,19 +2302,25 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         disableBtn.disabled = !!(!selected || !selected.Enabled);
       }
     }
-    function getSuggestedInboundPort(type, transport) {
-      const ports = (snapshot && snapshot.SuggestedPorts) ? snapshot.SuggestedPorts : {};
+    function getSuggestedInboundPort(type, transport, nodeID) {
+      const allPorts = (snapshot && snapshot.SuggestedPorts) ? snapshot.SuggestedPorts : {};
       const key = String(type || "").trim().toLowerCase() + "|" + String(transport || "").trim().toLowerCase();
-      const v = ports[key];
-      const n = Number(v);
-      return Number.isInteger(n) && n > 0 ? n : 0;
+      const nid = String(nodeID || "").trim();
+      // look up per-node first
+      if (nid && allPorts[nid]) {
+        const v = allPorts[nid][key];
+        const n = Number(v);
+        if (Number.isInteger(n) && n > 0) return n;
+      }
+      return 0;
     }
     function updateInboundPortSuggestion(force) {
       const type = (document.getElementById("inType").value || "").trim();
       const transport = (document.getElementById("inTransport").value || "").trim();
+      const nodeID = (document.getElementById("inNode")?.value || "").trim();
       const portEl = document.getElementById("inPort");
       if (!portEl) return;
-      const suggested = getSuggestedInboundPort(type, transport);
+      const suggested = getSuggestedInboundPort(type, transport, nodeID);
       if (!suggested) return;
       if (force || !(portEl.value || "").trim()) {
         portEl.value = String(suggested);
@@ -3632,7 +3638,7 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
       const sniffingQUIC = !!document.getElementById("inSniffingQUIC")?.checked;
       const sniffingFakeDNS = !!document.getElementById("inSniffingFakeDNS")?.checked;
       if (!port) {
-        const suggested = getSuggestedInboundPort(type, transport);
+        const suggested = getSuggestedInboundPort(type, transport, nodeID);
         if (suggested > 0) {
           port = String(suggested);
           document.getElementById("inPort").value = port;
@@ -3874,6 +3880,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
     });
     document.getElementById("inNode").addEventListener("change", () => {
       updateInboundDomainFromNode(true);
+      // re-suggest port only when creating (not editing)
+      if (!editingInboundID) {
+        updateInboundPortSuggestion(true);
+      }
     });
     document.getElementById("openCreateInboundBtn").addEventListener("click", () => {
       console.log('[openCreateInboundBtn] opening create modal');
@@ -4962,7 +4972,7 @@ type panelSnapshot struct {
 	subscriptionLinks []string
 	subscriptionViews []panelSubscriptionView
 	subscriptionState map[string]panelSubscriptionState
-	suggestedPorts    map[string]int
+	suggestedPorts    map[string]map[string]int // nodeID → "proto|transport" → port
 	sniPresets        []string
 	dashboard         panelDashboardView
 	sshKeyWarning     string // non-empty if SSH key is not configured/found
@@ -5041,7 +5051,8 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 	inboundRows := make([]panelInboundView, 0, len(inbounds))
 	inboundByID := make(map[string]domain.Inbound, len(inbounds))
 	enabledInbounds := 0
-	usedPorts := make(map[int]struct{}, len(inbounds))
+	// per-node used ports: nodeID → set of ports
+	usedPortsByNode := make(map[string]map[int]struct{}, len(nodes))
 	for _, inbound := range inbounds {
 		inboundByID[inbound.ID] = inbound
 		nodeName := inbound.NodeID
@@ -5080,28 +5091,39 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 			PortConflict:       conflict,
 			Version:            panelInboundVersion(inbound),
 		})
-		// Track ALL ports (enabled and disabled) so suggestions avoid them.
-		if inbound.Port > 0 {
-			usedPorts[inbound.Port] = struct{}{}
+		// Track ALL ports (enabled and disabled) per-node so suggestions avoid them.
+		if inbound.Port > 0 && inbound.NodeID != "" {
+			if usedPortsByNode[inbound.NodeID] == nil {
+				usedPortsByNode[inbound.NodeID] = make(map[int]struct{})
+			}
+			usedPortsByNode[inbound.NodeID][inbound.Port] = struct{}{}
 		}
 		if inbound.Enabled {
 			enabledInbounds++
 		}
 	}
 	sort.Slice(inboundRows, func(i, j int) bool { return inboundRows[i].ID < inboundRows[j].ID })
-	suggestedPorts := map[string]int{}
-	for _, item := range []struct {
-		protocol  string
-		transport string
-	}{
+
+	protoTransportItems := []struct{ protocol, transport string }{
 		{protocol: "vless", transport: "tcp"},
 		{protocol: "vless", transport: "ws"},
 		{protocol: "vless", transport: "grpc"},
 		{protocol: "hysteria2", transport: "udp"},
 		{protocol: "xhttp", transport: "xhttp"},
-	} {
-		key := item.protocol + "|" + item.transport
-		suggestedPorts[key] = suggestWizardPort(item.protocol, item.transport, usedPorts, hostPortBusy)
+	}
+	suggestedPorts := make(map[string]map[string]int, len(nodes)+1)
+	// Per-node suggestions.
+	for _, node := range nodes {
+		nodeUsed := usedPortsByNode[node.ID]
+		if nodeUsed == nil {
+			nodeUsed = make(map[int]struct{})
+		}
+		m := make(map[string]int, len(protoTransportItems))
+		for _, item := range protoTransportItems {
+			key := item.protocol + "|" + item.transport
+			m[key] = suggestWizardPort(item.protocol, item.transport, nodeUsed, nil)
+		}
+		suggestedPorts[node.ID] = m
 	}
 
 	trafficRows, _ := store.UserTraffic().List(ctx)

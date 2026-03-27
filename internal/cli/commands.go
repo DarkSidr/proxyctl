@@ -5848,7 +5848,18 @@ func suggestWizardPort(protocol, transport string, usedPorts map[int]struct{}, b
 			return candidate
 		}
 	}
-	return candidates[0]
+	// All preferred candidates are taken — scan upward from the base candidate.
+	base := candidates[0]
+	for delta := 1; delta <= 1000; delta++ {
+		p := base + delta
+		if p > 65535 {
+			break
+		}
+		if !isWizardPortBusy(p, usedPorts, network, busyFn) {
+			return p
+		}
+	}
+	return base
 }
 
 func isWizardPortBusy(port int, usedPorts map[int]struct{}, network string, busyFn func(network string, port int) bool) bool {
