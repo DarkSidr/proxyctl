@@ -281,10 +281,10 @@ func LoadDecoyAssets(cfg config.AppConfig) ([]Asset, error) {
 }
 
 type caddyTemplateData struct {
-	ContactEmail    string
-	Sites           []caddySiteData
-	SelfStealSites  []caddySelfStealSiteData
-	Routes          []Route
+	ContactEmail   string
+	Sites          []caddySiteData
+	SelfStealSites []caddySelfStealSiteData
+	Routes         []Route
 }
 
 type caddySelfStealSiteData struct {
