@@ -197,6 +197,33 @@ func TestWizardNormalizeProfileName(t *testing.T) {
 	}
 }
 
+func TestInboundDisplayHostPrefersNodeHostForSelfStealAndKeepsSNI(t *testing.T) {
+	t.Parallel()
+
+	node := domain.Node{Host: "node.example.com"}
+	inbound := domain.Inbound{
+		Domain:         "edge.example.com",
+		RealityEnabled: true,
+		SelfSteal:      true,
+	}
+
+	got := inboundDisplayHost(node, inbound)
+	if got != "node.example.com [sni: edge.example.com]" {
+		t.Fatalf("inboundDisplayHost() = %q, want %q", got, "node.example.com [sni: edge.example.com]")
+	}
+}
+
+func TestInboundDisplayHostFallsBackToInboundDomainWithoutNodeHost(t *testing.T) {
+	t.Parallel()
+
+	inbound := domain.Inbound{Domain: "edge.example.com"}
+
+	got := inboundDisplayHost(domain.Node{}, inbound)
+	if got != "edge.example.com" {
+		t.Fatalf("inboundDisplayHost() = %q, want %q", got, "edge.example.com")
+	}
+}
+
 func TestEnsureCaddyServiceHealthyStartsInactiveService(t *testing.T) {
 	origLookPath := lookPath
 	origRun := runCommandOutput

@@ -5497,9 +5497,10 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		if nodeName == "" {
 			nodeName = strings.TrimSpace(inbound.NodeID)
 		}
+		node := nodeByID[inbound.NodeID]
 		label := strings.TrimSpace(strings.Join([]string{
 			string(inbound.Type),
-			strings.TrimSpace(inbound.Domain) + ":" + strconv.Itoa(inbound.Port),
+			inboundDisplayHost(node, inbound) + ":" + strconv.Itoa(inbound.Port),
 			"|",
 			nodeName,
 		}, " "))
@@ -5514,10 +5515,7 @@ func buildPanelSnapshot(ctx context.Context, dbPath string, cfg config.AppConfig
 		inboundType := ""
 		if in, ok := inboundByID[cred.InboundID]; ok {
 			inboundType = string(in.Type)
-			addr := strings.TrimSpace(in.Domain)
-			if addr == "" {
-				addr = "<no-domain>"
-			}
+			addr := inboundDisplayHost(nodeByID[in.NodeID], in)
 			inboundAddr = fmt.Sprintf("%s:%d", addr, in.Port)
 		}
 		clientURI, clientErr := panelBuildClientURI(ctx, nodeByID, inboundByID, cred)

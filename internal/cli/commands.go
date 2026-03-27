@@ -4512,15 +4512,8 @@ func wizardUserInboundChoices(cmd *cobra.Command, dbPath, userID string) ([]wiza
 
 	choices := make([]wizardInboundChoice, 0, len(inboundSet))
 	for inboundID, inbound := range inboundSet {
-		host := strings.TrimSpace(inbound.Domain)
-		if host == "" {
-			if node, ok := nodeByID[inbound.NodeID]; ok && strings.TrimSpace(node.Host) != "" {
-				host = node.Host
-			}
-		}
-		if host == "" {
-			host = "<no-domain>"
-		}
+		node := nodeByID[inbound.NodeID]
+		host := inboundDisplayHost(node, inbound)
 		nodeLabel := ""
 		if node, ok := nodeByID[inbound.NodeID]; ok {
 			nodeLabel = strings.TrimSpace(node.Name)
@@ -5258,10 +5251,8 @@ func listWizardUserConfigs(cmd *cobra.Command, dbPath, userID string) ([]wizardU
 			nodeHost         string
 		)
 		if inbound, ok := inboundByID[cred.InboundID]; ok {
-			host := strings.TrimSpace(inbound.Domain)
-			if host == "" {
-				host = "<no-domain>"
-			}
+			node := nodeByID[inbound.NodeID]
+			host := inboundDisplayHost(node, inbound)
 			summary = fmt.Sprintf("%s/%s %s:%d", inbound.Type, inbound.Transport, host, inbound.Port)
 			inboundType = inbound.Type
 			inboundTransport = inbound.Transport
