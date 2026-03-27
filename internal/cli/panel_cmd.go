@@ -1568,7 +1568,10 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
           </div>
           <div class="frow">
             <span class="flabel">Flow</span>
-            <input id="inVlessFlow" type="text" value="xtls-rprx-vision">
+            <select id="inVlessFlow">
+              <option value="xtls-rprx-vision">xtls-rprx-vision</option>
+              <option value="">(none)</option>
+            </select>
           </div>
         </div>
       </div>
@@ -2746,6 +2749,17 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         const defaults = Array.isArray(selectedDetail?.InboundIDs) ? selectedDetail.InboundIDs : [];
         for (const id of defaults) selected.add(String(id || "").trim());
       }
+      // Build inboundID → credential label map for the currently selected user.
+      const subUserID = (document.getElementById("subUser")?.value || "").trim();
+      const credLabelByInbound = {};
+      const creds = Array.isArray(snapshot?.Credentials) ? snapshot.Credentials : [];
+      for (const c of creds) {
+        if (String(c.UserID || "").trim() !== subUserID) continue;
+        const iid = String(c.InboundID || "").trim();
+        if (!iid) continue;
+        const lbl = String(c.ClientLabel || "").trim();
+        if (lbl && !credLabelByInbound[iid]) credLabelByInbound[iid] = lbl;
+      }
       pick.innerHTML = [
         '<div class="label" style="margin-bottom:8px">selected profile inbounds</div>',
         '<div class="table-wrap">',
@@ -2754,7 +2768,8 @@ var panelAppTmpl = template.Must(template.New("panel-app").Parse(`<!doctype html
         '<tbody>',
         inbounds.map((i) => {
           const checked = selected.has(String(i.ID)) ? ' checked' : '';
-          const label = [String(i.Type || "").trim(), String(i.Domain || "").trim() + ":" + String(i.Port || "")].join(" ").trim();
+          const label = credLabelByInbound[String(i.ID)] ||
+            [String(i.Type || "").trim(), String(i.Domain || "").trim() + ":" + String(i.Port || "")].join(" ").trim();
           return (
             '<tr>' +
               '<td><input type="checkbox" class="cb" data-sub-inbound-id="'+esc(i.ID)+'"'+checked+'></td>' +
