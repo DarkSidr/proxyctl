@@ -6234,7 +6234,9 @@ func panelCollectNodeTrafficViaSSH(ctx context.Context, dbPath string, node doma
 	for _, port := range []string{"10090", "10091"} {
 		args := buildSSHArgs(sshPort, opts.sshKeyPath, opts.strictHostKey)
 		// Redirect remote stderr to /dev/null so SSH warnings don't corrupt JSON output.
-		remoteCmd := "xray api statsquery --server=127.0.0.1:" + port + " --pattern=user>>> --reset 2>/dev/null"
+		// The pattern 'user>>>' must be single-quoted to prevent remote bash from
+		// interpreting '>>>' as shell output-append redirections.
+		remoteCmd := "xray api statsquery --server=127.0.0.1:" + port + " --pattern='user>>>' --reset 2>/dev/null"
 		args = append(args, "--", target, remoteCmd)
 		out, runErr := runRemoteExecStdout(ctx, "ssh", args, opts.sshPassword)
 		if runErr != nil || len(strings.TrimSpace(string(out))) == 0 {
