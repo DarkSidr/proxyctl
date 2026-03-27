@@ -6714,6 +6714,8 @@ func panelApplyNodeHardening(ctx context.Context, node domain.Node, sshPassword 
 	if node.BlockPing {
 		cmds = append(cmds,
 			prefix+"grep -qxF 'net.ipv4.icmp_echo_ignore_all = 1' "+conf+" 2>/dev/null || "+prefix+"printf 'net.ipv4.icmp_echo_ignore_all = 1\\n' >> "+conf,
+			// iptables rule as fallback (covers self-ping and some VPS setups where sysctl alone is insufficient)
+			prefix+"iptables -C INPUT -p icmp --icmp-type echo-request -j DROP 2>/dev/null || "+prefix+"iptables -I INPUT -p icmp --icmp-type echo-request -j DROP",
 		)
 	}
 	cmds = append(cmds, prefix+"sysctl -p "+conf)
@@ -6757,6 +6759,16 @@ func panelApplyLocalHardening(_ context.Context, node domain.Node) error {
 	}
 	if out, err := runExecCombined(context.Background(), "sysctl", "-p", conf); err != nil {
 		return fmt.Errorf("sysctl -p: %w | %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// iptables rule as fallback: covers self-ping and VPS setups where sysctl alone is insufficient.
+	if node.BlockPing {
+		// -C checks existence; only insert if not already present.
+		if _, err := runExecCombined(context.Background(), "iptables", "-C", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"); err != nil {
+			if out, err2 := runExecCombined(context.Background(), "iptables", "-I", "INPUT", "-p", "icmp", "--icmp-type", "echo-request", "-j", "DROP"); err2 != nil {
+				return fmt.Errorf("iptables block ping: %w | %s", err2, strings.TrimSpace(string(out)))
+			}
+		}
 	}
 	return nil
 }
