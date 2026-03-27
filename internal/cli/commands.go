@@ -90,6 +90,7 @@ func resolveBinaryPath(name string) string {
 	}
 	return name // fallback: let exec resolve via $PATH
 }
+
 var runCommandOutput = func(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
