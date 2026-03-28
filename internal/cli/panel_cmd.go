@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -6212,6 +6213,7 @@ func panelCollectAllNodesTraffic(ctx context.Context, dbPath string) {
 			_ = panelCollectSingboxTraffic(ctx, dbPath, "127.0.0.1:10091")
 		} else {
 			panelCollectNodeTrafficViaSSH(ctx, dbPath, node, settings.opts)
+			panelCollectNodeSingboxTrafficViaSSH(ctx, dbPath, node, settings.opts)
 		}
 	}
 }
@@ -6244,6 +6246,81 @@ func panelCollectNodeTrafficViaSSH(ctx context.Context, dbPath string, node doma
 		}
 		_ = panelParseAndUpsertStats(ctx, dbPath, out)
 	}
+}
+
+// panelCollectNodeSingboxTrafficViaSSH opens an SSH tunnel to the remote sing-box
+// v2ray-compatible gRPC stats port (10091) and queries per-user traffic.
+func panelCollectNodeSingboxTrafficViaSSH(ctx context.Context, dbPath string, node domain.Node, opts nodeSyncOptions) {
+	sshPort := node.SSHPort
+	if sshPort <= 0 {
+		sshPort = 22
+	}
+	sshUser := strings.TrimSpace(node.SSHUser)
+	if sshUser == "" {
+		sshUser = strings.TrimSpace(opts.sshUser)
+	}
+	if sshUser == "" {
+		sshUser = "root"
+	}
+	target := fmt.Sprintf("%s@%s", sshUser, strings.TrimSpace(node.Host))
+
+	// Grab a free local port for the tunnel.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return
+	}
+	localPort := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// ssh -N -L 127.0.0.1:localPort:127.0.0.1:10091 user@host
+	sshArgs := buildSSHArgs(sshPort, opts.sshKeyPath, opts.strictHostKey)
+	sshArgs = append(sshArgs,
+		"-N",
+		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:10091", localPort),
+		"--", target,
+	)
+
+	tCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	var tunnelCmd *exec.Cmd
+	password := strings.TrimSpace(opts.sshPassword)
+	if password != "" {
+		if _, pErr := lookPath("sshpass"); pErr == nil {
+			sshpassArgs := append([]string{"-p", password, "ssh"}, sshArgs...)
+			tunnelCmd = exec.CommandContext(tCtx, "sshpass", sshpassArgs...)
+		} else {
+			tunnelCmd = exec.CommandContext(tCtx, "ssh", sshArgs...)
+		}
+	} else {
+		tunnelCmd = exec.CommandContext(tCtx, "ssh", sshArgs...)
+	}
+	if err := tunnelCmd.Start(); err != nil {
+		return
+	}
+	defer func() {
+		if tunnelCmd.Process != nil {
+			_ = tunnelCmd.Process.Kill()
+		}
+	}()
+
+	// Wait for the tunnel to become ready (up to ~3 s).
+	addr := fmt.Sprintf("127.0.0.1:%d", localPort)
+	for i := 0; i < 10; i++ {
+		select {
+		case <-tCtx.Done():
+			return
+		default:
+		}
+		time.Sleep(300 * time.Millisecond)
+		c, dialErr := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if dialErr == nil {
+			c.Close()
+			break
+		}
+	}
+
+	_ = panelCollectSingboxTraffic(tCtx, dbPath, addr)
 }
 
 // panelCollectXrayTraffic queries xray stats API and upserts per-user traffic into DB.
